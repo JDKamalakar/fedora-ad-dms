@@ -1,214 +1,184 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ANSI Colors
-BOLD="\033[1m"
-CYAN="\033[1;36m"
-GREEN="\033[1;32m"
-YELLOW="\033[1;33m"
-RED="\033[1;31m"
-BLUE="\033[1;34m"
-MAGENTA="\033[1;35m"
-NC="\033[0m"
-
+LOG_FILE="/var/log/fedora-ad-setup.log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSUME_YES=false
-SELECTED_LAB_INDEX=""
 
+# Parse flags
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=true ;;
-    --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
   esac
 done
 
-draw_banner() {
-  clear
-  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}       FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP TUI          ${NC} ${CYAN}|${NC}"
-  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
-}
-
-step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
-  echo -e "${BLUE}======================================================================${NC}"
-}
-
-msg_info()  { echo -e "  ${CYAN}[INFO]${NC} $1"; }
-msg_ok()    { echo -e "  ${GREEN}[OK]${NC} $1"; }
-msg_warn()  { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
-msg_err()   { echo -e "  ${RED}[ERROR]${NC} $1"; }
-
-ask_yes_no() {
-  local prompt="$1"
-  local default="${2:-Y}"
-  local resp
-
-  if [ "$ASSUME_YES" = true ]; then
-    msg_info "${prompt} -> Auto-approved (-y flag)"
-    return 0
-  fi
-
-  while true; do
-    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
-    read -r resp < /dev/tty
-    resp="${resp:-$default}"
-    case "$resp" in
-      [Yy]*) return 0 ;;
-      [Nn]*) return 1 ;;
-      *) msg_err "Invalid input. Please enter 'y' or 'n'." ;;
-    esac
-  done
-}
-
+# Ensure Root
 if [ "$EUID" -ne 0 ]; then
-  draw_banner
-  msg_err "This script requires administrative privileges. Run with 'sudo'."
+  echo "Error: This script must be run as root (use sudo)."
   exit 1
 fi
 
-draw_banner
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Step 1: Remove LibreOffice / Install ONLYOFFICE
-step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-if ask_yes_no "Remove LibreOffice and install ONLYOFFICE?" "Y"; then
-  dnf remove -y "libreoffice*" || true
-  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-  dnf install -y onlyoffice-desktopeditors || true
+# Ensure Whiptail (newt package) is installed
+if ! command -v whiptail &> /dev/null; then
+  echo "Installing 'newt' package for Whiptail TUI..."
+  dnf install -y newt > /dev/null 2>&1
 fi
 
-# Step 2: System Update
-step_header "2" "Updating System Packages"
-if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
-  dnf update -y
-fi
+# Reset log file
+echo "=== Active Directory & DMS Installation Log ===" > "$LOG_FILE"
+echo "Date: $(date)" >> "$LOG_FILE"
 
-# Step 3: Install AD Prerequisites
-step_header "3" "Installing AD & Security Dependencies"
-dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
+# --- TUI CONFIGURATION INTERACTION ---
 
-# Step 4: Install Dank Material Shell (DMS)
-step_header "4" "Installing Dank Material Shell (DMS)"
-if ask_yes_no "Install Dank Material Shell (DMS)?" "Y"; then
-  curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh
-  chmod 777 /tmp/dms-install.sh
-  REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
-  
-  if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-    sudo -u "$REAL_USER" bash /tmp/dms-install.sh < /dev/tty || true
-  else
-    bash /tmp/dms-install.sh < /dev/tty || true
+if [ "$ASSUME_YES" = false ]; then
+  # 1. Welcome Screen
+  whiptail --title "Fedora AD & DMS Setup Wizard" \
+    --msgbox "Welcome to the Fedora Active Directory & DMS Deployment Setup.\n\nThis wizard will configure system settings, domain authentication, lab access rules, and desktop environments." 12 68
+
+  # 2. Confirmation Dialog
+  if ! whiptail --title "Confirmation" --yesno "Do you want to proceed with setup on this machine?" 10 60; then
+    exit 0
   fi
-  rm -f /tmp/dms-install.sh
 fi
 
-# Step 5: Read Domain Settings
-step_header "5" "Active Directory Configuration"
+# Load domain.conf if available
+DOMAIN_NAME="gsfcu.local"
+REALM_NAME="GSFCU.LOCAL"
+AD_DNS_IP=""
+DOMAIN_USER="Administrator"
+
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/domain.conf"
-  msg_ok "Loaded configuration from 'domain.conf'."
 fi
 
-# NetworkManager DNS
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
-TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
-
-if [ -n "${AD_DNS_IP:-}" ]; then
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes || true
-  nmcli connection up "$TARGET_CONN" || true
-fi
-
-systemctl enable --now chronyd || true
-chronyc makestep > /dev/null 2>&1 || true
-
-echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
-read -sp "" DOMAIN_PASS < /dev/tty
-echo ""
-
-# Step 6: Realm Join
-step_header "6" "Joining Active Directory Realm"
-if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
-  msg_ok "Joined Active Directory realm successfully."
-else
-  msg_err "Failed to join domain."
-  exit 1
-fi
-
-# Step 7: Interactive Lab Access Selection
-step_header "7" "Configuring Lab Access Control Rules"
-
-LAB_CONF="${SCRIPT_DIR}/lab.conf"
-if [ -f "$LAB_CONF" ]; then
-  mapfile -t LAB_ENTRIES < <(grep -v '^[[:space:]]*#' "$LAB_CONF" | grep -v '^[[:space:]]*$')
+# If domain details are missing and not unattended, prompt user
+if [ "$ASSUME_YES" = false ]; then
+  [ -z "${DOMAIN_NAME:-}" ] && DOMAIN_NAME=$(whiptail --title "Domain Configuration" --inputbox "Enter Active Directory Domain Name:" 10 60 "gsfcu.local" 3>&1 1>&2 2>&3)
+  [ -z "${AD_DNS_IP:-}" ] && AD_DNS_IP=$(whiptail --title "Domain Configuration" --inputbox "Enter Active Directory DNS Server IP Address:" 10 60 "" 3>&1 1>&2 2>&3)
+  [ -z "${DOMAIN_USER:-}" ] && DOMAIN_USER=$(whiptail --title "Domain Configuration" --inputbox "Enter Domain Admin Username:" 10 60 "Administrator" 3>&1 1>&2 2>&3)
   
-  if [ "${#LAB_ENTRIES[@]}" -gt 0 ]; then
-    echo -e "  ${BOLD}Select the Lab ID to allow on this machine:${NC}\n"
-    
-    idx=1
-    declare -A LAB_NAMES
-    declare -A LAB_IDS
-    
-    for entry in "${LAB_ENTRIES[@]}"; do
-      IFS=':' read -r name id <<< "$entry"
-      LAB_NAMES[$idx]="$name"
-      LAB_IDS[$idx]="$id"
-      echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}ID: ${id}${NC})"
-      ((idx++))
-    done
-    
-    CHOICE="$SELECTED_LAB_INDEX"
-    if [ -z "$CHOICE" ]; then
-      if [ "$ASSUME_YES" = true ]; then
-        CHOICE=1
-      else
-        while true; do
-          echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-$((idx-1))]: "
-          read -r CHOICE < /dev/tty
-          if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -lt "$idx" ]; then
-            break
-          fi
-          msg_err "Invalid choice. Please enter a valid number."
-        done
-      fi
-    fi
-
-    ALLOWED_ID="${LAB_IDS[$CHOICE]}"
-    ALLOWED_NAME="${LAB_NAMES[$CHOICE]}"
-    
-    msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
-
-    # Permit selected lab ID
-    realm permit -g "$ALLOWED_ID" || true
-
-    # Explicitly block other lab IDs listed in lab.conf
-    for key in "${!LAB_IDS[@]}"; do
-      if [ "$key" -ne "$CHOICE" ]; then
-        DENY_ID="${LAB_IDS[$key]}"
-        realm deny -g "$DENY_ID" || true
-        msg_warn "Blocked Lab ID on this machine: ${DENY_ID}"
-      fi
-    done
-    
-    msg_ok "Unlisted domain IDs (e.g. 23bca032) remain allowed."
+  DOMAIN_PASS=$(whiptail --title "Authentication Required" --passwordbox "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}':" 10 65 3>&1 1>&2 2>&3)
+else
+  # Unattended prompt for password only if not supplied
+  if [ -z "${DOMAIN_PASS:-}" ]; then
+    echo -n "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}': "
+    read -sp "" DOMAIN_PASS
+    echo ""
   fi
 fi
 
-# Step 8: Setup Refresh Script, Auto-installer, and Systemd Timer
-step_header "8" "Setting Up 10-Minute Policy Refresh Service"
+# 3. Interactive Lab ID Selection Menu (Reads lab.conf)
+SELECTED_LAB_ID=""
+LAB_CONF="${SCRIPT_DIR}/lab.conf"
 
-cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
-chmod 755 /usr/local/bin/refresh-app-policies
+if [ -f "$LAB_CONF" ]; then
+  LAB_MENU_ARGS=()
+  declare -A LAB_NAME_MAP
+  
+  while IFS=':' read -r name id || [ -n "$name" ]; do
+    [[ "$name" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "$name" ]] && continue
+    id="$(echo "$id" | xargs)"
+    name="$(echo "$name" | xargs)"
+    LAB_MENU_ARGS+=("$id" "$name")
+    LAB_NAME_MAP["$id"]="$name"
+  done < "$LAB_CONF"
 
-# Create 'refresh' terminal alias/command
-cat <<'EOF' > /usr/local/bin/refresh
+  if [ "${#LAB_MENU_ARGS[@]}" -gt 0 ]; then
+    if [ "$ASSUME_YES" = false ]; then
+      SELECTED_LAB_ID=$(whiptail --title "Lab Access Control Selection" \
+        --menu "Select the primary Lab ID allowed on this workstation:\n(Other lab IDs in lab.conf will be blocked; unlisted IDs like 23bca032 remain allowed)" \
+        18 72 6 \
+        "${LAB_MENU_ARGS[@]}" \
+        3>&1 1>&2 2>&3)
+    else
+      SELECTED_LAB_ID="${LAB_MENU_ARGS[0]}"
+    fi
+  fi
+fi
+
+# --- EXECUTION FUNCTIONS (Piped into Log File) ---
+
+do_software_swap() {
+  echo "--- Removing LibreOffice & Installing ONLYOFFICE ---" >> "$LOG_FILE"
+  dnf remove -y "libreoffice*" >> "$LOG_FILE" 2>&1 || true
+  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm >> "$LOG_FILE" 2>&1 || true
+  dnf install -y onlyoffice-desktopeditors >> "$LOG_FILE" 2>&1 || true
+}
+
+do_system_update() {
+  echo "--- Updating System Packages ---" >> "$LOG_FILE"
+  dnf update -y >> "$LOG_FILE" 2>&1
+}
+
+do_install_deps() {
+  echo "--- Installing Active Directory & Security Dependencies ---" >> "$LOG_FILE"
+  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit >> "$LOG_FILE" 2>&1
+}
+
+do_install_dms() {
+  echo "--- Installing Dank Material Shell (DMS) ---" >> "$LOG_FILE"
+  curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh >> "$LOG_FILE" 2>&1
+  chmod 777 /tmp/dms-install.sh
+  
+  REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
+  if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+    sudo -u "$REAL_USER" bash /tmp/dms-install.sh >> "$LOG_FILE" 2>&1 || true
+  else
+    bash /tmp/dms-install.sh >> "$LOG_FILE" 2>&1 || true
+  fi
+  rm -f /tmp/dms-install.sh
+}
+
+do_network_dns() {
+  echo "--- Configuring NetworkManager DNS & Time Sync ---" >> "$LOG_FILE"
+  ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
+  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+
+  if [ -n "${AD_DNS_IP:-}" ]; then
+    nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes >> "$LOG_FILE" 2>&1 || true
+    nmcli connection up "$TARGET_CONN" >> "$LOG_FILE" 2>&1 || true
+  fi
+
+  systemctl enable --now chronyd >> "$LOG_FILE" 2>&1 || true
+  chronyc makestep >> "$LOG_FILE" 2>&1 || true
+}
+
+do_realm_join() {
+  echo "--- Joining Active Directory Domain (${DOMAIN_NAME}) ---" >> "$LOG_FILE"
+  if ! echo "$DOMAIN_PASS" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose >> "$LOG_FILE" 2>&1; then
+    echo "ERROR: Realm join failed." >> "$LOG_FILE"
+    return 1
+  fi
+}
+
+do_lab_access_controls() {
+  echo "--- Applying Lab Access Control Rules ---" >> "$LOG_FILE"
+  if [ -n "$SELECTED_LAB_ID" ]; then
+    realm permit -g "$SELECTED_LAB_ID" >> "$LOG_FILE" 2>&1 || true
+    
+    # Block other lab IDs from lab.conf
+    for key in "${!LAB_NAME_MAP[@]}"; do
+      if [ "$key" != "$SELECTED_LAB_ID" ]; then
+        realm deny -g "$key" >> "$LOG_FILE" 2>&1 || true
+      fi
+    done
+  fi
+}
+
+do_policy_sync_setup() {
+  echo "--- Installing 10-Minute Policy Refresh Timer ---" >> "$LOG_FILE"
+  cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
+  chmod 755 /usr/local/bin/refresh-app-policies
+
+  cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
 EOF
-chmod 755 /usr/local/bin/refresh
+  chmod 755 /usr/local/bin/refresh
 
-# Systemd Service
-cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
+  cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
 [Unit]
 Description=Sync software allow/block lists & install compulsory apps
 After=network-online.target
@@ -218,8 +188,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-# Systemd Timer (Every 10 Minutes)
-cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
+  cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
 Description=Run app-policy-sync every 10 minutes
 
@@ -231,47 +200,71 @@ OnUnitActiveSec=10min
 WantedBy=timers.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now app-policy-sync.timer
-/usr/local/bin/refresh-app-policies || true
+  systemctl daemon-reload >> "$LOG_FILE" 2>&1
+  systemctl enable --now app-policy-sync.timer >> "$LOG_FILE" 2>&1
+  /usr/local/bin/refresh-app-policies >> "$LOG_FILE" 2>&1 || true
+}
 
-# Step 9: System Configs (sssd, krb5, greetd)
-step_header "9" "Applying System Configurations"
-if [ -d "${SCRIPT_DIR}/configs" ]; then
-  [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
-  [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
-  [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
-  chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
-fi
+do_finalize_configs() {
+  echo "--- Finalizing System & Theme Inheritance (/etc/skel) ---" >> "$LOG_FILE"
+  if [ -d "${SCRIPT_DIR}/configs" ]; then
+    [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
+    [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
+    [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
+    chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
+  fi
 
-# Step 10: PAM Integration
-step_header "10" "Configuring PAM & Home Directories"
-authselect select sssd with-mkhomedir --force
-systemctl enable --now oddjobd
+  authselect select sssd with-mkhomedir --force >> "$LOG_FILE" 2>&1
+  systemctl enable --now oddjobd >> "$LOG_FILE" 2>&1
 
-# Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
-step_header "11" "Applying DMS Themes for New Users (/etc/skel)"
-THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
+  THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
+  if [ -f "$THEME_ARCHIVE" ]; then
+    mkdir -p /etc/skel/.config /etc/skel/.local/share
+    tar -xzf "$THEME_ARCHIVE" -C /etc/skel
+    chmod -R 755 /etc/skel/.config /etc/skel/.local
+  fi
 
-if [ -f "$THEME_ARCHIVE" ]; then
-  mkdir -p /etc/skel/.config /etc/skel/.local/share
-  tar -xzf "$THEME_ARCHIVE" -C /etc/skel
-  chmod -R 755 /etc/skel/.config /etc/skel/.local
-  msg_ok "DMS profile unpacked into /etc/skel. All new domain users will inherit this desktop."
-fi
+  mkdir -p /var/cache/dms-greeter
+  chmod 777 /var/cache/dms-greeter
+  setsebool -P allow_polyinstantiation 1 >> "$LOG_FILE" 2>&1 || true
+  setsebool -P nis_enabled 1 >> "$LOG_FILE" 2>&1 || true
+  setsebool -P use_nfs_home_dirs 1 >> "$LOG_FILE" 2>&1 || true
 
-# Step 12: Restart Services
-step_header "12" "Finalizing Installation"
-mkdir -p /var/cache/dms-greeter
-chmod 777 /var/cache/dms-greeter
-setsebool -P allow_polyinstantiation 1 || true
-setsebool -P nis_enabled 1 || true
-setsebool -P use_nfs_home_dirs 1 || true
+  sss_cache -E >> "$LOG_FILE" 2>&1 || true
+  rm -f /var/lib/sss/db/* >> "$LOG_FILE" 2>&1 || true
+  systemctl restart sssd oddjobd greetd >> "$LOG_FILE" 2>&1 || true
+}
 
-sss_cache -E || true
-rm -f /var/lib/sss/db/* || true
-systemctl restart sssd oddjobd greetd || true
+# --- TUI PROGRESS BAR EXECUTION LOOP ---
 
-echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
-echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
-echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+run_step() {
+  local pct="$1"
+  local text="$2"
+  shift 2
+  echo "$pct"
+  echo "XXX"
+  echo "$text"
+  echo "XXX"
+  "$@"
+}
+
+(
+  run_step 10 "1/8: Swapping LibreOffice for ONLYOFFICE..." do_software_swap
+  run_step 25 "2/8: Updating System Packages..." do_system_update
+  run_step 40 "3/8: Installing Active Directory Dependencies..." do_install_deps
+  run_step 55 "4/8: Installing Dank Material Shell (DMS)..." do_install_dms
+  run_step 65 "5/8: Configuring AD DNS & Network Clock Sync..." do_network_dns
+  run_step 75 "6/8: Joining Active Directory Realm..." do_realm_join
+  run_step 85 "7/8: Applying Lab Access Control Rules..." do_lab_access_controls
+  run_step 92 "8/8: Setting Up 10-Min Policy Sync Timer..." do_policy_sync_setup
+  run_step 100 "Complete: Finalizing Desktop Themes & Services..." do_finalize_configs
+) | whiptail --title "Fedora AD & DMS Setup Progress" --gauge "Initializing installation..." 8 70 0
+
+# --- POST-INSTALLATION LOG SCROLLBACK SCREEN ---
+
+whiptail --title "Installation Complete" \
+  --msgbox "Setup completed successfully!\n\nSelect OK to open the full scrollable terminal log viewer." 12 65
+
+# Full-screen scrollable log viewer (arrow keys, PgUp, PgDn)
+whiptail --title "Execution Output Log (Use Arrow Keys / PgUp / PgDn to Scroll)" \
+  --textbox "$LOG_FILE" 22 80
