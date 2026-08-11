@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -131,6 +132,8 @@ var (
 
 	logMutex  sync.Mutex
 	logBuffer strings.Builder
+
+	ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\r`)
 )
 
 func main() {
@@ -333,7 +336,7 @@ func loadLabConfig() {
 }
 
 func countPendingUpdates() int {
-	cmd := exec.Command("dnf", "check-update", "-q")
+	cmd := exec.Command("dnf", "check-update", "-q", "--setopt=lock_timeout=5")
 	output, _ := cmd.Output()
 	lines := strings.Split(string(output), "\n")
 	count := 0
@@ -477,16 +480,16 @@ func showErrorModal(msg string) {
 func buildTasksList() {
 	tasks = []Task{
 		{"Releasing Package Manager Locks", "systemctl stop packagekit || true; pkill -9 packagekitd || true; pkill -9 dnf || true"},
-		{"Swapping LibreOffice for ONLYOFFICE", "dnf remove -y 'libreoffice*' && dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm onlyoffice-desktopeditors"},
+		{"Swapping LibreOffice for ONLYOFFICE", "dnf remove -y --setopt=lock_timeout=10 'libreoffice*' && dnf install -y --setopt=lock_timeout=10 --nogpgcheck https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm onlyoffice-desktopeditors"},
 	}
 
 	if config.UpdateSystem {
-		tasks = append(tasks, Task{"Updating System Packages", "dnf update -y"})
+		tasks = append(tasks, Task{"Updating System Packages", "dnf update -y --setopt=lock_timeout=10"})
 	}
 
 	tasks = append(tasks, []Task{
-		{"Installing AD & Security Dependencies", "dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit"},
-		{"Installing Dank Material Shell (DMS)", "curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh && chmod 777 /tmp/dms-install.sh && bash /tmp/dms-install.sh; rm -f /tmp/dms-install.sh"},
+		{"Installing AD & Security Dependencies", "dnf install -y --setopt=lock_timeout=10 realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit"},
+		{"Installing Dank Material Shell (DMS)", "curl -fsSL --connect-timeout 10 --max-time 60 https://install.danklinux.com -o /tmp/dms-install.sh && chmod 777 /tmp/dms-install.sh && (yes | bash /tmp/dms-install.sh || true); rm -f /tmp/dms-install.sh"},
 		{"Configuring DNS & Clock Sync", buildNetworkCmd()},
 		{"Joining Active Directory Realm", fmt.Sprintf("echo '%s' | realm join --user='%s' '%s' --verbose", config.DomainPass, config.DomainUser, config.DomainName)},
 		{"Applying Lab Access Rules", buildLabAccessCmd()},
@@ -607,13 +610,15 @@ func appendFormattedLog(msg string) {
 
 func appendRawLog(msg string) {
 	logWrite(msg)
+	cleanMsg := ansiRegex.ReplaceAllString(msg, "")
 	logMutex.Lock()
-	logBuffer.WriteString(tview.Escape(msg))
+	logBuffer.WriteString(tview.Escape(cleanMsg))
 	logMutex.Unlock()
 }
 
 func execBashCmd(cmdStr string) error {
 	cmd := exec.Command("bash", "-c", "export DEBIAN_FRONTEND=noninteractive; " + cmdStr)
+	cmd.Stdin = strings.NewReader("")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -657,7 +662,7 @@ func buildNetworkCmd() string {
 	if config.ADDNSIP == "" {
 		return "systemctl enable --now chronyd && chronyc makestep"
 	}
-	return fmt.Sprintf("nmcli connection modify 'Wired connection 1' ipv4.dns '%s' ipv4.dns-search '%s' ipv4.ignore-auto-dns yes && nmcli connection up 'Wired connection 1' || true; systemctl enable --now chronyd && chronyc makestep", config.ADDNSIP, config.DomainName)
+	return fmt.Sprintf(`CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1); if [ -n "$CONN" ]; then nmcli connection modify "$CONN" ipv4.dns '%s' ipv4.dns-search '%s' ipv4.ignore-auto-dns yes && nmcli connection up "$CONN" || true; else nmcli connection modify 'Wired connection 1' ipv4.dns '%s' ipv4.dns-search '%s' ipv4.ignore-auto-dns yes && nmcli connection up 'Wired connection 1' || true; fi; systemctl enable --now chronyd && chronyc makestep`, config.ADDNSIP, config.DomainName, config.ADDNSIP, config.DomainName)
 }
 
 func buildLabAccessCmd() string {

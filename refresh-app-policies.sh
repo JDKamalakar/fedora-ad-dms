@@ -1,4 +1,3 @@
-cat <<'EOF' > ~/fedora-ad-dms/refresh-app-policies.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -67,7 +66,7 @@ fi
 if [ -f "${SECURE_DIR}/compulsory-apps.conf" ]; then
   mapfile -t COMPULSORY_PKGS < <(grep -v '^[[:space:]]*#' "${SECURE_DIR}/compulsory-apps.conf" | grep -v '^[[:space:]]*$')
   if [ "${#COMPULSORY_PKGS[@]}" -gt 0 ]; then
-    dnf install -y "${COMPULSORY_PKGS[@]}" || true
+    dnf install -y --setopt=lock_timeout=10 "${COMPULSORY_PKGS[@]}" || true
   fi
 fi
 
@@ -83,7 +82,7 @@ if [ -f "${SECURE_DIR}/group-apps.conf" ]; then
     if [[ "$HOST_UPPER" == *"$pattern_upper"* ]] && [ -n "$pkgs_clean" ]; then
       echo "[POLICY SYNC] Hostname '${CURRENT_HOSTNAME}' matches target group '${pattern_upper}'. Installing: ${pkgs_clean}"
       # shellcheck disable=SC2086
-      dnf install -y $pkgs_clean || true
+      dnf install -y --setopt=lock_timeout=10 $pkgs_clean || true
     fi
   done < "${SECURE_DIR}/group-apps.conf"
 fi
@@ -128,4 +127,3 @@ chmod 644 "$LAST_SYNC_FILE"
 
 echo "[POLICY SYNC] Timestamp logged to ${LAST_SYNC_FILE}."
 echo "[POLICY SYNC] Sync completed successfully."
-EOF
