@@ -70,16 +70,13 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# Step 1: Remove LibreOffice / Install ONLYOFFICE (Optional Prompt)
+# Step 1: Remove LibreOffice / Install ONLYOFFICE (STRICTLY COMPULSORY)
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-if ask_yes_no "Remove LibreOffice and install ONLYOFFICE?" "Y"; then
-  dnf remove -y "libreoffice*" || true
-  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-  dnf install -y onlyoffice-desktopeditors || true
-  msg_ok "ONLYOFFICE installed successfully."
-else
-  msg_info "Skipping ONLYOFFICE software swap."
-fi
+msg_info "Executing mandatory software swap: Removing LibreOffice and installing ONLYOFFICE..."
+dnf remove -y "libreoffice*" || true
+dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+dnf install -y onlyoffice-desktopeditors || true
+msg_ok "ONLYOFFICE installation complete."
 
 # Step 2: System Update
 step_header "2" "Updating System Packages"
@@ -93,14 +90,13 @@ dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedi
 
 # Step 4: Install Dank Material Shell (DMS) via Native Script
 step_header "4" "Installing Dank Material Shell (DMS)"
-msg_info "Executing native DMS installer..."
+msg_info "Executing native DMS installer as root..."
 curl -fsSL https://install.danklinux.com | sh || true
 msg_ok "DMS native installation executed."
 
 # Step 5: Read Domain Settings
 step_header "5" "Active Directory Configuration"
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
-  # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/domain.conf"
   msg_ok "Loaded configuration from 'domain.conf'."
 fi
