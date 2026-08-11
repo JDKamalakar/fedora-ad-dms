@@ -12,21 +12,31 @@ for arg in "$@"; do
   esac
 done
 
+# Ensure Root execution
 if [ "$EUID" -ne 0 ]; then
   echo "Error: This script must be run as root (use sudo)."
   exit 1
 fi
 
-# Auto-download modern 'gum' TUI engine if missing
+# Dynamic & Fail-Safe Download for 'gum' TUI engine
 if ! command -v gum &> /dev/null; then
   echo "Fetching modern TUI engine (gum)..."
-  curl -fsSL https://github.com/charmbracelet/gum/releases/download/v0.13.0/gum_0.13.0_Linux_x86_64.tar.gz -o /tmp/gum.tar.gz
-  tar -xzf /tmp/gum.tar.gz -C /tmp
-  mv /tmp/gum_0.13.0_Linux_x86_64/gum /usr/local/bin/gum
-  chmod +x /usr/local/bin/gum
-  rm -rf /tmp/gum*
+  GUM_VER="0.17.0"
+  mkdir -p /tmp/gum_extract
+  
+  if curl -fsSL "https://github.com/charmbracelet/gum/releases/download/v${GUM_VER}/gum_${GUM_VER}_Linux_x86_64.tar.gz" -o /tmp/gum.tar.gz; then
+    tar -xzf /tmp/gum.tar.gz -C /tmp/gum_extract
+    # Dynamically find the binary regardless of internal folder casing/structure
+    find /tmp/gum_extract -type f -name "gum" -exec mv {} /usr/local/bin/gum \;
+    chmod +x /usr/local/bin/gum
+    rm -rf /tmp/gum.tar.gz /tmp/gum_extract
+  else
+    echo "Error: Failed to download gum archive. Please check your network connection."
+    exit 1
+  fi
 fi
 
+# Initialize Log File
 echo "=== Active Directory & DMS Installation Log ===" > "$LOG_FILE"
 echo "Date: $(date)" >> "$LOG_FILE"
 
@@ -46,7 +56,7 @@ if [ "$ASSUME_YES" = false ]; then
   fi
 fi
 
-# Load domain.conf
+# Load domain.conf if available
 DOMAIN_NAME="gsfcu.local"
 REALM_NAME="GSFCU.LOCAL"
 AD_DNS_IP=""
@@ -71,7 +81,7 @@ else
   fi
 fi
 
-# --- HOSTNAME AUTO-DETECTION & LAB SELECTION ---
+# --- DYNAMIC HOSTNAME AUTO-DETECTION & LAB SELECTION ---
 
 SELECTED_LAB_ID=""
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
@@ -124,7 +134,7 @@ if [ -f "$LAB_CONF" ]; then
   fi
 fi
 
-# --- EXECUTION FUNCTIONS ---
+# --- EXECUTION FUNCTIONS (Outputs captured to $LOG_FILE) ---
 
 do_software_swap() {
   echo "--- Removing LibreOffice & Installing ONLYOFFICE ---" >> "$LOG_FILE"
@@ -228,6 +238,7 @@ EOF
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable --now app-policy-sync.timer >> "$LOG_FILE" 2>&1
 
+  # Trigger background update on every user PAM login
   if ! grep -q "refresh-app-policies" /etc/pam.d/postlogin 2>/dev/null; then
     echo "session optional pam_exec.so type=open_session /usr/local/bin/refresh-app-policies" >> /etc/pam.d/postlogin
   fi
