@@ -109,8 +109,8 @@ fi
 # Step 3: Install Active Directory Dependencies
 step_header "3" "Installing Active Directory Dependencies"
 if ask_yes_no "Do you want to install AD dependencies (realmd, sssd, krb5, NetworkManager-ad)?" "Y"; then
-  msg_info "Installing realmd, sssd, adcli, krb5-workstation, oddjob, NetworkManager-cli..."
-  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils NetworkManager
+  msg_info "Installing realmd, sssd, adcli, krb5-workstation, oddjob, chrony, NetworkManager..."
+  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager
   msg_ok "Active Directory prerequisite packages installed."
 else
   msg_info "Skipping AD package installation."
@@ -119,64 +119,100 @@ fi
 # Step 4: Install Dank Material Shell (DMS)
 step_header "4" "Installing Dank Material Shell (DMS)"
 if ask_yes_no "Do you want to run the Dank Material Shell (DMS) installer?" "Y"; then
+  msg_info "Downloading DMS setup script..."
+  curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh
   msg_info "Executing DMS setup script..."
-  # Executed with interactive tty mapping to avoid root/sudo permission loops
-  curl -fsSL https://install.danklinux.com | bash < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  rm -f /tmp/dms-install.sh
   msg_ok "DMS setup phase complete."
 else
   msg_info "Skipping DMS installation."
 fi
 
-# Step 5: Network / DNS Verification & AD Credentials
-step_header "5" "Active Directory & NetworkManager DNS Configuration"
-DOMAIN_NAME="gsfcu.local"
-REALM_NAME="GSFCU.LOCAL"
+# Step 5: Read or Prompt Domain Details
+step_header "5" "Active Directory Configuration & Domain Details"
 
-if ! command -v realm &> /dev/null; then
-  msg_warn "'realm' command not found. Installing 'realmd'..."
-  dnf install -y realmd
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOMAIN_CONF_FILE=""
+
+if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  DOMAIN_CONF_FILE="${SCRIPT_DIR}/domain.conf"
+elif [ -f "${SCRIPT_DIR}/configs/domain.conf" ]; then
+  DOMAIN_CONF_FILE="${SCRIPT_DIR}/configs/domain.conf"
 fi
 
-msg_info "Checking DNS resolution for domain '${DOMAIN_NAME}'..."
-if ! host "$DOMAIN_NAME" &> /dev/null; then
-  msg_warn "Could not resolve domain '${DOMAIN_NAME}' via current DNS."
-  
-  # Auto-detect NetworkManager connection name or default to 'Wired connection 1'
-  ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
-  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
-
-  if ask_yes_no "Do you want to set Active Directory DNS on connection '${TARGET_CONN}'?" "Y"; then
-    echo -en "  ${YELLOW}[INPUT]${NC} Enter AD DNS Server IP address: "
-    read -r AD_DNS_IP < /dev/tty
-    
-    if [ -n "$AD_DNS_IP" ]; then
-      msg_info "Applying DNS ${AD_DNS_IP} to NetworkManager connection '${TARGET_CONN}'..."
-      nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.ignore-auto-dns yes || true
-      nmcli connection up "$TARGET_CONN" || true
-      
-      # Backup fallback direct update to /etc/resolv.conf
-      echo "nameserver $AD_DNS_IP" > /etc/resolv.conf
-      msg_ok "NetworkManager DNS updated successfully."
-    fi
-  fi
+if [ -n "$DOMAIN_CONF_FILE" ]; then
+  msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
+  # shellcheck disable=SC1090
+  source "$DOMAIN_CONF_FILE"
 else
-  msg_ok "DNS resolution for '${DOMAIN_NAME}' verified."
+  msg_warn "No 'domain.conf' found. Requesting domain parameters:"
+  
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Name (default: gsfcu.local): "
+  read -r DOMAIN_NAME < /dev/tty
+  DOMAIN_NAME="${DOMAIN_NAME:-gsfcu.local}"
+
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Realm Name (default: GSFCU.LOCAL): "
+  read -r REALM_NAME < /dev/tty
+  REALM_NAME="${REALM_NAME:-GSFCU.LOCAL}"
+
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter AD DNS Server IP address: "
+  read -r AD_DNS_IP < /dev/tty
+
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Username (default: Administrator): "
+  read -r DOMAIN_USER < /dev/tty
+  DOMAIN_USER="${DOMAIN_USER:-Administrator}"
+
+  # Save to domain.conf for future use
+  cat <<EOF > "${SCRIPT_DIR}/domain.conf"
+DOMAIN_NAME="${DOMAIN_NAME}"
+REALM_NAME="${REALM_NAME}"
+AD_DNS_IP="${AD_DNS_IP}"
+DOMAIN_USER="${DOMAIN_USER}"
+EOF
+  msg_ok "Saved configuration to '${SCRIPT_DIR}/domain.conf'."
 fi
 
-echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Username (default: Administrator): "
-read -r DOMAIN_USER < /dev/tty
-DOMAIN_USER="${DOMAIN_USER:-Administrator}"
+# Apply Persistent NetworkManager DNS & Search Domain
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
+TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
-echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password: "
+if [ -n "${AD_DNS_IP:-}" ]; then
+  msg_info "Applying AD DNS (${AD_DNS_IP}) & Search Domain (${DOMAIN_NAME}) to '${TARGET_CONN}'..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes || true
+  nmcli connection up "$TARGET_CONN" || true
+  systemctl restart NetworkManager || true
+
+  # Fallback to /etc/resolv.conf
+  cat <<EOF > /etc/resolv.conf
+nameserver ${AD_DNS_IP}
+search ${DOMAIN_NAME}
+EOF
+  msg_ok "NetworkManager DNS and Search Domain configured."
+fi
+
+# Time Synchronization (Mandatory for Active Directory Kerberos)
+msg_info "Synchronizing system clock with network time..."
+systemctl enable --now chronyd || true
+chronyc makestep > /dev/null 2>&1 || true
+
+# Request Password
+echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}': "
 read -sp "" DOMAIN_PASS < /dev/tty
 echo ""
 
-# Step 6: Join AD Realm
-step_header "6" "Joining Active Directory Realm"
-if echo "$DOMAIN_PASS" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME"; then
-  msg_ok "Successfully joined domain '${DOMAIN_NAME}'."
+# Step 6: Mandatory Active Directory Realm Join
+step_header "6" "Joining Active Directory Realm (Mandatory)"
+msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
+
+if echo "$DOMAIN_PASS" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose; then
+  msg_ok "Successfully joined Active Directory domain '${DOMAIN_NAME}'!"
 else
-  msg_err "Failed to join domain. Check credentials, time synchronization, and DNS connectivity."
+  msg_err "CRITICAL ERROR: Failed to join Active Directory domain!"
+  msg_err "Please verify:"
+  msg_err " 1. The AD DNS IP (${AD_DNS_IP:-N/A}) can reach your Domain Controller."
+  msg_err " 2. Password and Domain Admin username (${DOMAIN_USER}) are correct."
+  msg_err " 3. The system clock matches your Active Directory server time."
   exit 1
 fi
 
@@ -258,7 +294,6 @@ EOF
 
 # Step 7: System Configurations
 step_header "7" "Applying System Configurations"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_CONFIG_DIR=""
 
 if [ -d "${SCRIPT_DIR}/configs" ]; then
