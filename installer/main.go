@@ -16,11 +16,12 @@ import (
 )
 
 type Config struct {
-	DomainName  string
-	ADDNSIP     string
-	DomainUser  string
-	DomainPass  string
-	SelectedLab string
+	DomainName   string
+	ADDNSIP      string
+	DomainUser   string
+	DomainPass   string
+	SelectedLab  string
+	UpdateSystem bool
 }
 
 type LabEntry struct {
@@ -29,15 +30,26 @@ type LabEntry struct {
 	Pattern string
 }
 
+type Task struct {
+	Title string
+	Cmd   string
+}
+
 var (
-	app         *tview.Application
-	pages       *tview.Pages
-	config      Config
-	labEntries  []LabEntry
-	labNameMap  map[string]string
-	logFile     *os.File
-	scriptDir   string
-	logPath     = "/var/log/fedora-ad-setup.log"
+	app           *tview.Application
+	pages         *tview.Pages
+	config        Config
+	labEntries    []LabEntry
+	labNameMap    map[string]string
+	logFile       *os.File
+	scriptDir     string
+	logPath       = "/var/log/fedora-ad-setup.log"
+	pendingPkgs   int
+	tasks         []Task
+	taskStates    []string // "pending", "running", "success", "failed"
+	statusList    *tview.TextView
+	progressBar   *tview.TextView
+	logView       *tview.TextView
 )
 
 func main() {
@@ -46,7 +58,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup logging
 	var err error
 	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -55,9 +66,8 @@ func main() {
 	}
 	defer logFile.Close()
 
-	logWrite(fmt.Sprintf("=== Active Directory & DMS Setup Started: %s ===", time.Now().Format(time.RFC1123)))
+	logWrite(fmt.Sprintf("=== Active Directory & DMS Deployment: %s ===", time.Now().Format(time.RFC1123)))
 
-	// Determine directory of execution
 	ex, err := os.Executable()
 	if err == nil {
 		scriptDir = filepath.Dir(ex)
@@ -65,15 +75,14 @@ func main() {
 		scriptDir, _ = os.Getwd()
 	}
 
-	// Load configuration files
-	loadLabConfig()
 	loadDomainConfig()
+	loadLabConfig()
+	pendingPkgs = countPendingUpdates()
 
 	app = tview.NewApplication()
 	pages = tview.NewPages()
 
-	// Step 1: Welcome Screen
-	pages.AddPage("welcome", buildWelcomePage(), true, true)
+	pages.AddPage("form", buildConfigForm(), true, true)
 
 	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
 		panic(err)
@@ -86,20 +95,28 @@ func logWrite(msg string) {
 	}
 }
 
-// Read domain.conf automatically
+// Search & Load domain.conf across relative paths
 func loadDomainConfig() {
-	// Defaults
 	config.DomainName = "gsfcu.local"
 	config.DomainUser = "Administrator"
+	config.UpdateSystem = true
 
-	confPath := filepath.Join(scriptDir, "..", "domain.conf")
-	file, err := os.Open(confPath)
-	if err != nil {
-		confPath = filepath.Join(scriptDir, "domain.conf")
-		file, err = os.Open(confPath)
-		if err != nil {
-			return
+	searchPaths := []string{
+		filepath.Join(scriptDir, "domain.conf"),
+		filepath.Join(scriptDir, "..", "domain.conf"),
+		"/etc/fedora-ad-dms/domain.conf",
+	}
+
+	var file *os.File
+	var err error
+	for _, p := range searchPaths {
+		file, err = os.Open(p)
+		if err == nil {
+			break
 		}
+	}
+	if err != nil {
+		return
 	}
 	defer file.Close()
 
@@ -127,14 +144,21 @@ func loadDomainConfig() {
 
 func loadLabConfig() {
 	labNameMap = make(map[string]string)
-	confPath := filepath.Join(scriptDir, "..", "lab.conf")
-	file, err := os.Open(confPath)
-	if err != nil {
-		confPath = filepath.Join(scriptDir, "lab.conf")
-		file, err = os.Open(confPath)
-		if err != nil {
-			return
+	searchPaths := []string{
+		filepath.Join(scriptDir, "lab.conf"),
+		filepath.Join(scriptDir, "..", "lab.conf"),
+	}
+
+	var file *os.File
+	var err error
+	for _, p := range searchPaths {
+		file, err = os.Open(p)
+		if err == nil {
+			break
 		}
+	}
+	if err != nil {
+		return
 	}
 	defer file.Close()
 
@@ -159,33 +183,37 @@ func loadLabConfig() {
 	}
 }
 
-// --- UI PAGES ---
-
-func buildWelcomePage() tview.Primitive {
-	modal := tview.NewModal().
-		SetText("Fedora Active Directory & DMS Deployment Wizard\n\nThis utility will configure AD Authentication, Lab Access Rules, Policy Sync, and Desktop Themes.").
-		AddButtons([]string{"Start Setup", "Cancel"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			if buttonLabel == "Start Setup" {
-				pages.AddPage("form", buildConfigForm(), true, true)
-				pages.SwitchToPage("form")
-			} else {
-				app.Stop()
-			}
-		})
-	modal.SetBackgroundColor(tcell.ColorNavy)
-	return modal
+func countPendingUpdates() int {
+	cmd := exec.Command("dnf", "check-update", "-q")
+	output, _ := cmd.Output()
+	lines := strings.Split(string(output), "\n")
+	count := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "Security:") && len(strings.Fields(line)) >= 3 {
+			count++
+		}
+	}
+	return count
 }
+
+// --- MODERN FORM UI PAGE ---
 
 func buildConfigForm() tview.Primitive {
 	form := tview.NewForm()
-	form.SetBorder(true).SetTitle(" Configuration Settings ").SetTitleColor(tcell.ColorTeal)
+	form.SetBorder(true).SetTitle(" Fedora AD & DMS Deployment Setup ").SetTitleColor(tcell.ColorDodgerBlue)
 
-	// Form fields pre-filled from domain.conf
-	form.AddInputField("Domain Name", config.DomainName, 30, nil, func(text string) { config.DomainName = text })
-	form.AddInputField("AD DNS IP", config.ADDNSIP, 30, nil, func(text string) { config.ADDNSIP = text })
-	form.AddInputField("Domain Admin User", config.DomainUser, 30, nil, func(text string) { config.DomainUser = text })
-	form.AddPasswordField("Domain Admin Password", "", 30, '*', func(text string) { config.DomainPass = text })
+	// Domain Information
+	form.AddInputField("Domain Name", config.DomainName, 32, nil, func(text string) { config.DomainName = text })
+	form.AddInputField("AD DNS IP", config.ADDNSIP, 32, nil, func(text string) { config.ADDNSIP = text })
+	form.AddInputField("Domain Admin User", config.DomainUser, 32, nil, func(text string) { config.DomainUser = text })
+	form.AddPasswordField("Domain Admin Password", "", 32, '*', func(text string) { config.DomainPass = text })
+
+	// System Package Update Prompt with Count
+	updateLabel := fmt.Sprintf("Update System Packages Now? (%d updates available)", pendingPkgs)
+	form.AddCheckbox(updateLabel, true, func(checked bool) {
+		config.UpdateSystem = checked
+	})
 
 	// Auto-Detect Lab based on Hostname
 	hostname, _ := os.Hostname()
@@ -206,7 +234,7 @@ func buildConfigForm() tview.Primitive {
 
 	if len(labOptions) > 0 {
 		config.SelectedLab = labEntries[defaultLabIndex].ID
-		dropdownLabel := fmt.Sprintf("Lab Access (Matched Host '%s' -> %s)", hostname, matchedName)
+		dropdownLabel := fmt.Sprintf("Assigned Lab (Matched '%s' -> %s)", hostname, matchedName)
 		form.AddDropDown(dropdownLabel, labOptions, defaultLabIndex, func(option string, index int) {
 			if index >= 0 && index < len(labEntries) {
 				config.SelectedLab = labEntries[index].ID
@@ -214,51 +242,32 @@ func buildConfigForm() tview.Primitive {
 		})
 	}
 
-	form.AddButton("Deploy System", func() {
+	form.AddButton("Start Deployment", func() {
 		if config.DomainPass == "" {
 			return
 		}
+		buildTasksList()
 		pages.AddPage("execution", buildExecutionPage(), true, true)
 		pages.SwitchToPage("execution")
 		go runDeploymentTasks()
 	})
 
-	form.AddButton("Cancel", func() { app.Stop() })
+	form.AddButton("Exit", func() { app.Stop() })
 	return form
 }
 
-var (
-	statusView *tview.TextView
-	logView    *tview.TextView
-)
+// --- EXECUTION DASHBOARD PAGE ---
 
-func buildExecutionPage() tview.Primitive {
-	statusView = tview.NewTextView().SetDynamicColors(true).SetRegions(true)
-	statusView.SetBorder(true).SetTitle(" Progress Status ").SetTitleColor(tcell.ColorYellow)
-
-	logView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetChangedFunc(func() {
-		app.Draw()
-	})
-	logView.SetBorder(true).SetTitle(" Live Output Terminal ").SetTitleColor(tcell.ColorGreen)
-
-	flex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(statusView, 6, 1, false).
-		AddItem(logView, 0, 3, true)
-
-	return flex
-}
-
-// --- DEPLOYMENT ENGINE ---
-
-type Task struct {
-	Title string
-	Cmd   string
-}
-
-func runDeploymentTasks() {
-	tasks := []Task{
+func buildTasksList() {
+	tasks = []Task{
 		{"Swapping LibreOffice for ONLYOFFICE", "dnf remove -y 'libreoffice*' && dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm onlyoffice-desktopeditors"},
-		{"Updating System Packages", "dnf update -y"},
+	}
+
+	if config.UpdateSystem {
+		tasks = append(tasks, Task{"Updating System Packages", "dnf update -y"})
+	}
+
+	tasks = append(tasks, []Task{
 		{"Installing AD & Security Dependencies", "dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit"},
 		{"Installing Dank Material Shell (DMS)", "curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh && chmod 777 /tmp/dms-install.sh && bash /tmp/dms-install.sh; rm -f /tmp/dms-install.sh"},
 		{"Configuring DNS & Clock Sync", buildNetworkCmd()},
@@ -266,34 +275,105 @@ func runDeploymentTasks() {
 		{"Applying Lab Access Rules", buildLabAccessCmd()},
 		{"Installing Policy Refresh & PAM Hooks", buildPolicySyncCmd()},
 		{"Finalizing /etc/skel & System Services", buildFinalizeCmd()},
-	}
+	}...)
 
+	taskStates = make([]string, len(tasks))
+	for i := range taskStates {
+		taskStates[i] = "pending"
+	}
+}
+
+func buildExecutionPage() tview.Primitive {
+	statusList = tview.NewTextView().SetDynamicColors(true)
+	statusList.SetBorder(true).SetTitle(" Deployment Plan ").SetTitleColor(tcell.ColorMediumTurquoise)
+
+	logView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetChangedFunc(func() {
+		app.Draw()
+	})
+	logView.SetBorder(true).SetTitle(" Live Execution Output ").SetTitleColor(tcell.ColorLightGreen)
+
+	progressBar = tview.NewTextView().SetDynamicColors(true)
+	progressBar.SetBorder(true).SetTitle(" Overall Progress ").SetTitleColor(tcell.ColorGold)
+
+	renderStepList()
+	renderProgressBar(0, len(tasks))
+
+	leftPanel := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(statusList, 0, 3, false).
+		AddItem(progressBar, 5, 1, false)
+
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(leftPanel, 42, 1, false).
+		AddItem(logView, 0, 2, true)
+
+	return mainFlex
+}
+
+func renderStepList() {
+	var sb strings.Builder
+	for i, task := range tasks {
+		state := taskStates[i]
+		switch state {
+		case "success":
+			sb.WriteString(fmt.Sprintf("[green][✓] Step %d:[white] %s\n", i+1, task.Title))
+		case "running":
+			sb.WriteString(fmt.Sprintf("[yellow][➜] Step %d:[white] %s\n", i+1, task.Title))
+		case "failed":
+			sb.WriteString(fmt.Sprintf("[red][✗] Step %d:[white] %s\n", i+1, task.Title))
+		default:
+			sb.WriteString(fmt.Sprintf("[gray][ ] Step %d: %s[white]\n", i+1, task.Title))
+		}
+	}
+	app.QueueUpdateDraw(func() {
+		statusList.SetText(sb.String())
+	})
+}
+
+func renderProgressBar(completed, total int) {
+	width := 24
+	pct := 0
+	if total > 0 {
+		pct = (completed * 100) / total
+	}
+	filled := (completed * width) / total
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	msg := fmt.Sprintf("\n [dodgerblue][%s][white] %d%% (%d/%d)", bar, pct, completed, total)
+
+	app.QueueUpdateDraw(func() {
+		progressBar.SetText(msg)
+	})
+}
+
+func runDeploymentTasks() {
 	total := len(tasks)
 	for i, task := range tasks {
-		stepNum := i + 1
-		updateStatus(fmt.Sprintf("[yellow]Executing Step %d/%d:[white] %s...", stepNum, total, task.Title))
-		appendLog(fmt.Sprintf("\n[cyan]=== Step %d/%d: %s ===[white]\n", stepNum, total, task.Title))
+		taskStates[i] = "running"
+		renderStepList()
+
+		appendLog(fmt.Sprintf("\n[cyan]=== Step %d/%d: %s ===[white]\n", i+1, total, task.Title))
 
 		err := execBashCmd(task.Cmd)
 		if err != nil {
-			appendLog(fmt.Sprintf("[red]ERROR during step '%s': %v[white]\n", task.Title, err))
+			taskStates[i] = "failed"
+			appendLog(fmt.Sprintf("[red]ERROR in step '%s': %v[white]\n", task.Title, err))
 		} else {
-			appendLog(fmt.Sprintf("[green]SUCCESS: Step '%s' complete.[white]\n", task.Title))
+			taskStates[i] = "success"
+			appendLog(fmt.Sprintf("[green]SUCCESS: %s complete.[white]\n", task.Title))
 		}
+
+		renderStepList()
+		renderProgressBar(i+1, total)
 	}
 
-	updateStatus("[green]Deployment Finished Successfully! Press 'ENTER' to exit.")
+	appendLog("\n[gold]===============================================[white]")
+	appendLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]")
+
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEnter {
 			app.Stop()
 		}
 		return event
-	})
-}
-
-func updateStatus(msg string) {
-	app.QueueUpdateDraw(func() {
-		statusView.SetText(msg)
 	})
 }
 

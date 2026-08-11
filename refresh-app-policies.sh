@@ -6,6 +6,8 @@ REPO_RAW_URL="https://raw.githubusercontent.com/jayrajkamalakar-gsfcu/fedora-ad-
 SECURE_DIR="/etc/app-policies"
 STATE_DIR="/var/lib/app-policies"
 COMPLETED_TASKS_FILE="${STATE_DIR}/completed_tasks.log"
+TIMESTAMP_DIR="/var/lib/dms-policy"
+LAST_SYNC_FILE="${TIMESTAMP_DIR}/last_sync"
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
@@ -118,5 +120,12 @@ if [ -f "${SECURE_DIR}/remote-tasks.sh" ]; then
   bash "${SECURE_DIR}/remote-tasks.sh" || true
 fi
 
+# --- 6. Record Tamper-Proof Last Sync Timestamp ---
+mkdir -p "$TIMESTAMP_DIR"
+chmod 755 "$TIMESTAMP_DIR"
+date -u +"%Y-%m-%dT%H:%M:%SZ" > "$LAST_SYNC_FILE"
+chmod 644 "$LAST_SYNC_FILE"
+
+echo "[POLICY SYNC] Timestamp logged to ${LAST_SYNC_FILE}."
 echo "[POLICY SYNC] Sync completed successfully."
 EOF
