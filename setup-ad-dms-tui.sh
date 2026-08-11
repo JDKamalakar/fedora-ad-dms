@@ -67,7 +67,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 draw_banner
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
+[[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
 # Step 1: Remove LibreOffice / Install ONLYOFFICE (Compulsory)
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
@@ -89,8 +90,13 @@ dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedi
 
 # Step 4: Install Dank Material Shell (DMS) via Native Script
 step_header "4" "Installing Dank Material Shell (DMS)"
-msg_info "Executing native DMS installer as root..."
-curl -fsSL https://install.danklinux.com | sh || true
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  msg_info "Executing native DMS installer as user '${SUDO_USER}'..."
+  sudo -u "$SUDO_USER" bash -c "curl -fsSL https://install.danklinux.com | sh" || true
+else
+  msg_info "Executing native DMS installer..."
+  curl -fsSL https://install.danklinux.com | sh || true
+fi
 msg_ok "DMS native installation executed."
 
 # Step 5: Read Domain Settings
@@ -126,7 +132,7 @@ else
   exit 1
 fi
 
-# Step 7: Interactive Lab Access Selection (NO PROCESS SUBSTITUTION / NO /dev/fd DEPENDENCY)
+# Step 7: Interactive Lab Access Selection
 step_header "7" "Configuring Lab Access Control Rules"
 
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
@@ -190,8 +196,17 @@ if [ -f "$LAB_CONF" ]; then
   fi
 fi
 
-# Step 8: Setup Refresh Script, Auto-installer, and Systemd Timer
-step_header "8" "Setting Up 10-Minute Policy Refresh Service"
+# Step 8: Setup Policy Folder, Refresh Script, Auto-installer, and Systemd Timer
+step_header "8" "Syncing App Configs & Setting Up 10-Minute Policy Service"
+
+# Sync config files to system directory
+mkdir -p /etc/fedora-ad-dms
+for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf lab.conf; do
+  if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
+    cp "${SCRIPT_DIR}/${conf_file}" /etc/fedora-ad-dms/
+    msg_ok "Copied ${conf_file} -> /etc/fedora-ad-dms/"
+  fi
+done
 
 cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
 chmod 755 /usr/local/bin/refresh-app-policies
@@ -245,15 +260,32 @@ step_header "10" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force
 systemctl enable --now oddjobd
 
-# Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
-step_header "11" "Applying DMS Themes for New Users (/etc/skel)"
+# Step 11: Configure DMS Profile for ALL Users (New via /etc/skel & Existing via /home/*)
+step_header "11" "Applying DMS Themes for New & Existing Users"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
+  # 1. Apply to /etc/skel (For ALL Future/New Users)
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel
   chmod -R 755 /etc/skel/.config /etc/skel/.local
-  msg_ok "DMS profile unpacked into /etc/skel."
+  msg_ok "DMS profile unpacked into /etc/skel (for new users)."
+
+  # 2. Apply to ALL Existing User Home Directories (/home/*)
+  for user_home in /home/*; do
+    if [ -d "$user_home" ]; then
+      owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
+      group=$(stat -c '%G' "$user_home" 2>/dev/null || true)
+      
+      if [ -n "$owner" ] && [ "$owner" != "root" ] && [ "$owner" != "UNKNOWN" ]; then
+        msg_info "Applying DMS theme profile to existing user home: $user_home ($owner)"
+        mkdir -p "$user_home/.config" "$user_home/.local/share"
+        tar -xzf "$THEME_ARCHIVE" -C "$user_home" || true
+        chown -R "$owner:$group" "$user_home/.config" "$user_home/.local" || true
+      fi
+    fi
+  done
+  msg_ok "DMS themes applied to all existing user profiles."
 fi
 
 # Step 12: Restart Services
