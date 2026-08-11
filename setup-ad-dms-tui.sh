@@ -70,28 +70,53 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# --- STEP 0: LIVE SESSION DETECTION & DIRECT SINGLE-PASS INSTALLER ---
+# --- STEP 0: NATIVE LIVE INSTALLER (BYPASSES ANACONDA/KICKSTART) ---
 is_live_session() {
   [ -d /run/initramfs/live ] || [ -f /etc/livedaemon ] || grep -q "boot=live\|img.livedata" /proc/cmdline
 }
 
 if is_live_session; then
-  step_header "0" "Fedora Live Single-Pass Installer"
-  msg_info "Detected Fedora Live environment. Installing directly to disk with full post-configuration..."
+  step_header "0" "Fedora Live Native Direct Disk Installer"
+  msg_info "Detected Fedora Live environment. Installing natively to disk..."
 
-  # 1. Select Target Drive
-  echo -e "\n  ${BOLD}Available Storage Drives:${NC}"
-  lsblk -d -n -o NAME,SIZE,MODEL | grep -v "loop\|zram" | awk '{print "    /dev/"$1" ("$2" - "$3")"}'
-  
-  echo -en "\n  ${YELLOW}[INPUT]${NC} Enter target install disk (e.g., /dev/nvme0n1 or /dev/sda): "
-  read -r TARGET_DISK < /dev/tty
-  
-  if [ ! -b "$TARGET_DISK" ]; then
-    msg_err "Invalid block device: $TARGET_DISK"
+  # 1. Select Target Storage Drive by Number
+  echo -e "\n  ${BOLD}Available Storage Drives:${NC}\n"
+
+  mapfile -t DRIVE_LIST < <(lsblk -d -n -o NAME,SIZE,MODEL | grep -v "loop\|zram")
+
+  if [ "${#DRIVE_LIST[@]}" -eq 0 ]; then
+    msg_err "No available storage drives found!"
     exit 1
   fi
 
-  # 2. Set Hostname & User
+  declare -A DRIVE_PATHS
+  idx=1
+
+  for line in "${DRIVE_LIST[@]}"; do
+    dev_name=$(echo "$line" | awk '{print $1}')
+    dev_size=$(echo "$line" | awk '{print $2}')
+    dev_model=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | xargs)
+    
+    DRIVE_PATHS[$idx]="/dev/${dev_name}"
+    echo -e "    ${CYAN}[$idx]${NC} /dev/${dev_name} (${YELLOW}${dev_size}${NC} - ${dev_model})"
+    ((idx++))
+  done
+
+  total_drives=$((idx - 1))
+
+  while true; do
+    echo -en "\n  ${YELLOW}[INPUT]${NC} Select target disk number [1-${total_drives}]: "
+    read -r DISK_CHOICE < /dev/tty
+    if [[ "$DISK_CHOICE" =~ ^[0-9]+$ ]] && [ "$DISK_CHOICE" -ge 1 ] && [ "$DISK_CHOICE" -le "$total_drives" ]; then
+      TARGET_DISK="${DRIVE_PATHS[$DISK_CHOICE]}"
+      break
+    fi
+    msg_err "Invalid selection. Please enter a number between 1 and ${total_drives}."
+  done
+
+  msg_ok "Selected Target Disk: ${TARGET_DISK}"
+
+  # 2. Hostname & User Details
   echo -en "  ${YELLOW}[INPUT]${NC} Enter System Hostname (e.g., GSFCUOSLAB001): "
   read -r NEW_HOSTNAME < /dev/tty
   NEW_HOSTNAME=$(echo "$NEW_HOSTNAME" | xargs | tr '[:lower:]' '[:upper:]')
@@ -101,56 +126,96 @@ if is_live_session; then
   read -r NEW_USER < /dev/tty
   NEW_USER="${NEW_USER:-$DEFAULT_USER}"
 
-  # 3. Set Passwords
+  # 3. Password
   echo -en "  ${YELLOW}[INPUT]${NC} Enter Password for user '${NEW_USER}' and root: "
   read -sp "" NEW_PASS < /dev/tty
   echo ""
 
-  PASS_HASH=$(openssl passwd -6 "$NEW_PASS")
-
-  # Generate Kickstart File
-  KS_FILE="/tmp/fedora-ad-dms.ks"
-  cat <<EOF > "$KS_FILE"
-# Single-Pass Fedora Kickstart Configuration
-lang en_US.UTF-8
-keyboard us
-timezone Asia/Kolkata
-zerombr
-clearpart --all --initlabel --drives=$(basename "$TARGET_DISK")
-reqpart
-part / --fstype=ext4 --size=20000 --grow
-
-rootpw --iscrypted ${PASS_HASH}
-user --name=${NEW_USER} --password=${PASS_HASH} --iscrypted --groups=wheel
-network --hostname=${NEW_HOSTNAME}
-
-poweroff
-
-%post --erroronfail --log=/var/log/kickstart-post-setup.log
-# 1. Fetch repo files directly inside target OS chroot
-curl -fsSL "https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp --strip-components=1
-
-# 2. Execute setup steps inside target system before first boot
-cd /tmp
-chmod +x setup-ad-dms-tui.sh
-./setup-ad-dms-tui.sh -y
-%end
-EOF
-
-  msg_ok "Kickstart generated at ${KS_FILE}"
-  msg_warn "WARNING: ${TARGET_DISK} will be wiped completely. Setup will execute inside %post."
-  
-  if ask_yes_no "Proceed with single-pass installation?" "Y"; then
-    msg_info "Starting Anaconda Installer..."
-    liveinst --kickstart="$KS_FILE"
-    echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
-    echo -e "${GREEN}|${NC} ${BOLD}Installation & full setup complete! System is ready to power on.  ${NC} ${GREEN}|${NC}"
-    echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
-    exit 0
-  else
+  msg_warn "CRITICAL WARNING: ${TARGET_DISK} WILL BE COMPLETELY WIPED."
+  if ! ask_yes_no "Format ${TARGET_DISK} and install Fedora?" "Y"; then
     msg_err "Installation aborted."
     exit 1
   fi
+
+  # Determine partition scheme
+  if [[ "$TARGET_DISK" =~ nvme|loop|mmcblk ]]; then
+    EFI_PART="${TARGET_DISK}p1"
+    ROOT_PART="${TARGET_DISK}p2"
+  else
+    EFI_PART="${TARGET_DISK}1"
+    ROOT_PART="${TARGET_DISK}2"
+  fi
+
+  msg_info "Partitioning target drive ${TARGET_DISK}..."
+  umount "${TARGET_DISK}"* 2>/dev/null || true
+  wipefs -a "$TARGET_DISK" >/dev/null 2>&1
+  parted -s "$TARGET_DISK" mklabel gpt
+  parted -s "$TARGET_DISK" mkpart ESP fat32 1MiB 1025MiB
+  parted -s "$TARGET_DISK" set 1 boot on
+  parted -s "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
+
+  msg_info "Formatting partitions..."
+  mkfs.vfat -F32 "$EFI_PART" >/dev/null
+  mkfs.ext4 -F "$ROOT_PART" >/dev/null
+
+  # Mount target partitions
+  TARGET_MOUNT="/mnt/target_system"
+  mkdir -p "$TARGET_MOUNT"
+  mount "$ROOT_PART" "$TARGET_MOUNT"
+  mkdir -p "${TARGET_MOUNT}/boot/efi"
+  mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
+
+  msg_info "Syncing Live OS filesystem to disk (this will take 2-3 minutes)..."
+  rsync -aHAX --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/tmp --exclude=/mnt --exclude=/media / "${TARGET_MOUNT}/"
+
+  # Configure fstab
+  ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
+  EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
+
+  cat << EOF > "${TARGET_MOUNT}/etc/fstab"
+UUID=${ROOT_UUID}  /          ext4  defaults  1 1
+UUID=${EFI_UUID}   /boot/efi  vfat  umask=0077,shortname=winnt 0 2
+EOF
+
+  # Set Hostname
+  echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
+
+  # Create User & Set Passwords
+  PASS_HASH=$(openssl passwd -6 "$NEW_PASS")
+  
+  msg_info "Configuring GRUB and running post-installation chroot..."
+  for dir in dev dev/pts proc sys run; do
+    mkdir -p "${TARGET_MOUNT}/$dir"
+    mount --bind "/$dir" "${TARGET_MOUNT}/$dir"
+  done
+
+  # Copy repository setup scripts into target system
+  mkdir -p "${TARGET_MOUNT}/tmp/installer"
+  cp -r "${SCRIPT_DIR}/"* "${TARGET_MOUNT}/tmp/installer/"
+
+  # Run Setup Steps 1-12 in target chroot
+  chroot "$TARGET_MOUNT" bash -c "
+    useradd -m -g wheel -p '${PASS_HASH}' '${NEW_USER}' 2>/dev/null || true
+    echo 'root:${NEW_PASS}' | chpasswd
+    echo '${NEW_USER}:${NEW_PASS}' | chpasswd
+    
+    # Reconfigure Bootloader
+    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
+    grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
+
+    cd /tmp/installer
+    chmod +x setup-ad-dms-tui.sh
+    ./setup-ad-dms-tui.sh -y
+  "
+
+  # Clean up mounts
+  umount -R "$TARGET_MOUNT" 2>/dev/null || true
+
+  echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
+  echo -e "${GREEN}|${NC} ${BOLD}Native Fedora installation & setup completed successfully!        ${NC} ${GREEN}|${NC}"
+  echo -e "${GREEN}|${NC} ${BOLD}You can now restart the PC and boot directly into the hard drive. ${NC} ${GREEN}|${NC}"
+  echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+  exit 0
 fi
 
 # --- STEP 1: SOFTWARE SWAPPING ---
