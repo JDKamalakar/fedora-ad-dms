@@ -5,14 +5,14 @@ LOG_FILE="/var/log/fedora-ad-setup.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSUME_YES=false
 
-# Parse command line flags
+# Parse flags
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=true ;;
   esac
 done
 
-# Ensure script is executed as root
+# Ensure Root
 if [ "$EUID" -ne 0 ]; then
   echo "Error: This script must be run as root (use sudo)."
   exit 1
@@ -24,7 +24,7 @@ if ! command -v whiptail &> /dev/null; then
   dnf install -y newt > /dev/null 2>&1
 fi
 
-# Reset/Initialize execution log file
+# Reset log file
 echo "=== Active Directory & DMS Installation Log ===" > "$LOG_FILE"
 echo "Date: $(date)" >> "$LOG_FILE"
 
@@ -64,7 +64,7 @@ else
   fi
 fi
 
-# --- DYNAMIC HOSTNAME AUTO-DETECTION & LAB SELECTION ---
+# --- DYNAMIC HOSTNAME AUTO-DETLECTION & LAB SELECTION ---
 
 SELECTED_LAB_ID=""
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
@@ -103,6 +103,7 @@ if [ -f "$LAB_CONF" ]; then
   if [ "${#LAB_MENU_ARGS[@]}" -gt 0 ]; then
     if [ "$ASSUME_YES" = false ]; then
       
+      # Build Whiptail menu with auto-detected default item highlight
       WHIPTAIL_OPTS=(whiptail --title "Lab Access Control Selection")
       
       if [ -n "$AUTO_MATCHED_ID" ]; then
@@ -117,12 +118,13 @@ if [ -f "$LAB_CONF" ]; then
         "${LAB_MENU_ARGS[@]}" \
         3>&1 1>&2 2>&3)
     else
+      # In unattended mode, use auto-matched ID or fall back to first entry
       SELECTED_LAB_ID="${AUTO_MATCHED_ID:-${LAB_MENU_ARGS[0]}}"
     fi
   fi
 fi
 
-# --- EXECUTION FUNCTIONS (Output redirected to $LOG_FILE) ---
+# --- EXECUTION FUNCTIONS (Piped into Log File) ---
 
 do_software_swap() {
   echo "--- Removing LibreOffice & Installing ONLYOFFICE ---" >> "$LOG_FILE"
@@ -182,7 +184,7 @@ do_lab_access_controls() {
   if [ -n "$SELECTED_LAB_ID" ]; then
     realm permit -g "$SELECTED_LAB_ID" >> "$LOG_FILE" 2>&1 || true
     
-    # Explicitly block other lab IDs defined in lab.conf
+    # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_NAME_MAP[@]}"; do
       if [ "$key" != "$SELECTED_LAB_ID" ]; then
         realm deny -g "$key" >> "$LOG_FILE" 2>&1 || true
@@ -193,18 +195,16 @@ do_lab_access_controls() {
 }
 
 do_policy_sync_setup() {
-  echo "--- Installing Policy Refresh Timer & PAM Hooks ---" >> "$LOG_FILE"
+  echo "--- Installing 10-Minute Policy Refresh Timer ---" >> "$LOG_FILE"
   cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
   chmod 755 /usr/local/bin/refresh-app-policies
 
-  # User shortcut command
   cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
 EOF
   chmod 755 /usr/local/bin/refresh
 
-  # Systemd Service
   cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
 [Unit]
 Description=Sync software allow/block lists & install compulsory apps
@@ -215,7 +215,6 @@ Type=oneshot
 ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-  # Systemd Timer (Triggers every 10 minutes)
   cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
 Description=Run app-policy-sync every 10 minutes
@@ -230,14 +229,6 @@ EOF
 
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable --now app-policy-sync.timer >> "$LOG_FILE" 2>&1
-
-  # PAM Hook: Trigger background update on every user login session
-  if ! grep -q "refresh-app-policies" /etc/pam.d/postlogin 2>/dev/null; then
-    echo "session optional pam_exec.so type=open_session /usr/local/bin/refresh-app-policies" >> /etc/pam.d/postlogin
-    echo "Added PAM postlogin execution hook." >> "$LOG_FILE"
-  fi
-
-  # Run initial policy sync
   /usr/local/bin/refresh-app-policies >> "$LOG_FILE" 2>&1 || true
 }
 
@@ -253,7 +244,6 @@ do_finalize_configs() {
   authselect select sssd with-mkhomedir --force >> "$LOG_FILE" 2>&1
   systemctl enable --now oddjobd >> "$LOG_FILE" 2>&1
 
-  # Populate /etc/skel so new domain users automatically inherit DMS configs
   THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
   if [ -f "$THEME_ARCHIVE" ]; then
     mkdir -p /etc/skel/.config /etc/skel/.local/share
@@ -293,7 +283,7 @@ run_step() {
   run_step 65 "5/8: Configuring AD DNS & Network Clock Sync..." do_network_dns
   run_step 75 "6/8: Joining Active Directory Realm..." do_realm_join
   run_step 85 "7/8: Applying Lab Access Control Rules..." do_lab_access_controls
-  run_step 92 "8/8: Setting Up 10-Min Policy Sync Timer & PAM Hooks..." do_policy_sync_setup
+  run_step 92 "8/8: Setting Up 10-Min Policy Sync Timer..." do_policy_sync_setup
   run_step 100 "Complete: Finalizing Desktop Themes & Services..." do_finalize_configs
 ) | whiptail --title "Fedora AD & DMS Setup Progress" --gauge "Initializing installation..." 8 70 0
 
@@ -302,6 +292,5 @@ run_step() {
 whiptail --title "Installation Complete" \
   --msgbox "Setup completed successfully!\n\nSelect OK to open the full scrollable terminal log viewer." 12 65
 
-# Scrollable full log output viewer
 whiptail --title "Execution Output Log (Use Arrow Keys / PgUp / PgDn to Scroll)" \
   --textbox "$LOG_FILE" 22 80
