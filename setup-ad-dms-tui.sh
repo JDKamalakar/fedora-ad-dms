@@ -121,8 +121,18 @@ step_header "4" "Installing Dank Material Shell (DMS)"
 if ask_yes_no "Do you want to run the Dank Material Shell (DMS) installer?" "Y"; then
   msg_info "Downloading DMS setup script..."
   curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh
-  msg_info "Executing DMS setup script..."
-  bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  chmod 777 /tmp/dms-install.sh
+
+  REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
+
+  if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+    msg_info "Executing DMS installer as user '${REAL_USER}' (non-root)..."
+    sudo -u "$REAL_USER" bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  else
+    msg_warn "SUDO_USER not detected. Running DMS installer directly..."
+    bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  fi
+
   rm -f /tmp/dms-install.sh
   msg_ok "DMS setup phase complete."
 else
@@ -143,6 +153,7 @@ fi
 
 if [ -n "$DOMAIN_CONF_FILE" ]; then
   msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
+  # Read config without risk of executing EOF strings
   # shellcheck disable=SC1090
   source "$DOMAIN_CONF_FILE"
 else
@@ -163,13 +174,14 @@ else
   read -r DOMAIN_USER < /dev/tty
   DOMAIN_USER="${DOMAIN_USER:-Administrator}"
 
-  # Save to domain.conf for future use
-  cat <<EOF > "${SCRIPT_DIR}/domain.conf"
-DOMAIN_NAME="${DOMAIN_NAME}"
-REALM_NAME="${REALM_NAME}"
-AD_DNS_IP="${AD_DNS_IP}"
-DOMAIN_USER="${DOMAIN_USER}"
-EOF
+  # Write clean domain.conf file without EOF commands
+  {
+    echo "DOMAIN_NAME=\"${DOMAIN_NAME}\""
+    echo "REALM_NAME=\"${REALM_NAME}\""
+    echo "AD_DNS_IP=\"${AD_DNS_IP}\""
+    echo "DOMAIN_USER=\"${DOMAIN_USER}\""
+  } > "${SCRIPT_DIR}/domain.conf"
+
   msg_ok "Saved configuration to '${SCRIPT_DIR}/domain.conf'."
 fi
 
@@ -183,7 +195,7 @@ if [ -n "${AD_DNS_IP:-}" ]; then
   nmcli connection up "$TARGET_CONN" || true
   systemctl restart NetworkManager || true
 
-  # Fallback to /etc/resolv.conf
+  # Direct backup write to /etc/resolv.conf
   cat <<EOF > /etc/resolv.conf
 nameserver ${AD_DNS_IP}
 search ${DOMAIN_NAME}
