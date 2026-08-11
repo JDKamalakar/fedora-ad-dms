@@ -126,12 +126,17 @@ else
   exit 1
 fi
 
-# Step 7: Interactive Lab Access Selection
+# Step 7: Interactive Lab Access Selection (NO PROCESS SUBSTITUTION / NO /dev/fd DEPENDENCY)
 step_header "7" "Configuring Lab Access Control Rules"
 
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
-  mapfile -t LAB_ENTRIES < <(grep -v '^[[:space:]]*#' "$LAB_CONF" | grep -v '^[[:space:]]*$')
+  LAB_ENTRIES=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    trimmed=$(echo "$line" | xargs)
+    [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
+    LAB_ENTRIES+=("$trimmed")
+  done < "$LAB_CONF"
   
   if [ "${#LAB_ENTRIES[@]}" -gt 0 ]; then
     echo -e "  ${BOLD}Select the Lab ID to allow on this machine:${NC}\n"
