@@ -4,17 +4,34 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+// --- ANSI Colors & Formatting ---
+const (
+	Reset     = "\033[0m"
+	Bold      = "\033[1m"
+	Dim       = "\033[2m"
+	Underline = "\033[4m"
+
+	Red     = "\033[31m"
+	Green   = "\033[32m"
+	Yellow  = "\033[33m"
+	Blue    = "\033[34m"
+	Magenta = "\033[35m"
+	Cyan    = "\033[36m"
+	White   = "\033[37m"
+
+	BgBlue   = "\033[44m"
+	BgCyan   = "\033[46m"
+	BgGray   = "\033[100m"
+	BrightW  = "\033[97m"
 )
 
 type Config struct {
@@ -23,6 +40,7 @@ type Config struct {
 	DomainUser   string
 	DomainPass   string
 	SelectedLab  string
+	LabName      string
 	UpdateSystem bool
 }
 
@@ -37,129 +55,33 @@ type Task struct {
 	Cmd   string
 }
 
-// --- ANIMATED BACKGROUND ---
-type Particle struct {
-	x, y  float64
-	speed float64
-	char  rune
-	color tcell.Color
-}
-
-type Background struct {
-	*tview.Box
-	particles []Particle
-}
-
-func NewBackground() *Background {
-	bg := &Background{Box: tview.NewBox()}
-	rand.Seed(time.Now().UnixNano())
-	chars := []rune{'·', '•', '°', '*', '+', 'x', '1', '0', '◦', '⟡'}
-	colors := []tcell.Color{
-		tcell.NewRGBColor(45, 55, 72),
-		tcell.NewRGBColor(74, 85, 104),
-		tcell.NewRGBColor(100, 116, 139),
-		tcell.NewRGBColor(56, 189, 248),
-		tcell.NewRGBColor(139, 92, 246),
-	}
-
-	for i := 0; i < 70; i++ {
-		bg.particles = append(bg.particles, Particle{
-			x:     float64(rand.Intn(140)),
-			y:     float64(rand.Intn(50)),
-			speed: 0.15 + rand.Float64()*0.35,
-			char:  chars[rand.Intn(len(chars))],
-			color: colors[rand.Intn(len(colors))],
-		})
-	}
-	return bg
-}
-
-func (b *Background) Draw(screen tcell.Screen) {
-	b.Box.DrawForSubclass(screen, b)
-	x, y, width, height := b.GetInnerRect()
-	if width <= 0 || height <= 0 {
-		return
-	}
-
-	bgStyle := tcell.StyleDefault.Background(tcell.NewRGBColor(15, 17, 26))
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			screen.SetContent(x+col, y+row, ' ', nil, bgStyle)
-		}
-	}
-
-	for i := range b.particles {
-		p := &b.particles[i]
-		px := int(p.x) % width
-		py := int(p.y) % height
-		if px < 0 {
-			px += width
-		}
-		if py < 0 {
-			py += height
-		}
-
-		style := tcell.StyleDefault.Background(tcell.NewRGBColor(15, 17, 26)).Foreground(p.color)
-		screen.SetContent(x+px, y+py, p.char, nil, style)
-
-		p.y += p.speed
-		if p.y >= float64(height) {
-			p.y = 0
-			p.x = float64(rand.Intn(width))
-		}
-	}
-}
-
-// --- GLOBAL VARIABLES ---
 var (
-	app         *tview.Application
-	pages       *tview.Pages
 	config      Config
 	labEntries  []LabEntry
 	labNameMap  map[string]string
 	logFile     *os.File
 	scriptDir   string
 	logPath     = "/var/log/fedora-ad-setup.log"
-	pendingPkgs int
-	tasks       []Task
-	taskStates  []string
-	statusList  *tview.TextView
-	progressBar *tview.TextView
-	logView     *tview.TextView
 	matchedHost string
 	matchedLab  string
-	animActive  = true
-
-	logMutex  sync.Mutex
-	logBuffer strings.Builder
-
-	ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\r`)
+	matchedID   string
 )
 
 func main() {
 	if os.Geteuid() != 0 {
-		fmt.Println("Error: This installer must be run as root (use sudo).")
+		fmt.Printf("%s[!] Error: This installer must be run as root (use sudo).%s\n", Red, Reset)
 		os.Exit(1)
 	}
-
-	// Modern Theme Colors
-	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(24, 26, 38)
-	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(36, 39, 58)
-	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(137, 180, 250)
-	tview.Styles.BorderColor = tcell.NewRGBColor(115, 121, 148)
-	tview.Styles.TitleColor = tcell.NewRGBColor(137, 180, 250)
-	tview.Styles.PrimaryTextColor = tcell.NewRGBColor(205, 214, 244)
-	tview.Styles.SecondaryTextColor = tcell.NewRGBColor(245, 194, 231)
 
 	var err error
 	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
+		fmt.Printf("%s[!] Failed to open log file %s: %v%s\n", Red, logPath, err, Reset)
 		os.Exit(1)
 	}
 	defer logFile.Close()
 
-	logWrite(fmt.Sprintf("=== Active Directory & DMS Deployment: %s ===", time.Now().Format(time.RFC1123)))
+	logWrite(fmt.Sprintf("=== Active Directory & DMS Deployment: %s ===\n", time.Now().Format(time.RFC1123)))
 
 	ex, err := os.Executable()
 	if err == nil {
@@ -170,63 +92,34 @@ func main() {
 
 	loadDomainConfig()
 	loadLabConfig()
-	pendingPkgs = countPendingUpdates()
 
-	app = tview.NewApplication()
-	pages = tview.NewPages()
+	clearScreen()
+	printBanner()
+	promptUserConfig()
+	printSummary()
 
-	// Particle animation goroutine
-	go func() {
-		ticker := time.NewTicker(60 * time.Millisecond)
-		defer ticker.Stop()
-		for range ticker.C {
-			if !animActive {
-				return
-			}
-			app.QueueUpdateDraw(func() {})
-		}
-	}()
-
-	startLogFlushPump()
-
-	bgView := NewBackground()
-	formContainer := buildConfigForm()
-
-	bgPages := tview.NewPages()
-	bgPages.AddPage("bg", bgView, true, true)
-	bgPages.AddPage("form_overlay", formContainer, true, true)
-
-	pages.AddPage("main", bgPages, true, true)
-
-	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
-		panic(err)
+	if !confirmPrompt("\nProceed with deployment?") {
+		fmt.Printf("\n%s[!] Deployment cancelled by user.%s\n", Yellow, Reset)
+		os.Exit(0)
 	}
+
+	clearScreen()
+	printBanner()
+	runDeployment()
 }
 
-// Thread-safe Log Flush Pump (Batch writes to UI every 50ms)
-func startLogFlushPump() {
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
+func printBanner() {
+	fmt.Printf("%s%s", Cyan, Bold)
+	fmt.Println(`  ██████╗ ███╗   ███╗███████╗  █████╗ ██████╗ `)
+	fmt.Println(`  ██╔══██╗████╗ ████║██╔════╝ ██╔══██╗██╔══██╗`)
+	fmt.Println(`  ██║  ██║██╔████╔██║███████╗ ███████║██║  ██║`)
+	fmt.Println(`  ██║  ██║██║╚██╔╝██║╚════██║ ██╔══██║██║  ██║`)
+	fmt.Println(`  ██████╔╝██║ ╚═╝ ██║███████║ ██║  ██║██████╔╝`)
+	fmt.Printf("   %sFedora Active Directory & DMS Deployment Utility%s\n\n", Blue+Bold, Reset)
+}
 
-		for range ticker.C {
-			logMutex.Lock()
-			if logBuffer.Len() > 0 {
-				chunk := logBuffer.String()
-				logBuffer.Reset()
-				logMutex.Unlock()
-
-				app.QueueUpdateDraw(func() {
-					if logView != nil {
-						fmt.Fprint(logView, chunk)
-						logView.ScrollToEnd()
-					}
-				})
-			} else {
-				logMutex.Unlock()
-			}
-		}
-	}()
+func clearScreen() {
+	fmt.Print("\033[H\033[2J")
 }
 
 func logWrite(msg string) {
@@ -335,150 +228,120 @@ func loadLabConfig() {
 	}
 }
 
-func countPendingUpdates() int {
-	cmd := exec.Command("dnf", "check-update", "-q", "--setopt=lock_timeout=5")
-	output, _ := cmd.Output()
-	lines := strings.Split(string(output), "\n")
-	count := 0
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "Security:") && len(strings.Fields(line)) >= 3 {
-			count++
-		}
+func promptInput(promptText, defaultValue string) string {
+	fmt.Printf("%s[?] %s [%s%s%s]: ", Cyan, promptText, Green, defaultValue, Reset)
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return defaultValue
 	}
-	return count
+	return input
 }
 
-func buildConfigForm() tview.Primitive {
-	form := tview.NewForm()
-	form.SetBorder(true).
-		SetTitle(" Fedora AD & DMS Deployment Setup ").
-		SetTitleColor(tcell.NewRGBColor(137, 180, 250))
+func promptPassword(promptText string) string {
+	for {
+		fmt.Printf("%s[?] %s: %s", Cyan, promptText, Reset)
+		cmd := exec.Command("stty", "-echo")
+		cmd.Stdin = os.Stdin
+		cmd.Run()
 
-	form.SetFieldBackgroundColor(tcell.NewRGBColor(36, 39, 58))
-	form.SetFieldTextColor(tcell.NewRGBColor(205, 214, 244))
-	form.SetLabelColor(tcell.NewRGBColor(147, 153, 178))
+		reader := bufio.NewReader(os.Stdin)
+		pass, _ := reader.ReadString('\n')
 
-	// Form Inputs
-	form.AddInputField("Domain Name", config.DomainName, 28, nil, func(text string) { config.DomainName = text })
-	form.AddInputField("AD DNS IP", config.ADDNSIP, 28, nil, func(text string) { config.ADDNSIP = text })
-	form.AddInputField("Admin User", config.DomainUser, 28, nil, func(text string) { config.DomainUser = text })
-	form.AddPasswordField("Admin Password", "", 28, '*', func(text string) { config.DomainPass = text })
+		cmd = exec.Command("stty", "echo")
+		cmd.Stdin = os.Stdin
+		cmd.Run()
 
-	// Assigned Lab Dropdown
+		fmt.Println()
+		pass = strings.TrimSpace(pass)
+		if pass != "" {
+			return pass
+		}
+		fmt.Printf("%s[!] Password cannot be empty! Please try again.%s\n", Red, Reset)
+	}
+}
+
+func promptUserConfig() {
 	hostname, _ := os.Hostname()
 	matchedHost = hostname
 	matchedLab = "None"
+	matchedID = ""
 	hostUpper := strings.ToUpper(hostname)
-	defaultLabIndex := 0
+	defaultLabIdx := 0
 
-	labOptions := []string{}
 	for i, entry := range labEntries {
-		label := fmt.Sprintf("%s (%s)", entry.Name, entry.ID)
-		labOptions = append(labOptions, label)
-
 		if entry.Pattern != "" && strings.Contains(hostUpper, strings.ToUpper(entry.Pattern)) {
-			defaultLabIndex = i
+			defaultLabIdx = i
 			matchedLab = entry.Name
+			matchedID = entry.ID
+			break
 		}
 	}
 
-	if len(labOptions) > 0 {
-		config.SelectedLab = labEntries[defaultLabIndex].ID
-		form.AddDropDown("Assigned Lab", labOptions, defaultLabIndex, func(option string, index int) {
-			if index >= 0 && index < len(labEntries) {
-				config.SelectedLab = labEntries[index].ID
+	fmt.Printf("%s┌── %sSystem Detection%s\n", Dim, Bold+White, Reset)
+	fmt.Printf("%s│%s  Host Name   : %s%s%s\n", Dim, Reset, Yellow, matchedHost, Reset)
+	fmt.Printf("%s│%s  Detected Lab: %s%s (%s)%s\n", Dim, Reset, Green, matchedLab, matchedID, Reset)
+	fmt.Printf("%s└──%s\n\n", Dim, Reset)
+
+	fmt.Printf("%s%s=== Configuration Prompts ===%s\n", Bold, Blue, Reset)
+	config.DomainName = promptInput("Domain Name", config.DomainName)
+	config.ADDNSIP = promptInput("AD DNS IP", config.ADDNSIP)
+	config.DomainUser = promptInput("Domain Admin User", config.DomainUser)
+	config.DomainPass = promptPassword("Domain Admin Password")
+
+	// Select Lab Menu
+	if len(labEntries) > 0 {
+		fmt.Printf("\n%s[?] Select Assigned Lab:%s\n", Cyan, Reset)
+		for i, entry := range labEntries {
+			marker := " "
+			if i == defaultLabIdx {
+				marker = "*"
 			}
-		})
+			fmt.Printf("   %s[%d]%s %s (%s) %s%s%s\n", Yellow, i+1, Reset, entry.Name, entry.ID, Green, marker, Reset)
+		}
+		labChoiceStr := promptInput("Enter lab option (1-"+strconv.Itoa(len(labEntries))+")", strconv.Itoa(defaultLabIdx+1))
+		choiceNum, err := strconv.Atoi(labChoiceStr)
+		if err == nil && choiceNum >= 1 && choiceNum <= len(labEntries) {
+			config.SelectedLab = labEntries[choiceNum-1].ID
+			config.LabName = labEntries[choiceNum-1].Name
+		} else {
+			config.SelectedLab = labEntries[defaultLabIdx].ID
+			config.LabName = labEntries[defaultLabIdx].Name
+		}
 	}
 
-	// Updates Dropdown
-	updateLabel := fmt.Sprintf("System Updates (%d pending)", pendingPkgs)
-	form.AddDropDown(updateLabel, []string{"Yes (Update system)", "No (Skip updates)"}, 0, func(option string, index int) {
-		config.UpdateSystem = (index == 0)
-	})
+	// System Updates
+	updateChoice := promptInput("Perform Full System Updates? (y/n)", "y")
+	config.UpdateSystem = strings.ToLower(updateChoice) == "y" || strings.ToLower(updateChoice) == "yes"
+}
 
-	startAction := func() {
-		if strings.TrimSpace(config.DomainPass) == "" {
-			showErrorModal("Domain Admin Password is required!")
-			return
-		}
-
-		animActive = false // Stop background animation
-
-		buildTasksList()
-		execPage := buildExecutionPage()
-		pages.AddPage("execution", execPage, true, true)
-		pages.SwitchToPage("execution")
-
-		go runDeploymentTasks()
+func printSummary() {
+	fmt.Printf("\n%s%s┌────────────────────────────────────────────────────────┐%s\n", Bold, Cyan, Reset)
+	fmt.Printf("%s%s│              Deployment Configuration Summary          │%s\n", Bold, Cyan, Reset)
+	fmt.Printf("%s%s├────────────────────────────────────────────────────────┤%s\n", Bold, Cyan, Reset)
+	fmt.Printf("%s│ Domain Name   : %s%-38s%s│\n", Cyan, White, config.DomainName, Cyan)
+	fmt.Printf("%s│ AD DNS IP     : %s%-38s%s│\n", Cyan, White, config.ADDNSIP, Cyan)
+	fmt.Printf("%s│ Domain Admin  : %s%-38s%s│\n", Cyan, White, config.DomainUser, Cyan)
+	fmt.Printf("%s│ Assigned Lab  : %s%-38s%s│\n", Cyan, White, fmt.Sprintf("%s (%s)", config.LabName, config.SelectedLab), Cyan)
+	updatesTxt := "No (Skip)"
+	if config.UpdateSystem {
+		updatesTxt = "Yes (Full Update)"
 	}
-
-	form.AddButton("Start Deployment", startAction)
-	form.AddButton("Exit", func() { app.Stop() })
-
-	form.SetButtonBackgroundColor(tcell.NewRGBColor(166, 227, 161))
-	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
-	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(249, 226, 175)).Foreground(tcell.NewRGBColor(17, 17, 27)))
-
-	form.SetFocus(3)
-
-	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		focusedItem, _ := form.GetFocusedItemIndex()
-
-		if event.Key() == tcell.KeyEnter && focusedItem == 3 {
-			startAction()
-			return nil
-		}
-
-		if event.Key() == tcell.KeyCtrlS || (event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0) {
-			startAction()
-			return nil
-		}
-		return event
-	})
-
-	infoText := tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignCenter).
-		SetText(fmt.Sprintf("[gray]Host:[white] %s  [gray]|  Matched Lab:[yellow] %s[white]", matchedHost, matchedLab))
-
-	helpText := tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignCenter).
-		SetText("[pink]Tip:[white] Type Password & press [bold]ENTER[reset] to deploy immediately  |  [bold]Tab[reset] Navigate")
-
-	formFlex := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(infoText, 1, 1, false).
-		AddItem(form, 18, 1, true).
-		AddItem(helpText, 1, 1, false)
-
-	centeredFlex := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(formFlex, 21, 1, true).
-			AddItem(nil, 0, 1, false), 76, 1, true).
-		AddItem(nil, 0, 1, false)
-
-	return centeredFlex
+	fmt.Printf("%s│ System Updates: %s%-38s%s│\n", Cyan, White, updatesTxt, Cyan)
+	fmt.Printf("%s%s└────────────────────────────────────────────────────────┘%s\n", Bold, Cyan, Reset)
 }
 
-func showErrorModal(msg string) {
-	modal := tview.NewModal().
-		SetText(msg).
-		AddButtons([]string{"OK"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			pages.RemovePage("errorModal")
-		})
-	modal.SetBackgroundColor(tcell.NewRGBColor(69, 71, 90))
-	pages.AddPage("errorModal", modal, true, true)
+func confirmPrompt(promptText string) bool {
+	fmt.Printf("%s[?] %s [Y/n]: %s", Yellow, promptText, Reset)
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+	return input == "" || input == "y" || input == "yes"
 }
 
-// --- EXECUTION PAGE ---
-
-func buildTasksList() {
-	tasks = []Task{
+func runDeployment() {
+	tasks := []Task{
 		{"Releasing Package Manager Locks", "systemctl stop packagekit || true; pkill -9 packagekitd || true; pkill -9 dnf || true"},
 		{"Swapping LibreOffice for ONLYOFFICE", "dnf remove -y --setopt=lock_timeout=10 'libreoffice*' && dnf install -y --setopt=lock_timeout=10 --nogpgcheck https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm onlyoffice-desktopeditors"},
 	}
@@ -497,127 +360,38 @@ func buildTasksList() {
 		{"Finalizing /etc/skel & System Services", buildFinalizeCmd()},
 	}...)
 
-	taskStates = make([]string, len(tasks))
-	for i := range taskStates {
-		taskStates[i] = "pending"
-	}
-}
-
-func buildExecutionPage() tview.Primitive {
-	statusList = tview.NewTextView().SetDynamicColors(true)
-	statusList.SetBorder(true).SetTitle(" Deployment Checklist ").SetTitleColor(tcell.NewRGBColor(137, 180, 250))
-
-	logView = tview.NewTextView().
-		SetDynamicColors(true).
-		SetScrollable(true)
-	logView.SetBorder(true).SetTitle(" Live Output ").SetTitleColor(tcell.NewRGBColor(166, 227, 161))
-
-	progressBar = tview.NewTextView().SetDynamicColors(true)
-	progressBar.SetBorder(true).SetTitle(" Progress ").SetTitleColor(tcell.NewRGBColor(249, 226, 175))
-
-	renderStepList()
-	renderProgressBar(0, len(tasks))
-
-	leftPanel := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(statusList, 0, 3, false).
-		AddItem(progressBar, 5, 1, false)
-
-	mainFlex := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(leftPanel, 44, 1, false).
-		AddItem(logView, 0, 2, true)
-
-	return mainFlex
-}
-
-func renderStepList() {
-	var sb strings.Builder
-	for i, task := range tasks {
-		state := taskStates[i]
-		switch state {
-		case "success":
-			sb.WriteString(fmt.Sprintf("[green][✓] Step %d:[white] %s\n", i+1, task.Title))
-		case "running":
-			sb.WriteString(fmt.Sprintf("[yellow][➜] Step %d:[white] %s\n", i+1, task.Title))
-		case "failed":
-			sb.WriteString(fmt.Sprintf("[red][✗] Step %d:[white] %s\n", i+1, task.Title))
-		default:
-			sb.WriteString(fmt.Sprintf("[gray][ ] Step %d: %s[white]\n", i+1, task.Title))
-		}
-	}
-	app.QueueUpdateDraw(func() {
-		if statusList != nil {
-			statusList.SetText(sb.String())
-		}
-	})
-}
-
-func renderProgressBar(completed, total int) {
-	width := 24
-	pct := 0
-	if total > 0 {
-		pct = (completed * 100) / total
-	}
-	filled := (completed * width) / total
-
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
-	msg := fmt.Sprintf("\n [dodgerblue][%s][white] %d%% (%d/%d)", bar, pct, completed, total)
-
-	app.QueueUpdateDraw(func() {
-		if progressBar != nil {
-			progressBar.SetText(msg)
-		}
-	})
-}
-
-func runDeploymentTasks() {
 	total := len(tasks)
+	fmt.Printf("%s%s=== Starting Deployment (%d Steps) ===%s\n\n", Bold, Green, total, Reset)
+
+	failedSteps := 0
+
 	for i, task := range tasks {
-		taskStates[i] = "running"
-		renderStepList()
+		stepNum := i + 1
+		fmt.Printf("%s[➜] Step %d/%d: %s%s\n", Yellow, stepNum, total, task.Title, Reset)
+		logWrite(fmt.Sprintf("\n=== Step %d/%d: %s ===\n", stepNum, total, task.Title))
 
-		appendFormattedLog(fmt.Sprintf("\n[cyan]=== Step %d/%d: %s ===[white]\n", i+1, total, task.Title))
-
-		err := execBashCmd(task.Cmd)
+		err := execBashCmdWithLiveOutput(task.Cmd)
 		if err != nil {
-			taskStates[i] = "failed"
-			appendFormattedLog(fmt.Sprintf("[red]ERROR in step '%s': %v[white]\n", task.Title, err))
+			failedSteps++
+			fmt.Printf("%s[✗] Step %d/%d Failed: %s%s\n\n", Red, stepNum, total, task.Title, Reset)
+			logWrite(fmt.Sprintf("[ERROR] Step %d failed: %v\n", stepNum, err))
 		} else {
-			taskStates[i] = "success"
-			appendFormattedLog(fmt.Sprintf("[green]SUCCESS: %s complete.[white]\n", task.Title))
+			fmt.Printf("%s[✓] Step %d/%d Completed Successfully.%s\n\n", Green, stepNum, total, Reset)
+			logWrite(fmt.Sprintf("[SUCCESS] Step %d complete.\n", stepNum))
 		}
-
-		renderStepList()
-		renderProgressBar(i+1, total)
 	}
 
-	appendFormattedLog("\n[gold]===============================================[white]\n")
-	appendFormattedLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]\n")
-
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEnter {
-			app.Stop()
-		}
-		return event
-	})
+	fmt.Printf("%s==================================================%s\n", Cyan, Reset)
+	if failedSteps == 0 {
+		fmt.Printf("%s%s[✓] Fedora AD & DMS Deployment Finished Successfully!%s\n", Bold, Green, Reset)
+	} else {
+		fmt.Printf("%s%s[!] Deployment completed with %d warning(s)/error(s). Check %s for details.%s\n", Bold, Yellow, failedSteps, logPath, Reset)
+	}
+	fmt.Printf("%s==================================================%s\n\n", Cyan, Reset)
 }
 
-func appendFormattedLog(msg string) {
-	logWrite(msg)
-	logMutex.Lock()
-	logBuffer.WriteString(msg)
-	logMutex.Unlock()
-}
-
-func appendRawLog(msg string) {
-	logWrite(msg)
-	cleanMsg := ansiRegex.ReplaceAllString(msg, "")
-	logMutex.Lock()
-	logBuffer.WriteString(tview.Escape(cleanMsg))
-	logMutex.Unlock()
-}
-
-func execBashCmd(cmdStr string) error {
-	cmd := exec.Command("bash", "-c", "export DEBIAN_FRONTEND=noninteractive; " + cmdStr)
+func execBashCmdWithLiveOutput(cmdStr string) error {
+	cmd := exec.Command("bash", "-c", "export DEBIAN_FRONTEND=noninteractive; "+cmdStr)
 	cmd.Stdin = strings.NewReader("")
 
 	stdout, err := cmd.StdoutPipe()
@@ -636,18 +410,13 @@ func execBashCmd(cmdStr string) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Stream chunk by chunk (1024 bytes) - never blocks on missing newlines
 	streamOutput := func(r io.Reader) {
 		defer wg.Done()
-		buf := make([]byte, 1024)
-		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				appendRawLog(string(buf[:n]))
-			}
-			if err != nil {
-				break
-			}
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			line := scanner.Text()
+			logWrite(line + "\n")
+			fmt.Printf("   %s│%s %s\n", Dim, Reset, line)
 		}
 	}
 

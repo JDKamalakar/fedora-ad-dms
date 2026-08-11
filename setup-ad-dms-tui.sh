@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BINARY_PATH="${SCRIPT_DIR}/setup-ad-dms"
+SRC_PATH="${SCRIPT_DIR}/installer/main.go"
 
 # Ensure root
 if [ "$EUID" -ne 0 ]; then
@@ -10,14 +11,14 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-# Build binary on the fly if missing
-if [ ! -f "$BINARY_PATH" ]; then
-  echo "Compiling Native Go TUI Engine..."
+# Build binary if missing or updated
+if [ ! -f "$BINARY_PATH" ] || [ "$SRC_PATH" -nt "$BINARY_PATH" ]; then
+  echo "Compiling Native Go Engine..."
   if ! command -v go &> /dev/null; then
     dnf install -y golang > /dev/null
   fi
   (cd "${SCRIPT_DIR}/installer" && go build -o "${BINARY_PATH}" main.go)
 fi
 
-# Run compiled TUI installer
+# Run compiled installer
 exec "$BINARY_PATH" "$@"
