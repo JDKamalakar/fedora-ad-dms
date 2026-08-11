@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,21 +36,97 @@ type Task struct {
 	Cmd   string
 }
 
+// --- ANIMATED BACKGROUND PRIMITIVE ---
+type Particle struct {
+	x, y  float64
+	speed float64
+	char  rune
+	color tcell.Color
+}
+
+type Background struct {
+	*tview.Box
+	particles []Particle
+}
+
+func NewBackground() *Background {
+	bg := &Background{Box: tview.NewBox()}
+	rand.Seed(time.Now().UnixNano())
+	chars := []rune{'·', '•', '°', '*', '+', 'x', '1', '0', '◦', '⟡'}
+	colors := []tcell.Color{
+		tcell.NewRGBColor(45, 55, 72),
+		tcell.NewRGBColor(74, 85, 104),
+		tcell.NewRGBColor(100, 116, 139),
+		tcell.NewRGBColor(56, 189, 248),
+		tcell.NewRGBColor(139, 92, 246),
+	}
+
+	for i := 0; i < 70; i++ {
+		bg.particles = append(bg.particles, Particle{
+			x:     float64(rand.Intn(140)),
+			y:     float64(rand.Intn(50)),
+			speed: 0.15 + rand.Float64()*0.35,
+			char:  chars[rand.Intn(len(chars))],
+			color: colors[rand.Intn(len(colors))],
+		})
+	}
+	return bg
+}
+
+func (b *Background) Draw(screen tcell.Screen) {
+	b.Box.DrawForSubclass(screen, b)
+	x, y, width, height := b.GetInnerRect()
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	bgStyle := tcell.StyleDefault.Background(tcell.NewRGBColor(15, 17, 26))
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			screen.SetContent(x+col, y+row, ' ', nil, bgStyle)
+		}
+	}
+
+	for i := range b.particles {
+		p := &b.particles[i]
+		px := int(p.x) % width
+		py := int(p.y) % height
+		if px < 0 {
+			px += width
+		}
+		if py < 0 {
+			py += height
+		}
+
+		style := tcell.StyleDefault.Background(tcell.NewRGBColor(15, 17, 26)).Foreground(p.color)
+		screen.SetContent(x+px, y+py, p.char, nil, style)
+
+		p.y += p.speed
+		if p.y >= float64(height) {
+			p.y = 0
+			p.x = float64(rand.Intn(width))
+		}
+	}
+}
+
+// --- GLOBAL VARIABLES ---
 var (
-	app           *tview.Application
-	pages         *tview.Pages
-	config        Config
-	labEntries    []LabEntry
-	labNameMap    map[string]string
-	logFile       *os.File
-	scriptDir     string
-	logPath       = "/var/log/fedora-ad-setup.log"
-	pendingPkgs   int
-	tasks         []Task
-	taskStates    []string // "pending", "running", "success", "failed"
-	statusList    *tview.TextView
-	progressBar   *tview.TextView
-	logView       *tview.TextView
+	app         *tview.Application
+	pages       *tview.Pages
+	config      Config
+	labEntries  []LabEntry
+	labNameMap  map[string]string
+	logFile     *os.File
+	scriptDir   string
+	logPath     = "/var/log/fedora-ad-setup.log"
+	pendingPkgs int
+	tasks       []Task
+	taskStates  []string
+	statusList  *tview.TextView
+	progressBar *tview.TextView
+	logView     *tview.TextView
+	matchedHost string
+	matchedLab  string
 )
 
 func main() {
@@ -58,14 +135,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Apply Modern Dark Palette
-	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(24, 24, 37)       // Deep Slate
-	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(49, 50, 68)        // Surface Gray
-	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(137, 180, 250) // Bright Blue
-	tview.Styles.BorderColor = tcell.NewRGBColor(88, 91, 112)                    // Border Gray
-	tview.Styles.TitleColor = tcell.NewRGBColor(137, 180, 250)                   // Lavender/Blue
-	tview.Styles.PrimaryTextColor = tcell.NewRGBColor(205, 214, 244)            // Off-white
-	tview.Styles.SecondaryTextColor = tcell.NewRGBColor(245, 194, 231)          // Soft Pink
+	// Modern Nord/Catppuccin Style Theme
+	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(24, 26, 38)
+	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(36, 39, 58)
+	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(137, 180, 250)
+	tview.Styles.BorderColor = tcell.NewRGBColor(115, 121, 148)
+	tview.Styles.TitleColor = tcell.NewRGBColor(137, 180, 250)
+	tview.Styles.PrimaryTextColor = tcell.NewRGBColor(205, 214, 244)
+	tview.Styles.SecondaryTextColor = tcell.NewRGBColor(245, 194, 231)
 
 	var err error
 	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -91,7 +168,22 @@ func main() {
 	app = tview.NewApplication()
 	pages = tview.NewPages()
 
-	pages.AddPage("form", buildConfigForm(), true, true)
+	// Background ticker for particles
+	go func() {
+		ticker := time.NewTicker(60 * time.Millisecond)
+		for range ticker.C {
+			app.QueueUpdateDraw(func() {})
+		}
+	}()
+
+	bgView := NewBackground()
+	formContainer := buildConfigForm()
+
+	bgPages := tview.NewPages()
+	bgPages.AddPage("bg", bgView, true, true)
+	bgPages.AddPage("form_overlay", formContainer, true, true)
+
+	pages.AddPage("main", bgPages, true, true)
 
 	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil {
 		panic(err)
@@ -104,10 +196,9 @@ func logWrite(msg string) {
 	}
 }
 
-// Fixed Domain Config Loader with Comment & Quote Stripping
 func loadDomainConfig() {
 	config.DomainName = "gsfcu.local"
-	config.DomainUser = "Administrator"
+	config.DomainUser = "admin"
 	config.UpdateSystem = true
 
 	searchPaths := []string{
@@ -132,8 +223,6 @@ func loadDomainConfig() {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-
-		// Strip inline comments (# ...)
 		if idx := strings.Index(line, "#"); idx != -1 {
 			line = line[:idx]
 		}
@@ -146,7 +235,7 @@ func loadDomainConfig() {
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			val := strings.TrimSpace(parts[1])
-			val = strings.Trim(val, `"'`) // Clean quotes
+			val = strings.Trim(val, `"'`)
 			val = strings.TrimSpace(val)
 
 			switch key {
@@ -221,7 +310,7 @@ func countPendingUpdates() int {
 	return count
 }
 
-// --- MODERN FORM UI PAGE ---
+// --- REDESIGNED FORM UI ---
 
 func buildConfigForm() tview.Primitive {
 	form := tview.NewForm()
@@ -229,30 +318,22 @@ func buildConfigForm() tview.Primitive {
 		SetTitle(" Fedora AD & DMS Deployment Setup ").
 		SetTitleColor(tcell.NewRGBColor(137, 180, 250))
 
-	form.SetFieldBackgroundColor(tcell.NewRGBColor(49, 50, 68))
+	form.SetFieldBackgroundColor(tcell.NewRGBColor(36, 39, 58))
 	form.SetFieldTextColor(tcell.NewRGBColor(205, 214, 244))
 	form.SetLabelColor(tcell.NewRGBColor(147, 153, 178))
-	form.SetButtonBackgroundColor(tcell.NewRGBColor(137, 180, 250))
-	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
-	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(245, 194, 231)).Foreground(tcell.NewRGBColor(17, 17, 27)))
 
-	// Domain Information Fields
-	form.AddInputField("Domain Name", config.DomainName, 34, nil, func(text string) { config.DomainName = text })
-	form.AddInputField("AD DNS IP", config.ADDNSIP, 34, nil, func(text string) { config.ADDNSIP = text })
-	form.AddInputField("Domain Admin User", config.DomainUser, 34, nil, func(text string) { config.DomainUser = text })
-	form.AddPasswordField("Domain Admin Password", "", 34, '*', func(text string) { config.DomainPass = text })
+	// 1-4. Domain Configuration Fields
+	form.AddInputField("Domain Name", config.DomainName, 28, nil, func(text string) { config.DomainName = text })
+	form.AddInputField("AD DNS IP", config.ADDNSIP, 28, nil, func(text string) { config.ADDNSIP = text })
+	form.AddInputField("Admin User", config.DomainUser, 28, nil, func(text string) { config.DomainUser = text })
+	form.AddPasswordField("Admin Password", "", 28, '*', func(text string) { config.DomainPass = text })
 
-	// Explicit Yes/No Dropdown for Package Updates
-	updateLabel := fmt.Sprintf("Update System Packages Now? (%d updates pending)", pendingPkgs)
-	form.AddDropDown(updateLabel, []string{"Yes (Update system)", "No (Skip updates)"}, 0, func(option string, index int) {
-		config.UpdateSystem = (index == 0)
-	})
-
-	// Auto-Detect Lab based on Hostname
+	// 5. Assigned Lab Dropdown
 	hostname, _ := os.Hostname()
+	matchedHost = hostname
+	matchedLab = "None"
 	hostUpper := strings.ToUpper(hostname)
 	defaultLabIndex := 0
-	matchedName := "None"
 
 	labOptions := []string{}
 	for i, entry := range labEntries {
@@ -261,19 +342,24 @@ func buildConfigForm() tview.Primitive {
 
 		if entry.Pattern != "" && strings.Contains(hostUpper, strings.ToUpper(entry.Pattern)) {
 			defaultLabIndex = i
-			matchedName = entry.Name
+			matchedLab = entry.Name
 		}
 	}
 
 	if len(labOptions) > 0 {
 		config.SelectedLab = labEntries[defaultLabIndex].ID
-		dropdownLabel := fmt.Sprintf("Assigned Lab (Matched '%s' -> %s)", hostname, matchedName)
-		form.AddDropDown(dropdownLabel, labOptions, defaultLabIndex, func(option string, index int) {
+		form.AddDropDown("Assigned Lab", labOptions, defaultLabIndex, func(option string, index int) {
 			if index >= 0 && index < len(labEntries) {
 				config.SelectedLab = labEntries[index].ID
 			}
 		})
 	}
+
+	// 6. System Updates Dropdown
+	updateLabel := fmt.Sprintf("System Updates (%d pending)", pendingPkgs)
+	form.AddDropDown(updateLabel, []string{"Yes (Update system)", "No (Skip updates)"}, 0, func(option string, index int) {
+		config.UpdateSystem = (index == 0)
+	})
 
 	// Trigger Action
 	startAction := func() {
@@ -287,11 +373,29 @@ func buildConfigForm() tview.Primitive {
 		go runDeploymentTasks()
 	}
 
+	// Buttons
 	form.AddButton("Start Deployment", startAction)
 	form.AddButton("Exit", func() { app.Stop() })
 
-	// Instant Hotkeys: Press Ctrl+S or Ctrl+Enter anywhere to submit immediately
+	// Style Start & Exit buttons
+	form.SetButtonBackgroundColor(tcell.NewRGBColor(166, 227, 161)) // Emerald Green
+	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
+	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(249, 226, 175)).Foreground(tcell.NewRGBColor(17, 17, 27)))
+
+	// Focused on Admin Password Field (Index 3) by default
+	form.SetFocus(3)
+
+	// Key Capture: ENTER on Password field or Ctrl+Enter / Ctrl+S triggers Deployment
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		focusedItem, _ := form.GetFocusedItemIndex()
+
+		if event.Key() == tcell.KeyEnter {
+			if focusedItem == 3 { // Password field index
+				startAction()
+				return nil
+			}
+		}
+
 		if event.Key() == tcell.KeyCtrlS || (event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0) {
 			startAction()
 			return nil
@@ -299,20 +403,30 @@ func buildConfigForm() tview.Primitive {
 		return event
 	})
 
-	// Help Bar Footer
+	// Sub-info header
+	infoText := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter).
+		SetText(fmt.Sprintf("[gray]Host:[white] %s  [gray]|  Matched Lab:[yellow] %s[white]", matchedHost, matchedLab))
+
+	// Footer Help
 	helpText := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignCenter).
-		SetText("[pink]Hotkeys:[white] [bold]Ctrl+S[reset] or [bold]Ctrl+Enter[reset] to Deploy immediately  |  [bold]Tab[reset] Navigate fields")
+		SetText("[pink]Tip:[white] Type Password & press [bold]ENTER[reset] to deploy immediately  |  [bold]Tab[reset] Navigate")
 
-	// Center Form in Middle of Screen
+	formFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(infoText, 1, 1, false).
+		AddItem(form, 18, 1, true).
+		AddItem(helpText, 1, 1, false)
+
+	// Center layout container
 	centeredFlex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
-			AddItem(form, 20, 1, true).
-			AddItem(helpText, 2, 1, false).
-			AddItem(nil, 0, 1, false), 82, 1, true).
+			AddItem(formFlex, 21, 1, true).
+			AddItem(nil, 0, 1, false), 76, 1, true).
 		AddItem(nil, 0, 1, false)
 
 	return centeredFlex
@@ -486,8 +600,6 @@ func execBashCmd(cmdStr string) error {
 	wg.Wait()
 	return cmd.Wait()
 }
-
-// --- HELPER COMMAND GENERATORS ---
 
 func buildNetworkCmd() string {
 	if config.ADDNSIP == "" {
