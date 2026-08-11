@@ -119,18 +119,40 @@ fi
 systemctl enable --now chronyd || true
 chronyc makestep > /dev/null 2>&1 || true
 
-echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
-read -sp "" DOMAIN_PASS < /dev/tty
-echo ""
-
-# Step 6: Realm Join
+# Step 6: Realm Join (With Retry Loop and Offline Fallback)
 step_header "6" "Joining Active Directory Realm"
-if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
-  msg_ok "Joined Active Directory realm successfully."
-else
-  msg_err "Failed to join domain."
-  exit 1
-fi
+
+while true; do
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
+  read -sp "" DOMAIN_PASS < /dev/tty
+  echo ""
+
+  if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
+    msg_ok "Joined Active Directory realm successfully."
+    break
+  else
+    msg_warn "Could not join domain (Domain Controller unreachable or authentication failed)."
+    
+    # Avoid infinite loop when running with -y flag
+    if [ "$ASSUME_YES" = true ]; then
+      msg_warn "Auto-continuing in Offline/Testing mode due to -y flag..."
+      break
+    fi
+
+    if ask_yes_no "Would you like to retry Domain Join?" "Y"; then
+      msg_info "Retrying domain authentication..."
+      continue
+    else
+      if ask_yes_no "Continue setup in Offline/Testing mode?" "Y"; then
+        msg_warn "Proceeding with local policy setup, scripts, and theme configuration..."
+        break
+      else
+        msg_err "Aborting installation."
+        exit 1
+      fi
+    fi
+  fi
+done
 
 # Step 7: Interactive Lab Access Selection
 step_header "7" "Configuring Lab Access Control Rules"
@@ -180,15 +202,15 @@ if [ -f "$LAB_CONF" ]; then
     
     msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
 
-    # Permit selected lab ID
-    realm permit -g "$ALLOWED_ID" || true
+    # Permit selected lab ID (warns if offline)
+    realm permit -g "$ALLOWED_ID" || msg_warn "Skipped 'realm permit' (machine not joined to domain)."
 
     # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_IDS[@]}"; do
       if [ "$key" -ne "$CHOICE" ]; then
         DENY_ID="${LAB_IDS[$key]}"
         realm deny -g "$DENY_ID" || true
-        msg_warn "Blocked Lab ID on this machine: ${DENY_ID}"
+        msg_warn "Blocked Lab ID rule recorded: ${DENY_ID}"
       fi
     done
     
@@ -199,7 +221,7 @@ fi
 # Step 8: Setup Policy Folder, Refresh Script, Auto-installer, and Systemd Timer
 step_header "8" "Syncing App Configs & Setting Up 10-Minute Policy Service"
 
-# Sync config files to system directory
+# Sync config files to central directory
 mkdir -p /etc/fedora-ad-dms
 for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf lab.conf; do
   if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
@@ -211,7 +233,7 @@ done
 cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
 chmod 755 /usr/local/bin/refresh-app-policies
 
-# Create 'refresh' terminal alias/command
+# Create 'refresh' terminal command
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
@@ -301,5 +323,5 @@ rm -f /var/lib/sss/db/* || true
 systemctl restart sssd oddjobd greetd || true
 
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
-echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
+echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Offline rules tested & auto-refresh activated.    ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
