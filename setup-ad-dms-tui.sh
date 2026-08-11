@@ -12,51 +12,47 @@ for arg in "$@"; do
   esac
 done
 
-# Ensure Root execution
+# Ensure root privilege
 if [ "$EUID" -ne 0 ]; then
   echo "Error: This script must be run as root (use sudo)."
   exit 1
 fi
 
-# Dynamic & Fail-Safe Download for 'gum' TUI engine
-if ! command -v gum &> /dev/null; then
-  echo "Fetching modern TUI engine (gum)..."
-  GUM_VER="0.17.0"
-  mkdir -p /tmp/gum_extract
-  
-  if curl -fsSL "https://github.com/charmbracelet/gum/releases/download/v${GUM_VER}/gum_${GUM_VER}_Linux_x86_64.tar.gz" -o /tmp/gum.tar.gz; then
-    tar -xzf /tmp/gum.tar.gz -C /tmp/gum_extract
-    # Dynamically find the binary regardless of internal folder casing/structure
-    find /tmp/gum_extract -type f -name "gum" -exec mv {} /usr/local/bin/gum \;
-    chmod +x /usr/local/bin/gum
-    rm -rf /tmp/gum.tar.gz /tmp/gum_extract
-  else
-    echo "Error: Failed to download gum archive. Please check your network connection."
-    exit 1
-  fi
+# Ensure Whiptail (newt) is installed for full-screen TUI buffer
+if ! command -v whiptail &> /dev/null; then
+  echo "Installing 'newt' package for Whiptail full-screen TUI..."
+  dnf install -y newt > /dev/null 2>&1
 fi
 
-# Initialize Log File
+# Reset log file
 echo "=== Active Directory & DMS Installation Log ===" > "$LOG_FILE"
 echo "Date: $(date)" >> "$LOG_FILE"
 
-# --- MODERN BANNER & CONFIRMATION ---
+# Set global backtitle for consistent installer branding
+export NEWT_COLORS='
+root=,blue
+window=,lightgray
+border=black,lightgray
+textbox=black,lightgray
+button=black,cyan
+'
 
-gum style \
-  --foreground 212 --border-foreground 99 --border rounded \
-  --margin "1 1" --padding "1 2" \
-  "Fedora Active Directory & DMS Deployment Setup Wizard" \
-  "" \
-  "Configures AD Domain Join, Lab Access Controls, and DMS Theme Settings."
+# --- 1. FULL-SCREEN WELCOME & CONFIRMATION ---
 
 if [ "$ASSUME_YES" = false ]; then
-  if ! gum confirm "Do you want to proceed with setup on this machine?"; then
-    echo "Setup cancelled."
+  whiptail --backtitle "Fedora Workstation Deployment System" \
+    --title " Active Directory & DMS Setup Wizard " \
+    --msgbox "Welcome to the Fedora AD & DMS Deployment Setup.\n\nThis wizard will configure:\n  • Active Directory Domain Authentication\n  • Hostname-based Lab Access Rules\n  • Software Management Policies & Timers\n  • Dank Material Shell (DMS) Desktop Environment" 14 68
+
+  if ! whiptail --backtitle "Fedora Workstation Deployment System" \
+    --title " Confirmation Required " \
+    --yesno "Are you sure you want to deploy AD & DMS on this machine?" 10 60; then
     exit 0
   fi
 fi
 
-# Load domain.conf if available
+# --- 2. CONFIGURATION PROMPTS ---
+
 DOMAIN_NAME="gsfcu.local"
 REALM_NAME="GSFCU.LOCAL"
 AD_DNS_IP=""
@@ -68,11 +64,10 @@ if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
 fi
 
 if [ "$ASSUME_YES" = false ]; then
-  [ -z "${DOMAIN_NAME:-}" ] && DOMAIN_NAME=$(gum input --value "gsfcu.local" --placeholder "Domain Name")
-  [ -z "${AD_DNS_IP:-}" ] && AD_DNS_IP=$(gum input --placeholder "AD DNS Server IP (e.g., 192.168.1.10)")
-  [ -z "${DOMAIN_USER:-}" ] && DOMAIN_USER=$(gum input --value "Administrator" --placeholder "Domain Admin Username")
-  
-  DOMAIN_PASS=$(gum input --password --placeholder "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}'")
+  DOMAIN_NAME=$(whiptail --backtitle "Fedora Workstation Deployment System" --title " Domain Configuration (1/4) " --inputbox "Enter Active Directory Domain Name:" 10 60 "$DOMAIN_NAME" 3>&1 1>&2 2>&3)
+  AD_DNS_IP=$(whiptail --backtitle "Fedora Workstation Deployment System" --title " Domain Configuration (2/4) " --inputbox "Enter Active Directory DNS Server IP Address:" 10 60 "$AD_DNS_IP" 3>&1 1>&2 2>&3)
+  DOMAIN_USER=$(whiptail --backtitle "Fedora Workstation Deployment System" --title " Domain Configuration (3/4) " --inputbox "Enter Domain Admin Username:" 10 60 "$DOMAIN_USER" 3>&1 1>&2 2>&3)
+  DOMAIN_PASS=$(whiptail --backtitle "Fedora Workstation Deployment System" --title " Domain Configuration (4/4) " --passwordbox "Enter Password for '${DOMAIN_USER}@${DOMAIN_NAME}':" 10 65 3>&1 1>&2 2>&3)
 else
   if [ -z "${DOMAIN_PASS:-}" ]; then
     echo -n "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}': "
@@ -81,20 +76,20 @@ else
   fi
 fi
 
-# --- DYNAMIC HOSTNAME AUTO-DETECTION & LAB SELECTION ---
+# --- 3. DYNAMIC HOSTNAME LAB DETECTION ---
 
 SELECTED_LAB_ID=""
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
+declare -A LAB_NAME_MAP
 
 if [ -f "$LAB_CONF" ]; then
-  LAB_OPTIONS=()
-  declare -A LAB_NAME_MAP
-  declare -A LAB_ID_LOOKUP
+  LAB_MENU_ARGS=()
   
   CURRENT_HOSTNAME="$(hostname -s 2>/dev/null || echo "$HOSTNAME")"
   HOST_UPPER="$(echo "$CURRENT_HOSTNAME" | tr '[:lower:]' '[:upper:]')"
   
   AUTO_MATCHED_ID=""
+  AUTO_MATCHED_NAME=""
 
   while IFS=':' read -r name id pattern || [ -n "$name" ]; do
     [[ "$name" =~ ^[[:space:]]*# ]] && continue
@@ -104,37 +99,45 @@ if [ -f "$LAB_CONF" ]; then
     id="$(echo "$id" | xargs)"
     pattern="$(echo "${pattern:-}" | xargs)"
 
-    DISPLAY_LABEL="${name} (${id})"
-    LAB_OPTIONS+=("$DISPLAY_LABEL")
+    LAB_MENU_ARGS+=("$id" "$name")
     LAB_NAME_MAP["$id"]="$name"
-    LAB_ID_LOOKUP["$DISPLAY_LABEL"]="$id"
 
     if [ -n "$pattern" ]; then
       PATTERN_UPPER="$(echo "$pattern" | tr '[:lower:]' '[:upper:]')"
       if [[ "$HOST_UPPER" == *"$PATTERN_UPPER"* ]]; then
         AUTO_MATCHED_ID="$id"
+        AUTO_MATCHED_NAME="$name"
       fi
     fi
   done < "$LAB_CONF"
 
-  if [ "${#LAB_OPTIONS[@]}" -gt 0 ]; then
+  if [ "${#LAB_MENU_ARGS[@]}" -gt 0 ]; then
     if [ "$ASSUME_YES" = false ]; then
-      echo ""
-      gum style --foreground 212 "Host Detected: ${CURRENT_HOSTNAME}"
       
-      SELECTED_LABEL=$(gum choose \
-        --header "Select the Primary Allowed Lab ID for this workstation:" \
-        --cursor.foreground "212" \
-        "${LAB_OPTIONS[@]}")
+      WHIPTAIL_OPTS=(whiptail --backtitle "Fedora Workstation Deployment System" --title " Lab Access Assignment ")
       
-      SELECTED_LAB_ID="${LAB_ID_LOOKUP["$SELECTED_LABEL"]}"
+      if [ -n "$AUTO_MATCHED_ID" ]; then
+        WHIPTAIL_OPTS+=(--default-item "$AUTO_MATCHED_ID")
+        PROMPT_MSG="Detected Hostname: ${CURRENT_HOSTNAME}\nMatched Lab Pattern: ${AUTO_MATCHED_NAME} (${AUTO_MATCHED_ID})\n\nConfirm or select the primary Lab ID allowed on this host:"
+      else
+        PROMPT_MSG="Detected Hostname: ${CURRENT_HOSTNAME}\n(No matching pattern in lab.conf)\n\nSelect the primary Lab ID allowed on this host:"
+      fi
+
+      SELECTED_LAB_ID=$("${WHIPTAIL_OPTS[@]}" \
+        --menu "$PROMPT_MSG" 18 72 6 \
+        "${LAB_MENU_ARGS[@]}" \
+        3>&1 1>&2 2>&3)
     else
-      SELECTED_LAB_ID="${AUTO_MATCHED_ID:-${LAB_ID_LOOKUP["${LAB_OPTIONS[0]}"]}}"
+      SELECTED_LAB_ID="${AUTO_MATCHED_ID:-${LAB_MENU_ARGS[0]}}"
     fi
   fi
 fi
 
-# --- EXECUTION FUNCTIONS (Outputs captured to $LOG_FILE) ---
+# --- EXPORT VARIABLES FOR WORKER FUNCTIONS ---
+
+export LOG_FILE SCRIPT_DIR DOMAIN_NAME REALM_NAME AD_DNS_IP DOMAIN_USER DOMAIN_PASS SELECTED_LAB_ID
+
+# --- TASK EXECUTION FUNCTIONS ---
 
 do_software_swap() {
   echo "--- Removing LibreOffice & Installing ONLYOFFICE ---" >> "$LOG_FILE"
@@ -194,11 +197,15 @@ do_lab_access_controls() {
   if [ -n "$SELECTED_LAB_ID" ]; then
     realm permit -g "$SELECTED_LAB_ID" >> "$LOG_FILE" 2>&1 || true
     
-    for key in "${!LAB_NAME_MAP[@]}"; do
-      if [ "$key" != "$SELECTED_LAB_ID" ]; then
-        realm deny -g "$key" >> "$LOG_FILE" 2>&1 || true
-      fi
-    done
+    if [ -f "$LAB_CONF" ]; then
+      while IFS=':' read -r name id pattern || [ -n "$id" ]; do
+        [[ "$name" =~ ^[[:space:]]*# ]] && continue
+        id="$(echo "$id" | xargs)"
+        if [ -n "$id" ] && [ "$id" != "$SELECTED_LAB_ID" ]; then
+          realm deny -g "$id" >> "$LOG_FILE" 2>&1 || true
+        fi
+      done < "$LAB_CONF"
+    fi
   fi
 }
 
@@ -238,7 +245,6 @@ EOF
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable --now app-policy-sync.timer >> "$LOG_FILE" 2>&1
 
-  # Trigger background update on every user PAM login
   if ! grep -q "refresh-app-policies" /etc/pam.d/postlogin 2>/dev/null; then
     echo "session optional pam_exec.so type=open_session /usr/local/bin/refresh-app-policies" >> /etc/pam.d/postlogin
   fi
@@ -276,28 +282,44 @@ do_finalize_configs() {
   systemctl restart sssd oddjobd greetd >> "$LOG_FILE" 2>&1 || true
 }
 
-# --- ANIMATED SPINNER EXECUTION PIPELINE ---
+# Export functions so subshell loops can execute them safely
+export -f do_software_swap do_system_update do_install_deps do_install_dms do_network_dns do_realm_join do_lab_access_controls do_policy_sync_setup do_finalize_configs
 
-echo ""
-gum style --foreground 212 "Executing Setup Tasks..."
+# --- 4. FULL-SCREEN PROGRESS BAR EXECUTION LOOP ---
 
-gum spin --spinner dot --title "1/8: Swapping LibreOffice for ONLYOFFICE..." -- bash -c "do_software_swap"
-gum spin --spinner dot --title "2/8: Updating System Packages..." -- bash -c "do_system_update"
-gum spin --spinner dot --title "3/8: Installing Active Directory Dependencies..." -- bash -c "do_install_deps"
-gum spin --spinner dot --title "4/8: Installing Dank Material Shell (DMS)..." -- bash -c "do_install_dms"
-gum spin --spinner dot --title "5/8: Configuring AD DNS & Network Clock Sync..." -- bash -c "do_network_dns"
-gum spin --spinner dot --title "6/8: Joining Active Directory Realm..." -- bash -c "do_realm_join"
-gum spin --spinner dot --title "7/8: Applying Lab Access Control Rules..." -- bash -c "do_lab_access_controls"
-gum spin --spinner dot --title "8/8: Setting Up Policy Refresh & PAM Hooks..." -- bash -c "do_policy_sync_setup"
-gum spin --spinner dot --title "Complete: Finalizing Desktop Themes..." -- bash -c "do_finalize_configs"
+run_step() {
+  local pct="$1"
+  local text="$2"
+  local fn="$3"
+  echo "$pct"
+  echo "XXX"
+  echo "$text"
+  echo "XXX"
+  "$fn"
+}
 
-echo ""
-gum style \
-  --foreground 82 --border-foreground 82 --border rounded \
-  --padding "0 2" \
-  "Installation Completed Successfully!"
+export -f run_step
 
-echo ""
-if gum confirm "Would you like to inspect the complete installation log now?"; then
-  gum pager < "$LOG_FILE"
-fi
+(
+  run_step 10 "1/8: Swapping LibreOffice for ONLYOFFICE..." do_software_swap
+  run_step 25 "2/8: Updating System Packages..." do_system_update
+  run_step 40 "3/8: Installing Active Directory Dependencies..." do_install_deps
+  run_step 55 "4/8: Installing Dank Material Shell (DMS)..." do_install_dms
+  run_step 65 "5/8: Configuring AD DNS & Network Clock Sync..." do_network_dns
+  run_step 75 "6/8: Joining Active Directory Realm..." do_realm_join
+  run_step 85 "7/8: Applying Lab Access Control Rules..." do_lab_access_controls
+  run_step 92 "8/8: Setting Up Policy Refresh & PAM Hooks..." do_policy_sync_setup
+  run_step 100 "Complete: Finalizing Desktop Themes & Services..." do_finalize_configs
+) | whiptail --backtitle "Fedora Workstation Deployment System" \
+             --title " Installation Progress " \
+             --gauge "Initializing deployment process..." 8 70 0
+
+# --- 5. FULL-SCREEN COMPLETION & LOG VIEWER ---
+
+whiptail --backtitle "Fedora Workstation Deployment System" \
+  --title " Setup Complete " \
+  --msgbox "Installation completed successfully!\n\nPress OK to view the complete scrollable deployment log." 12 65
+
+whiptail --backtitle "Fedora Workstation Deployment System" \
+  --title " Deployment Log Viewer (Use Arrow Keys / PgUp / PgDn to scroll) " \
+  --textbox "$LOG_FILE" 22 80
