@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ANSI Color & Formatting Toolkit
 BOLD="\033[1m"
 CYAN="\033[1;36m"
 GREEN="\033[1;32m"
@@ -34,7 +33,7 @@ ask_yes_no() {
   local resp
   while true; do
     echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
-    read -r resp
+    read -r resp < /dev/tty
     resp="${resp:-$default}"
     case "$resp" in
       [Yy]*) return 0 ;;
@@ -57,10 +56,15 @@ if ! ask_yes_no "Do you want to proceed with setup on this machine?" "Y"; then
   exit 0
 fi
 
-# Step 1: System Package Update
+# Step 1: System Package Update (Now with User Prompt)
 step_header "1" "Updating System Packages"
-dnf update -y
-msg_ok "System packages updated."
+if ask_yes_no "Do you want to run a full system update ('dnf update') now?" "Y"; then
+  msg_info "Running system update..."
+  dnf update -y
+  msg_ok "System packages updated."
+else
+  msg_info "Skipping system update at user request."
+fi
 
 # Step 2: Install Dependencies
 step_header "2" "Installing Active Directory Dependencies"
@@ -78,11 +82,11 @@ DOMAIN_NAME="gsfcu.local"
 REALM_NAME="GSFCU.LOCAL"
 
 echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Username (default: Administrator): "
-read -r DOMAIN_USER
+read -r DOMAIN_USER < /dev/tty
 DOMAIN_USER="${DOMAIN_USER:-Administrator}"
 
 echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password: "
-read -sp "" DOMAIN_PASS
+read -sp "" DOMAIN_PASS < /dev/tty
 echo ""
 
 # Step 5: Join AD Realm
@@ -100,25 +104,15 @@ handle_config_file() {
   local file_desc="$2"
   local copy_source_dir="$3"
 
-  msg_info "Checking ${file_desc} (${target_path})..."
   local filename
   filename=$(basename "$target_path")
   local source_file="${copy_source_dir}/${filename}"
 
   if [ -n "$copy_source_dir" ] && [ -f "$source_file" ]; then
-    if ask_yes_no "Found '${source_file}'. Copy to '${target_path}'?" "Y"; then
-      cp "$source_file" "$target_path"
-      [ "$filename" = "sssd.conf" ] && chmod 600 "$target_path" && chown root:root "$target_path"
-      msg_ok "Copied '${source_file}' -> '${target_path}'."
-      return 0
-    fi
-  fi
-
-  if [ -f "$target_path" ]; then
-    msg_ok "${file_desc} already exists."
-    if ! ask_yes_no "Overwrite existing '${target_path}' with default?" "N"; then
-      return 0
-    fi
+    cp "$source_file" "$target_path"
+    [ "$filename" = "sssd.conf" ] && chmod 600 "$target_path" && chown root:root "$target_path"
+    msg_ok "Applied custom '${filename}' -> '${target_path}'."
+    return 0
   fi
 
   case "$filename" in
@@ -180,12 +174,14 @@ EOF
   esac
 }
 
-# Step 6: Import System Configurations
-step_header "6" "System Configuration Source Selection"
+# Step 6: System Configurations
+step_header "6" "Applying System Configurations"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_CONFIG_DIR=""
-if ask_yes_no "Do you have existing config files (sssd.conf, krb5.conf, greetd) to copy?" "Y"; then
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter directory path containing config files: "
-  read -r SOURCE_CONFIG_DIR
+
+if [ -d "${SCRIPT_DIR}/configs" ]; then
+  msg_ok "Auto-detected local configs directory '${SCRIPT_DIR}/configs'."
+  SOURCE_CONFIG_DIR="${SCRIPT_DIR}/configs"
 fi
 
 handle_config_file "/etc/sssd/sssd.conf" "SSSD Configuration" "$SOURCE_CONFIG_DIR"
@@ -198,20 +194,16 @@ handle_config_file "/etc/pam.d/greetd" "GreetD PAM Policy" "$SOURCE_CONFIG_DIR"
 
 # Step 8: Apply Default Niri & DMS Settings for New Users (/etc/skel)
 step_header "8" "Configuring Default Niri & DMS Themes for New Users"
-msg_info "Configuring /etc/skel so new Active Directory users get your desktop theme automatically."
+THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
-if ask_yes_no "Do you have a 'niri-dms-config.tar.gz' archive to import into /etc/skel?" "Y"; then
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter absolute path to 'niri-dms-config.tar.gz': "
-  read -r THEME_ARCHIVE
-
-  if [ -f "$THEME_ARCHIVE" ]; then
-    mkdir -p /etc/skel/.config /etc/skel/.local/share
-    tar -xzf "$THEME_ARCHIVE" -C /etc/skel
-    chmod -R 755 /etc/skel/.config /etc/skel/.local
-    msg_ok "Unpacked desktop configurations to '/etc/skel'! Every new AD user will receive this layout on first login."
-  else
-    msg_err "Archive '$THEME_ARCHIVE' not found! Skipping /etc/skel population."
-  fi
+if [ -f "$THEME_ARCHIVE" ]; then
+  msg_ok "Auto-detected theme archive '${THEME_ARCHIVE}'."
+  mkdir -p /etc/skel/.config /etc/skel/.local/share
+  tar -xzf "$THEME_ARCHIVE" -C /etc/skel
+  chmod -R 755 /etc/skel/.config /etc/skel/.local
+  msg_ok "Unpacked desktop configurations to '/etc/skel'! Every new AD user will receive this layout on first login."
+else
+  msg_warn "No theme archive found at '${THEME_ARCHIVE}'. Skipping /etc/skel population."
 fi
 
 # Step 9: Permissions & SELinux
