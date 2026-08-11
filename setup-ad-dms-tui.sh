@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ANSI Color & Formatting Toolkit
 BOLD="\033[1m"
 CYAN="\033[1;36m"
 GREEN="\033[1;32m"
@@ -10,6 +11,17 @@ BLUE="\033[1;34m"
 MAGENTA="\033[1;35m"
 NC="\033[0m"
 
+# Parse Command Line Flags (-y / --yes)
+ASSUME_YES=false
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes)
+      ASSUME_YES=true
+      shift
+      ;;
+  esac
+done
+
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
@@ -18,7 +30,7 @@ draw_banner() {
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/11]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -31,6 +43,12 @@ ask_yes_no() {
   local prompt="$1"
   local default="${2:-Y}"
   local resp
+
+  if [ "$ASSUME_YES" = true ]; then
+    msg_info "${prompt} -> Auto-approved (-y flag detected)"
+    return 0
+  fi
+
   while true; do
     echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
     read -r resp < /dev/tty
@@ -51,35 +69,81 @@ fi
 
 draw_banner
 msg_info "Welcome to the Fedora AD & DMS Setup Wizard."
+if [ "$ASSUME_YES" = true ]; then
+  msg_info "Unattended mode enabled (-y flag active)."
+fi
+
 if ! ask_yes_no "Do you want to proceed with setup on this machine?" "Y"; then
   msg_warn "Setup cancelled by user."
   exit 0
 fi
 
-# Step 1: System Package Update (Now with User Prompt)
-step_header "1" "Updating System Packages"
-if ask_yes_no "Do you want to run a full system update ('dnf update') now?" "Y"; then
+# Step 1: Remove LibreOffice Software
+step_header "1" "Removing Default Software (LibreOffice)"
+if ask_yes_no "Do you want to remove LibreOffice packages?" "Y"; then
+  msg_info "Removing all libreoffice* packages..."
+  dnf remove -y "libreoffice*" || msg_warn "LibreOffice packages not found or already removed."
+  msg_ok "LibreOffice removal step completed."
+else
+  msg_info "Skipping LibreOffice removal."
+fi
+
+# Step 2: System Package Update
+step_header "2" "Updating System Packages"
+if ask_yes_no "Do you want to run a full system update ('dnf update')?" "Y"; then
   msg_info "Running system update..."
   dnf update -y
   msg_ok "System packages updated."
 else
-  msg_info "Skipping system update at user request."
+  msg_info "Skipping system package update."
 fi
 
-# Step 2: Install Dependencies
-step_header "2" "Installing Active Directory Dependencies"
-dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools
-msg_ok "Prerequisite packages installed."
+# Step 3: Install Active Directory Dependencies
+step_header "3" "Installing Active Directory Dependencies"
+if ask_yes_no "Do you want to install AD dependencies (realmd, sssd, krb5, oddjob)?" "Y"; then
+  msg_info "Installing realmd, sssd, adcli, krb5-workstation, and oddjob..."
+  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils
+  msg_ok "Active Directory prerequisite packages installed."
+else
+  msg_info "Skipping AD package installation."
+fi
 
-# Step 3: Install DMS
-step_header "3" "Installing Dank Material Shell (DMS)"
-curl -fsSL https://install.danklinux.com | sh || msg_warn "DMS installer finished with non-zero status. Continuing..."
-msg_ok "DMS setup phase complete."
+# Step 4: Install Dank Material Shell (DMS)
+step_header "4" "Installing Dank Material Shell (DMS)"
+if ask_yes_no "Do you want to run the Dank Material Shell (DMS) installer?" "Y"; then
+  msg_info "Executing DMS setup script..."
+  curl -fsSL https://install.danklinux.com | sh || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  msg_ok "DMS setup phase complete."
+else
+  msg_info "Skipping DMS installation."
+fi
 
-# Step 4: AD Credentials
-step_header "4" "Active Directory Authentication Details"
+# Step 5: Network / DNS Verification & AD Credentials
+step_header "5" "Active Directory & DNS Configuration"
 DOMAIN_NAME="gsfcu.local"
 REALM_NAME="GSFCU.LOCAL"
+
+# Verify realmd binary exists
+if ! command -v realm &> /dev/null; then
+  msg_warn "'realm' command not found. Installing 'realmd' package..."
+  dnf install -y realmd
+fi
+
+# DNS Resolution Check for Domain
+msg_info "Checking DNS resolution for domain '${DOMAIN_NAME}'..."
+if ! host "$DOMAIN_NAME" &> /dev/null; then
+  msg_warn "Could not resolve domain '${DOMAIN_NAME}' via current DNS."
+  if ask_yes_no "Do you want to specify your Active Directory DNS server IP?" "Y"; then
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter AD DNS Server IP address: "
+    read -r AD_DNS_IP < /dev/tty
+    if [ -n "$AD_DNS_IP" ]; then
+      echo "nameserver $AD_DNS_IP" > /etc/resolv.conf
+      msg_ok "Updated /etc/resolv.conf with nameserver ${AD_DNS_IP}."
+    fi
+  fi
+else
+  msg_ok "DNS resolution for '${DOMAIN_NAME}' verified."
+fi
 
 echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Username (default: Administrator): "
 read -r DOMAIN_USER < /dev/tty
@@ -89,12 +153,12 @@ echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password: "
 read -sp "" DOMAIN_PASS < /dev/tty
 echo ""
 
-# Step 5: Join AD Realm
-step_header "5" "Joining Active Directory Realm"
+# Step 6: Join AD Realm
+step_header "6" "Joining Active Directory Realm"
 if echo "$DOMAIN_PASS" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME"; then
   msg_ok "Successfully joined domain '${DOMAIN_NAME}'."
 else
-  msg_err "Failed to join domain. Check credentials and DNS."
+  msg_err "Failed to join domain. Check credentials, time synchronization, and DNS connectivity."
   exit 1
 fi
 
@@ -174,8 +238,8 @@ EOF
   esac
 }
 
-# Step 6: System Configurations
-step_header "6" "Applying System Configurations"
+# Step 7: System Configurations
+step_header "7" "Applying System Configurations"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_CONFIG_DIR=""
 
@@ -187,13 +251,13 @@ fi
 handle_config_file "/etc/sssd/sssd.conf" "SSSD Configuration" "$SOURCE_CONFIG_DIR"
 handle_config_file "/etc/krb5.conf" "Kerberos Configuration" "$SOURCE_CONFIG_DIR"
 
-# Step 7: PAM Integration
-step_header "7" "Configuring PAM & Greeter Authentication"
+# Step 8: PAM Integration
+step_header "8" "Configuring PAM & Greeter Authentication"
 authselect select sssd with-mkhomedir --force
 handle_config_file "/etc/pam.d/greetd" "GreetD PAM Policy" "$SOURCE_CONFIG_DIR"
 
-# Step 8: Apply Default Niri & DMS Settings for New Users (/etc/skel)
-step_header "8" "Configuring Default Niri & DMS Themes for New Users"
+# Step 9: Apply Default Niri & DMS Settings for New Users (/etc/skel)
+step_header "9" "Configuring Default Niri & DMS Themes for New Users"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
@@ -206,8 +270,8 @@ else
   msg_warn "No theme archive found at '${THEME_ARCHIVE}'. Skipping /etc/skel population."
 fi
 
-# Step 9: Permissions & SELinux
-step_header "9" "Setting Permissions & SELinux Policies"
+# Step 10: Permissions & SELinux
+step_header "10" "Setting Permissions & SELinux Policies"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
 chmod -R 777 /var/cache/dms-greeter/ 2>/dev/null || true
@@ -217,8 +281,8 @@ setsebool -P nis_enabled 1 || true
 setsebool -P use_nfs_home_dirs 1 || true
 msg_ok "Cache permissions and SELinux booleans applied."
 
-# Step 10: Clear Caches & Restart Services
-step_header "10" "Flushing Caches & Restarting Services"
+# Step 11: Clear Caches & Restart Services
+step_header "11" "Flushing Caches & Restarting Services"
 sss_cache -E || true
 rm -f /var/lib/sss/db/* || true
 
@@ -227,8 +291,8 @@ systemctl restart oddjobd || true
 systemctl restart greetd || true
 msg_ok "All services restarted successfully."
 
-# Step 11: Done
-step_header "11" "Setup Complete"
+# Step 12: Done
+step_header "12" "Setup Complete"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Installation successful! System joined to AD with DMS enabled.     ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
