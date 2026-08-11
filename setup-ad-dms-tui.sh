@@ -78,14 +78,22 @@ if ! ask_yes_no "Do you want to proceed with setup on this machine?" "Y"; then
   exit 0
 fi
 
-# Step 1: Remove LibreOffice Software
-step_header "1" "Removing Default Software (LibreOffice)"
-if ask_yes_no "Do you want to remove LibreOffice packages?" "Y"; then
+# Step 1: Remove LibreOffice and Install ONLYOFFICE via DNF
+step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
+if ask_yes_no "Do you want to remove LibreOffice and install ONLYOFFICE via DNF?" "Y"; then
   msg_info "Removing all libreoffice* packages..."
   dnf remove -y "libreoffice*" || msg_warn "LibreOffice packages not found or already removed."
-  msg_ok "LibreOffice removal step completed."
+  
+  msg_info "Installing ONLYOFFICE Desktop Editors via DNF..."
+  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+  if dnf install -y onlyoffice-desktopeditors; then
+    msg_ok "ONLYOFFICE successfully installed via DNF."
+  else
+    msg_warn "DNF repo install failed, attempting direct RPM installation..."
+    dnf install -y https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors.x86_64.rpm || msg_warn "Failed to install ONLYOFFICE RPM."
+  fi
 else
-  msg_info "Skipping LibreOffice removal."
+  msg_info "Skipping LibreOffice removal and ONLYOFFICE installation."
 fi
 
 # Step 2: System Package Update
@@ -100,9 +108,9 @@ fi
 
 # Step 3: Install Active Directory Dependencies
 step_header "3" "Installing Active Directory Dependencies"
-if ask_yes_no "Do you want to install AD dependencies (realmd, sssd, krb5, oddjob)?" "Y"; then
-  msg_info "Installing realmd, sssd, adcli, krb5-workstation, and oddjob..."
-  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils
+if ask_yes_no "Do you want to install AD dependencies (realmd, sssd, krb5, NetworkManager-ad)?" "Y"; then
+  msg_info "Installing realmd, sssd, adcli, krb5-workstation, oddjob, NetworkManager-cli..."
+  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils NetworkManager
   msg_ok "Active Directory prerequisite packages installed."
 else
   msg_info "Skipping AD package installation."
@@ -112,33 +120,43 @@ fi
 step_header "4" "Installing Dank Material Shell (DMS)"
 if ask_yes_no "Do you want to run the Dank Material Shell (DMS) installer?" "Y"; then
   msg_info "Executing DMS setup script..."
-  curl -fsSL https://install.danklinux.com | sh || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  # Executed with interactive tty mapping to avoid root/sudo permission loops
+  curl -fsSL https://install.danklinux.com | bash < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
   msg_ok "DMS setup phase complete."
 else
   msg_info "Skipping DMS installation."
 fi
 
 # Step 5: Network / DNS Verification & AD Credentials
-step_header "5" "Active Directory & DNS Configuration"
+step_header "5" "Active Directory & NetworkManager DNS Configuration"
 DOMAIN_NAME="gsfcu.local"
 REALM_NAME="GSFCU.LOCAL"
 
-# Verify realmd binary exists
 if ! command -v realm &> /dev/null; then
-  msg_warn "'realm' command not found. Installing 'realmd' package..."
+  msg_warn "'realm' command not found. Installing 'realmd'..."
   dnf install -y realmd
 fi
 
-# DNS Resolution Check for Domain
 msg_info "Checking DNS resolution for domain '${DOMAIN_NAME}'..."
 if ! host "$DOMAIN_NAME" &> /dev/null; then
   msg_warn "Could not resolve domain '${DOMAIN_NAME}' via current DNS."
-  if ask_yes_no "Do you want to specify your Active Directory DNS server IP?" "Y"; then
+  
+  # Auto-detect NetworkManager connection name or default to 'Wired connection 1'
+  ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
+  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+
+  if ask_yes_no "Do you want to set Active Directory DNS on connection '${TARGET_CONN}'?" "Y"; then
     echo -en "  ${YELLOW}[INPUT]${NC} Enter AD DNS Server IP address: "
     read -r AD_DNS_IP < /dev/tty
+    
     if [ -n "$AD_DNS_IP" ]; then
+      msg_info "Applying DNS ${AD_DNS_IP} to NetworkManager connection '${TARGET_CONN}'..."
+      nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.ignore-auto-dns yes || true
+      nmcli connection up "$TARGET_CONN" || true
+      
+      # Backup fallback direct update to /etc/resolv.conf
       echo "nameserver $AD_DNS_IP" > /etc/resolv.conf
-      msg_ok "Updated /etc/resolv.conf with nameserver ${AD_DNS_IP}."
+      msg_ok "NetworkManager DNS updated successfully."
     fi
   fi
 else
