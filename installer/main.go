@@ -111,23 +111,26 @@ func (b *Background) Draw(screen tcell.Screen) {
 
 // --- GLOBAL VARIABLES ---
 var (
-	app          *tview.Application
-	pages        *tview.Pages
-	config       Config
-	labEntries   []LabEntry
-	labNameMap   map[string]string
-	logFile      *os.File
-	scriptDir    string
-	logPath      = "/var/log/fedora-ad-setup.log"
-	pendingPkgs  int
-	tasks        []Task
-	taskStates   []string
-	statusList   *tview.TextView
-	progressBar  *tview.TextView
-	logView      *tview.TextView
-	matchedHost  string
-	matchedLab   string
-	stopAnimChan = make(chan struct{})
+	app         *tview.Application
+	pages       *tview.Pages
+	config      Config
+	labEntries  []LabEntry
+	labNameMap  map[string]string
+	logFile     *os.File
+	scriptDir   string
+	logPath     = "/var/log/fedora-ad-setup.log"
+	pendingPkgs int
+	tasks       []Task
+	taskStates  []string
+	statusList  *tview.TextView
+	progressBar *tview.TextView
+	logView     *tview.TextView
+	matchedHost string
+	matchedLab  string
+	animActive  = true
+
+	logMutex  sync.Mutex
+	logBuffer strings.Builder
 )
 
 func main() {
@@ -173,15 +176,15 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(60 * time.Millisecond)
 		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				app.QueueUpdateDraw(func() {})
-			case <-stopAnimChan:
+		for range ticker.C {
+			if !animActive {
 				return
 			}
+			app.QueueUpdateDraw(func() {})
 		}
 	}()
+
+	startLogFlushPump()
 
 	bgView := NewBackground()
 	formContainer := buildConfigForm()
@@ -197,9 +200,35 @@ func main() {
 	}
 }
 
+// Thread-safe Log Flush Pump (Batch writes to UI every 50ms)
+func startLogFlushPump() {
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			logMutex.Lock()
+			if logBuffer.Len() > 0 {
+				chunk := logBuffer.String()
+				logBuffer.Reset()
+				logMutex.Unlock()
+
+				app.QueueUpdateDraw(func() {
+					if logView != nil {
+						fmt.Fprint(logView, chunk)
+						logView.ScrollToEnd()
+					}
+				})
+			} else {
+				logMutex.Unlock()
+			}
+		}
+	}()
+}
+
 func logWrite(msg string) {
 	if logFile != nil {
-		logFile.WriteString(msg + "\n")
+		logFile.WriteString(msg)
 	}
 }
 
@@ -371,17 +400,13 @@ func buildConfigForm() tview.Primitive {
 			showErrorModal("Domain Admin Password is required!")
 			return
 		}
-		// Stop particle animation goroutine safely
-		select {
-		case stopAnimChan <- struct{}{}:
-		default:
-		}
+
+		animActive = false // Stop background animation
 
 		buildTasksList()
 		execPage := buildExecutionPage()
 		pages.AddPage("execution", execPage, true, true)
 		pages.SwitchToPage("execution")
-		app.SetFocus(logView)
 
 		go runDeploymentTasks()
 	}
@@ -393,7 +418,6 @@ func buildConfigForm() tview.Primitive {
 	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
 	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(249, 226, 175)).Foreground(tcell.NewRGBColor(17, 17, 27)))
 
-	// Focus directly on password input (Index 3)
 	form.SetFocus(3)
 
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -452,6 +476,7 @@ func showErrorModal(msg string) {
 
 func buildTasksList() {
 	tasks = []Task{
+		{"Releasing Package Manager Locks", "systemctl stop packagekit || true; pkill -9 packagekitd || true; pkill -9 dnf || true"},
 		{"Swapping LibreOffice for ONLYOFFICE", "dnf remove -y 'libreoffice*' && dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm onlyoffice-desktopeditors"},
 	}
 
@@ -517,7 +542,9 @@ func renderStepList() {
 		}
 	}
 	app.QueueUpdateDraw(func() {
-		statusList.SetText(sb.String())
+		if statusList != nil {
+			statusList.SetText(sb.String())
+		}
 	})
 }
 
@@ -533,7 +560,9 @@ func renderProgressBar(completed, total int) {
 	msg := fmt.Sprintf("\n [dodgerblue][%s][white] %d%% (%d/%d)", bar, pct, completed, total)
 
 	app.QueueUpdateDraw(func() {
-		progressBar.SetText(msg)
+		if progressBar != nil {
+			progressBar.SetText(msg)
+		}
 	})
 }
 
@@ -543,23 +572,23 @@ func runDeploymentTasks() {
 		taskStates[i] = "running"
 		renderStepList()
 
-		appendLog(fmt.Sprintf("\n[cyan]=== Step %d/%d: %s ===[white]\n", i+1, total, task.Title))
+		appendFormattedLog(fmt.Sprintf("\n[cyan]=== Step %d/%d: %s ===[white]\n", i+1, total, task.Title))
 
 		err := execBashCmd(task.Cmd)
 		if err != nil {
 			taskStates[i] = "failed"
-			appendLog(fmt.Sprintf("[red]ERROR in step '%s': %v[white]\n", task.Title, err))
+			appendFormattedLog(fmt.Sprintf("[red]ERROR in step '%s': %v[white]\n", task.Title, err))
 		} else {
 			taskStates[i] = "success"
-			appendLog(fmt.Sprintf("[green]SUCCESS: %s complete.[white]\n", task.Title))
+			appendFormattedLog(fmt.Sprintf("[green]SUCCESS: %s complete.[white]\n", task.Title))
 		}
 
 		renderStepList()
 		renderProgressBar(i+1, total)
 	}
 
-	appendLog("\n[gold]===============================================[white]\n")
-	appendLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]\n")
+	appendFormattedLog("\n[gold]===============================================[white]\n")
+	appendFormattedLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]\n")
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEnter {
@@ -569,16 +598,22 @@ func runDeploymentTasks() {
 	})
 }
 
-func appendLog(msg string) {
+func appendFormattedLog(msg string) {
 	logWrite(msg)
-	app.QueueUpdateDraw(func() {
-		fmt.Fprint(logView, msg)
-		logView.ScrollToEnd()
-	})
+	logMutex.Lock()
+	logBuffer.WriteString(msg)
+	logMutex.Unlock()
+}
+
+func appendRawLog(msg string) {
+	logWrite(msg)
+	logMutex.Lock()
+	logBuffer.WriteString(tview.Escape(msg))
+	logMutex.Unlock()
 }
 
 func execBashCmd(cmdStr string) error {
-	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd := exec.Command("bash", "-c", "export DEBIAN_FRONTEND=noninteractive; " + cmdStr)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -596,11 +631,18 @@ func execBashCmd(cmdStr string) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Stream chunk by chunk (1024 bytes) - never blocks on missing newlines
 	streamOutput := func(r io.Reader) {
 		defer wg.Done()
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			appendLog(scanner.Text() + "\n")
+		buf := make([]byte, 1024)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				appendRawLog(string(buf[:n]))
+			}
+			if err != nil {
+				break
+			}
 		}
 	}
 
