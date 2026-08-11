@@ -58,6 +58,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Apply Modern Dark Palette
+	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(24, 24, 37)       // Deep Slate
+	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(49, 50, 68)        // Surface Gray
+	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(137, 180, 250) // Bright Blue
+	tview.Styles.BorderColor = tcell.NewRGBColor(88, 91, 112)                    // Border Gray
+	tview.Styles.TitleColor = tcell.NewRGBColor(137, 180, 250)                   // Lavender/Blue
+	tview.Styles.PrimaryTextColor = tcell.NewRGBColor(205, 214, 244)            // Off-white
+	tview.Styles.SecondaryTextColor = tcell.NewRGBColor(245, 194, 231)          // Soft Pink
+
 	var err error
 	logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -95,7 +104,7 @@ func logWrite(msg string) {
 	}
 }
 
-// Search & Load domain.conf across relative paths
+// Fixed Domain Config Loader with Comment & Quote Stripping
 func loadDomainConfig() {
 	config.DomainName = "gsfcu.local"
 	config.DomainUser = "Administrator"
@@ -123,13 +132,23 @@ func loadDomainConfig() {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+
+		// Strip inline comments (# ...)
+		if idx := strings.Index(line, "#"); idx != -1 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
+
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
-			val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			val := strings.TrimSpace(parts[1])
+			val = strings.Trim(val, `"'`) // Clean quotes
+			val = strings.TrimSpace(val)
+
 			switch key {
 			case "DOMAIN_NAME":
 				config.DomainName = val
@@ -165,9 +184,14 @@ func loadLabConfig() {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if idx := strings.Index(line, "#"); idx != -1 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
+
 		parts := strings.Split(line, ":")
 		if len(parts) >= 2 {
 			entry := LabEntry{
@@ -201,18 +225,27 @@ func countPendingUpdates() int {
 
 func buildConfigForm() tview.Primitive {
 	form := tview.NewForm()
-	form.SetBorder(true).SetTitle(" Fedora AD & DMS Deployment Setup ").SetTitleColor(tcell.ColorDodgerBlue)
+	form.SetBorder(true).
+		SetTitle(" Fedora AD & DMS Deployment Setup ").
+		SetTitleColor(tcell.NewRGBColor(137, 180, 250))
 
-	// Domain Information
-	form.AddInputField("Domain Name", config.DomainName, 32, nil, func(text string) { config.DomainName = text })
-	form.AddInputField("AD DNS IP", config.ADDNSIP, 32, nil, func(text string) { config.ADDNSIP = text })
-	form.AddInputField("Domain Admin User", config.DomainUser, 32, nil, func(text string) { config.DomainUser = text })
-	form.AddPasswordField("Domain Admin Password", "", 32, '*', func(text string) { config.DomainPass = text })
+	form.SetFieldBackgroundColor(tcell.NewRGBColor(49, 50, 68))
+	form.SetFieldTextColor(tcell.NewRGBColor(205, 214, 244))
+	form.SetLabelColor(tcell.NewRGBColor(147, 153, 178))
+	form.SetButtonBackgroundColor(tcell.NewRGBColor(137, 180, 250))
+	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
+	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(245, 194, 231)).Foreground(tcell.NewRGBColor(17, 17, 27)))
 
-	// System Package Update Prompt with Count
-	updateLabel := fmt.Sprintf("Update System Packages Now? (%d updates available)", pendingPkgs)
-	form.AddCheckbox(updateLabel, true, func(checked bool) {
-		config.UpdateSystem = checked
+	// Domain Information Fields
+	form.AddInputField("Domain Name", config.DomainName, 34, nil, func(text string) { config.DomainName = text })
+	form.AddInputField("AD DNS IP", config.ADDNSIP, 34, nil, func(text string) { config.ADDNSIP = text })
+	form.AddInputField("Domain Admin User", config.DomainUser, 34, nil, func(text string) { config.DomainUser = text })
+	form.AddPasswordField("Domain Admin Password", "", 34, '*', func(text string) { config.DomainPass = text })
+
+	// Explicit Yes/No Dropdown for Package Updates
+	updateLabel := fmt.Sprintf("Update System Packages Now? (%d updates pending)", pendingPkgs)
+	form.AddDropDown(updateLabel, []string{"Yes (Update system)", "No (Skip updates)"}, 0, func(option string, index int) {
+		config.UpdateSystem = (index == 0)
 	})
 
 	// Auto-Detect Lab based on Hostname
@@ -242,18 +275,58 @@ func buildConfigForm() tview.Primitive {
 		})
 	}
 
-	form.AddButton("Start Deployment", func() {
-		if config.DomainPass == "" {
+	// Trigger Action
+	startAction := func() {
+		if strings.TrimSpace(config.DomainPass) == "" {
+			showErrorModal("Domain Admin Password is required!")
 			return
 		}
 		buildTasksList()
 		pages.AddPage("execution", buildExecutionPage(), true, true)
 		pages.SwitchToPage("execution")
 		go runDeploymentTasks()
+	}
+
+	form.AddButton("Start Deployment", startAction)
+	form.AddButton("Exit", func() { app.Stop() })
+
+	// Instant Hotkeys: Press Ctrl+S or Ctrl+Enter anywhere to submit immediately
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlS || (event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0) {
+			startAction()
+			return nil
+		}
+		return event
 	})
 
-	form.AddButton("Exit", func() { app.Stop() })
-	return form
+	// Help Bar Footer
+	helpText := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter).
+		SetText("[pink]Hotkeys:[white] [bold]Ctrl+S[reset] or [bold]Ctrl+Enter[reset] to Deploy immediately  |  [bold]Tab[reset] Navigate fields")
+
+	// Center Form in Middle of Screen
+	centeredFlex := tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 20, 1, true).
+			AddItem(helpText, 2, 1, false).
+			AddItem(nil, 0, 1, false), 82, 1, true).
+		AddItem(nil, 0, 1, false)
+
+	return centeredFlex
+}
+
+func showErrorModal(msg string) {
+	modal := tview.NewModal().
+		SetText(msg).
+		AddButtons([]string{"OK"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			pages.RemovePage("errorModal")
+		})
+	modal.SetBackgroundColor(tcell.NewRGBColor(69, 71, 90))
+	pages.AddPage("errorModal", modal, true, true)
 }
 
 // --- EXECUTION DASHBOARD PAGE ---
@@ -285,15 +358,15 @@ func buildTasksList() {
 
 func buildExecutionPage() tview.Primitive {
 	statusList = tview.NewTextView().SetDynamicColors(true)
-	statusList.SetBorder(true).SetTitle(" Deployment Plan ").SetTitleColor(tcell.ColorMediumTurquoise)
+	statusList.SetBorder(true).SetTitle(" Deployment Checklist ").SetTitleColor(tcell.NewRGBColor(137, 180, 250))
 
 	logView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetChangedFunc(func() {
 		app.Draw()
 	})
-	logView.SetBorder(true).SetTitle(" Live Execution Output ").SetTitleColor(tcell.ColorLightGreen)
+	logView.SetBorder(true).SetTitle(" Live Output ").SetTitleColor(tcell.NewRGBColor(166, 227, 161))
 
 	progressBar = tview.NewTextView().SetDynamicColors(true)
-	progressBar.SetBorder(true).SetTitle(" Overall Progress ").SetTitleColor(tcell.ColorGold)
+	progressBar.SetBorder(true).SetTitle(" Progress ").SetTitleColor(tcell.NewRGBColor(249, 226, 175))
 
 	renderStepList()
 	renderProgressBar(0, len(tasks))
@@ -303,7 +376,7 @@ func buildExecutionPage() tview.Primitive {
 		AddItem(progressBar, 5, 1, false)
 
 	mainFlex := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(leftPanel, 42, 1, false).
+		AddItem(leftPanel, 44, 1, false).
 		AddItem(logView, 0, 2, true)
 
 	return mainFlex
