@@ -5,17 +5,12 @@ GITHUB_USER="jayrajkamalakar-gsfcu"
 REPO_NAME="fedora-ad-dms"
 TMP_DIR="/tmp/${REPO_NAME}"
 
-echo "=================================================="
-echo " Preparing Fedora AD & DMS Setup Package"
-echo "=================================================="
-
 if ! command -v git &> /dev/null; then
   echo "Installing Git..."
   sudo dnf install -y git
 fi
 
 rm -rf "$TMP_DIR"
-echo "Fetching setup package from GitHub..."
 git clone "https://github.com/${GITHUB_USER}/${REPO_NAME}.git" "$TMP_DIR"
 
 cd "$TMP_DIR"
