@@ -31,11 +31,9 @@ echo "Date: $(date)" >> "$LOG_FILE"
 # --- TUI CONFIGURATION INTERACTION ---
 
 if [ "$ASSUME_YES" = false ]; then
-  # 1. Welcome Screen
   whiptail --title "Fedora AD & DMS Setup Wizard" \
     --msgbox "Welcome to the Fedora Active Directory & DMS Deployment Setup.\n\nThis wizard will configure system settings, domain authentication, lab access rules, and desktop environments." 12 68
 
-  # 2. Confirmation Dialog
   if ! whiptail --title "Confirmation" --yesno "Do you want to proceed with setup on this machine?" 10 60; then
     exit 0
   fi
@@ -52,7 +50,6 @@ if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   source "${SCRIPT_DIR}/domain.conf"
 fi
 
-# If domain details are missing and not unattended, prompt user
 if [ "$ASSUME_YES" = false ]; then
   [ -z "${DOMAIN_NAME:-}" ] && DOMAIN_NAME=$(whiptail --title "Domain Configuration" --inputbox "Enter Active Directory Domain Name:" 10 60 "gsfcu.local" 3>&1 1>&2 2>&3)
   [ -z "${AD_DNS_IP:-}" ] && AD_DNS_IP=$(whiptail --title "Domain Configuration" --inputbox "Enter Active Directory DNS Server IP Address:" 10 60 "" 3>&1 1>&2 2>&3)
@@ -60,7 +57,6 @@ if [ "$ASSUME_YES" = false ]; then
   
   DOMAIN_PASS=$(whiptail --title "Authentication Required" --passwordbox "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}':" 10 65 3>&1 1>&2 2>&3)
 else
-  # Unattended prompt for password only if not supplied
   if [ -z "${DOMAIN_PASS:-}" ]; then
     echo -n "Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}': "
     read -sp "" DOMAIN_PASS
@@ -68,7 +64,8 @@ else
   fi
 fi
 
-# 3. Interactive Lab ID Selection Menu (Reads lab.conf)
+# --- DYNAMIC HOSTNAME AUTO-DETLECTION & LAB SELECTION ---
+
 SELECTED_LAB_ID=""
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 
@@ -76,24 +73,53 @@ if [ -f "$LAB_CONF" ]; then
   LAB_MENU_ARGS=()
   declare -A LAB_NAME_MAP
   
-  while IFS=':' read -r name id || [ -n "$name" ]; do
+  CURRENT_HOSTNAME="$(hostname -s 2>/dev/null || echo "$HOSTNAME")"
+  HOST_UPPER="$(echo "$CURRENT_HOSTNAME" | tr '[:lower:]' '[:upper:]')"
+  
+  AUTO_MATCHED_ID=""
+  AUTO_MATCHED_NAME=""
+
+  while IFS=':' read -r name id pattern || [ -n "$name" ]; do
     [[ "$name" =~ ^[[:space:]]*# ]] && continue
     [[ -z "$name" ]] && continue
-    id="$(echo "$id" | xargs)"
+    
     name="$(echo "$name" | xargs)"
+    id="$(echo "$id" | xargs)"
+    pattern="$(echo "${pattern:-}" | xargs)"
+
     LAB_MENU_ARGS+=("$id" "$name")
     LAB_NAME_MAP["$id"]="$name"
+
+    # Match Hostname against 3rd column pattern in lab.conf
+    if [ -n "$pattern" ]; then
+      PATTERN_UPPER="$(echo "$pattern" | tr '[:lower:]' '[:upper:]')"
+      if [[ "$HOST_UPPER" == *"$PATTERN_UPPER"* ]]; then
+        AUTO_MATCHED_ID="$id"
+        AUTO_MATCHED_NAME="$name"
+      fi
+    fi
   done < "$LAB_CONF"
 
   if [ "${#LAB_MENU_ARGS[@]}" -gt 0 ]; then
     if [ "$ASSUME_YES" = false ]; then
-      SELECTED_LAB_ID=$(whiptail --title "Lab Access Control Selection" \
-        --menu "Select the primary Lab ID allowed on this workstation:\n(Other lab IDs in lab.conf will be blocked; unlisted IDs like 23bca032 remain allowed)" \
-        18 72 6 \
+      
+      # Build Whiptail menu with auto-detected default item highlight
+      WHIPTAIL_OPTS=(whiptail --title "Lab Access Control Selection")
+      
+      if [ -n "$AUTO_MATCHED_ID" ]; then
+        WHIPTAIL_OPTS+=(--default-item "$AUTO_MATCHED_ID")
+        PROMPT_MSG="Detected Hostname: ${CURRENT_HOSTNAME}\nAuto-Matched Lab: ${AUTO_MATCHED_NAME} (${AUTO_MATCHED_ID})\n\nConfirm or change the allowed Lab ID for this machine:"
+      else
+        PROMPT_MSG="Detected Hostname: ${CURRENT_HOSTNAME}\n(No specific pattern match found in lab.conf)\n\nSelect the primary Lab ID allowed on this workstation:"
+      fi
+
+      SELECTED_LAB_ID=$("${WHIPTAIL_OPTS[@]}" \
+        --menu "$PROMPT_MSG" 19 74 6 \
         "${LAB_MENU_ARGS[@]}" \
         3>&1 1>&2 2>&3)
     else
-      SELECTED_LAB_ID="${LAB_MENU_ARGS[0]}"
+      # In unattended mode, use auto-matched ID or fall back to first entry
+      SELECTED_LAB_ID="${AUTO_MATCHED_ID:-${LAB_MENU_ARGS[0]}}"
     fi
   fi
 fi
@@ -158,10 +184,11 @@ do_lab_access_controls() {
   if [ -n "$SELECTED_LAB_ID" ]; then
     realm permit -g "$SELECTED_LAB_ID" >> "$LOG_FILE" 2>&1 || true
     
-    # Block other lab IDs from lab.conf
+    # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_NAME_MAP[@]}"; do
       if [ "$key" != "$SELECTED_LAB_ID" ]; then
         realm deny -g "$key" >> "$LOG_FILE" 2>&1 || true
+        echo "Denied group: $key" >> "$LOG_FILE"
       fi
     done
   fi
@@ -265,6 +292,5 @@ run_step() {
 whiptail --title "Installation Complete" \
   --msgbox "Setup completed successfully!\n\nSelect OK to open the full scrollable terminal log viewer." 12 65
 
-# Full-screen scrollable log viewer (arrow keys, PgUp, PgDn)
 whiptail --title "Execution Output Log (Use Arrow Keys / PgUp / PgDn to Scroll)" \
   --textbox "$LOG_FILE" 22 80
