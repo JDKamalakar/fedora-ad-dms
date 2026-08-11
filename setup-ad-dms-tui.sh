@@ -69,13 +69,13 @@ fi
 draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Step 1: Remove LibreOffice / Install ONLYOFFICE
+# Step 1: Remove LibreOffice / Install ONLYOFFICE (Compulsory)
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-if ask_yes_no "Remove LibreOffice and install ONLYOFFICE?" "Y"; then
-  dnf remove -y "libreoffice*" || true
-  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-  dnf install -y onlyoffice-desktopeditors || true
-fi
+msg_info "Removing LibreOffice and installing ONLYOFFICE (Compulsory)..."
+dnf remove -y "libreoffice*" || true
+dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+dnf install -y onlyoffice-desktopeditors || true
+msg_ok "ONLYOFFICE installation complete."
 
 # Step 2: System Update
 step_header "2" "Updating System Packages"
@@ -87,16 +87,16 @@ fi
 step_header "3" "Installing AD & Security Dependencies"
 dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
 
-# Step 4: Install Dank Material Shell via Native Fedora COPR (No Whiptail)
+# Step 4: Install Dank Material Shell (DMS) via Native Script
 step_header "4" "Installing Dank Material Shell (DMS)"
-if ask_yes_no "Install Dank Material Shell (DMS)?" "Y"; then
-  dnf copr enable -y avengemedia/dms || true
-  dnf install -y dms || true
-fi
+msg_info "Executing native DMS installer as root..."
+curl -fsSL https://install.danklinux.com | sh || true
+msg_ok "DMS native installation executed."
 
 # Step 5: Read Domain Settings
 step_header "5" "Active Directory Configuration"
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/domain.conf"
   msg_ok "Loaded configuration from 'domain.conf'."
 fi
@@ -191,7 +191,7 @@ step_header "8" "Setting Up 10-Minute Policy Refresh Service"
 cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
 chmod 755 /usr/local/bin/refresh-app-policies
 
-# Create 'refresh' terminal command
+# Create 'refresh' terminal alias/command
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
@@ -209,7 +209,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-# Systemd Timer
+# Systemd Timer (Every 10 Minutes)
 cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
 Description=Run app-policy-sync every 10 minutes
@@ -240,7 +240,7 @@ step_header "10" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force
 systemctl enable --now oddjobd
 
-# Step 11: Configure DMS Profile
+# Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
 step_header "11" "Applying DMS Themes for New Users (/etc/skel)"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
