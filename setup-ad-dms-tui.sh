@@ -133,13 +133,12 @@ while true; do
   else
     msg_warn "Could not join domain (Domain Controller unreachable or authentication failed)."
     
-    # Avoid infinite loop when running with -y flag
     if [ "$ASSUME_YES" = true ]; then
       msg_warn "Auto-continuing in Offline/Testing mode due to -y flag..."
       break
     fi
 
-    if ask_yes_no "Would you like to retry Domain Join?" "Y"; then
+    if ask_yes_no "Would you like to retry Domain Join?" "N"; then
       msg_info "Retrying domain authentication..."
       continue
     else
@@ -154,7 +153,7 @@ while true; do
   fi
 done
 
-# Step 7: Interactive Lab Access Selection
+# Step 7: Auto-detect and Configure Lab Access Rules
 step_header "7" "Configuring Lab Access Control Rules"
 
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
@@ -167,21 +166,44 @@ if [ -f "$LAB_CONF" ]; then
   done < "$LAB_CONF"
   
   if [ "${#LAB_ENTRIES[@]}" -gt 0 ]; then
-    echo -e "  ${BOLD}Select the Lab ID to allow on this machine:${NC}\n"
+    SYS_HOSTNAME=$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]' || echo "")
+    AUTO_DETECTED_INDEX=""
     
     idx=1
     declare -A LAB_NAMES
     declare -A LAB_IDS
     
+    echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
     for entry in "${LAB_ENTRIES[@]}"; do
       IFS=':' read -r name id <<< "$entry"
       LAB_NAMES[$idx]="$name"
       LAB_IDS[$idx]="$id"
+      
+      # Match against system hostname (e.g. GSFCUOSLAB001 matches OSLAB or OS)
+      CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+      CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+      
+      if [ -n "$SYS_HOSTNAME" ]; then
+        if [[ "$SYS_HOSTNAME" == *"$CLEAN_NAME"* ]] || [[ "$SYS_HOSTNAME" == *"$CLEAN_ID"* ]]; then
+          AUTO_DETECTED_INDEX="$idx"
+        fi
+      fi
+      
       echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}ID: ${id}${NC})"
       ((idx++))
     done
-    
+
     CHOICE="$SELECTED_LAB_INDEX"
+    
+    # Auto-detection prompt
+    if [ -z "$CHOICE" ] && [ -n "$AUTO_DETECTED_INDEX" ]; then
+      msg_ok "Auto-detected Lab from Hostname ('${SYS_HOSTNAME}'): ${LAB_NAMES[$AUTO_DETECTED_INDEX]}"
+      if ask_yes_no "Use auto-detected lab selection [${LAB_NAMES[$AUTO_DETECTED_INDEX]}]?" "Y"; then
+        CHOICE="$AUTO_DETECTED_INDEX"
+      fi
+    fi
+
+    # Fallback to manual selection if auto-detect wasn't chosen or available
     if [ -z "$CHOICE" ]; then
       if [ "$ASSUME_YES" = true ]; then
         CHOICE=1
@@ -203,14 +225,14 @@ if [ -f "$LAB_CONF" ]; then
     msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
 
     # Permit selected lab ID (warns if offline)
-    realm permit -g "$ALLOWED_ID" || msg_warn "Skipped 'realm permit' (machine not joined to domain)."
+    realm permit -g "$ALLOWED_ID" 2>/dev/null || msg_warn "Skipped 'realm permit' (machine offline/not joined)."
 
     # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_IDS[@]}"; do
       if [ "$key" -ne "$CHOICE" ]; then
         DENY_ID="${LAB_IDS[$key]}"
-        realm deny -g "$DENY_ID" || true
-        msg_warn "Blocked Lab ID rule recorded: ${DENY_ID}"
+        realm deny -g "$DENY_ID" 2>/dev/null || true
+        msg_warn "Recorded block rule for Lab ID: ${DENY_ID}"
       fi
     done
     
@@ -221,7 +243,6 @@ fi
 # Step 8: Setup Policy Folder, Refresh Script, Auto-installer, and Systemd Timer
 step_header "8" "Syncing App Configs & Setting Up 10-Minute Policy Service"
 
-# Sync config files to central directory
 mkdir -p /etc/fedora-ad-dms
 for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf lab.conf; do
   if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
@@ -233,7 +254,7 @@ done
 cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
 chmod 755 /usr/local/bin/refresh-app-policies
 
-# Create 'refresh' terminal command
+# Terminal command helper
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
@@ -282,7 +303,7 @@ step_header "10" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force
 systemctl enable --now oddjobd
 
-# Step 11: Configure DMS Profile for ALL Users (New via /etc/skel & Existing via /home/*)
+# Step 11: Configure DMS Profile for ALL Users
 step_header "11" "Applying DMS Themes for New & Existing Users"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
