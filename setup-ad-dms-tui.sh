@@ -70,7 +70,90 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# Step 1: Remove LibreOffice / Install ONLYOFFICE (Compulsory)
+# --- STEP 0: LIVE SESSION DETECTION & DIRECT SINGLE-PASS INSTALLER ---
+is_live_session() {
+  [ -d /run/initramfs/live ] || [ -f /etc/livedaemon ] || grep -q "boot=live\|img.livedata" /proc/cmdline
+}
+
+if is_live_session; then
+  step_header "0" "Fedora Live Single-Pass Installer"
+  msg_info "Detected Fedora Live environment. Installing directly to disk with full post-configuration..."
+
+  # 1. Select Target Drive
+  echo -e "\n  ${BOLD}Available Storage Drives:${NC}"
+  lsblk -d -n -o NAME,SIZE,MODEL | grep -v "loop\|zram" | awk '{print "    /dev/"$1" ("$2" - "$3")"}'
+  
+  echo -en "\n  ${YELLOW}[INPUT]${NC} Enter target install disk (e.g., /dev/nvme0n1 or /dev/sda): "
+  read -r TARGET_DISK < /dev/tty
+  
+  if [ ! -b "$TARGET_DISK" ]; then
+    msg_err "Invalid block device: $TARGET_DISK"
+    exit 1
+  fi
+
+  # 2. Set Hostname & User
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter System Hostname (e.g., GSFCUOSLAB001): "
+  read -r NEW_HOSTNAME < /dev/tty
+  NEW_HOSTNAME=$(echo "$NEW_HOSTNAME" | xargs | tr '[:lower:]' '[:upper:]')
+  
+  DEFAULT_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Local Admin Username [Default: ${DEFAULT_USER}]: "
+  read -r NEW_USER < /dev/tty
+  NEW_USER="${NEW_USER:-$DEFAULT_USER}"
+
+  # 3. Set Passwords
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Password for user '${NEW_USER}' and root: "
+  read -sp "" NEW_PASS < /dev/tty
+  echo ""
+
+  PASS_HASH=$(openssl passwd -6 "$NEW_PASS")
+
+  # Generate Kickstart File
+  KS_FILE="/tmp/fedora-ad-dms.ks"
+  cat <<EOF > "$KS_FILE"
+# Single-Pass Fedora Kickstart Configuration
+lang en_US.UTF-8
+keyboard us
+timezone Asia/Kolkata
+zerombr
+clearpart --all --initlabel --drives=$(basename "$TARGET_DISK")
+reqpart
+part / --fstype=ext4 --size=20000 --grow
+
+rootpw --iscrypted ${PASS_HASH}
+user --name=${NEW_USER} --password=${PASS_HASH} --iscrypted --groups=wheel
+network --hostname=${NEW_HOSTNAME}
+
+poweroff
+
+%post --erroronfail --log=/var/log/kickstart-post-setup.log
+# 1. Fetch repo files directly inside target OS chroot
+curl -fsSL "https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz" | tar -xz -C /tmp --strip-components=1
+
+# 2. Execute setup steps inside target system before first boot
+cd /tmp
+chmod +x setup-ad-dms-tui.sh
+./setup-ad-dms-tui.sh -y
+%end
+EOF
+
+  msg_ok "Kickstart generated at ${KS_FILE}"
+  msg_warn "WARNING: ${TARGET_DISK} will be wiped completely. Setup will execute inside %post."
+  
+  if ask_yes_no "Proceed with single-pass installation?" "Y"; then
+    msg_info "Starting Anaconda Installer..."
+    liveinst --kickstart="$KS_FILE"
+    echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC} ${BOLD}Installation & full setup complete! System is ready to power on.  ${NC} ${GREEN}|${NC}"
+    echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+    exit 0
+  else
+    msg_err "Installation aborted."
+    exit 1
+  fi
+fi
+
+# --- STEP 1: SOFTWARE SWAPPING ---
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
 msg_info "Removing LibreOffice and installing ONLYOFFICE (Compulsory)..."
 dnf remove -y "libreoffice*" || true
@@ -78,17 +161,17 @@ dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffic
 dnf install -y onlyoffice-desktopeditors || true
 msg_ok "ONLYOFFICE installation complete."
 
-# Step 2: System Update
+# --- STEP 2: SYSTEM UPDATE ---
 step_header "2" "Updating System Packages"
 if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
   dnf update -y
 fi
 
-# Step 3: Install AD Prerequisites
+# --- STEP 3: AD DEPENDENCIES ---
 step_header "3" "Installing AD & Security Dependencies"
 dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
 
-# Step 4: Install Dank Material Shell (DMS) via Native Script
+# --- STEP 4: DMS INSTALLATION ---
 step_header "4" "Installing Dank Material Shell (DMS)"
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
   msg_info "Executing native DMS installer as user '${SUDO_USER}'..."
@@ -99,7 +182,7 @@ else
 fi
 msg_ok "DMS native installation executed."
 
-# Step 5: Read Domain Settings
+# --- STEP 5: DOMAIN SETTINGS ---
 step_header "5" "Active Directory Configuration"
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   # shellcheck disable=SC1090
@@ -107,25 +190,29 @@ if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   msg_ok "Loaded configuration from 'domain.conf'."
 fi
 
-# NetworkManager DNS
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
+# NetworkManager DNS Setup
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
 if [ -n "${AD_DNS_IP:-}" ]; then
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes || true
-  nmcli connection up "$TARGET_CONN" || true
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
 fi
 
-systemctl enable --now chronyd || true
+systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 
-# Step 6: Realm Join (With Retry Loop and Offline Fallback)
+# --- STEP 6: REALM JOIN (RETRY & OFFLINE FALLBACK) ---
 step_header "6" "Joining Active Directory Realm"
 
 while true; do
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
-  read -sp "" DOMAIN_PASS < /dev/tty
-  echo ""
+  if [ "$ASSUME_YES" = true ]; then
+    DOMAIN_PASS="${DOMAIN_PASS:-}"
+  else
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
+    read -sp "" DOMAIN_PASS < /dev/tty
+    echo ""
+  fi
 
   if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
     msg_ok "Joined Active Directory realm successfully."
@@ -153,7 +240,7 @@ while true; do
   fi
 done
 
-# Step 7: Auto-detect and Configure Lab Access Rules
+# --- STEP 7: AUTO-DETECT & CONFIGURE LAB RULES ---
 step_header "7" "Configuring Lab Access Control Rules"
 
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
@@ -179,7 +266,6 @@ if [ -f "$LAB_CONF" ]; then
       LAB_NAMES[$idx]="$name"
       LAB_IDS[$idx]="$id"
       
-      # Match against system hostname (e.g. GSFCUOSLAB001 matches OSLAB or OS)
       CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       
@@ -203,7 +289,7 @@ if [ -f "$LAB_CONF" ]; then
       fi
     fi
 
-    # Fallback to manual selection if auto-detect wasn't chosen or available
+    # Manual Selection Fallback
     if [ -z "$CHOICE" ]; then
       if [ "$ASSUME_YES" = true ]; then
         CHOICE=1
@@ -240,7 +326,7 @@ if [ -f "$LAB_CONF" ]; then
   fi
 fi
 
-# Step 8: Setup Policy Folder, Refresh Script, Auto-installer, and Systemd Timer
+# --- STEP 8: SYNC CONFIGS & 10-MIN TIMER SERVICE ---
 step_header "8" "Syncing App Configs & Setting Up 10-Minute Policy Service"
 
 mkdir -p /etc/fedora-ad-dms
@@ -251,10 +337,12 @@ for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-
   fi
 done
 
-cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
-chmod 755 /usr/local/bin/refresh-app-policies
+if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
+  cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
+  chmod 755 /usr/local/bin/refresh-app-policies
+fi
 
-# Terminal command helper
+# Terminal shortcut command
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
@@ -272,7 +360,7 @@ Type=oneshot
 ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-# Systemd Timer (Every 10 Minutes)
+# Systemd Timer (Runs every 10 Minutes)
 cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
 Description=Run app-policy-sync every 10 minutes
@@ -286,10 +374,10 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now app-policy-sync.timer
-/usr/local/bin/refresh-app-policies || true
+systemctl enable --now app-policy-sync.timer 2>/dev/null || true
+/usr/local/bin/refresh-app-policies 2>/dev/null || true
 
-# Step 9: System Configs
+# --- STEP 9: SYSTEM CONFIGS ---
 step_header "9" "Applying System Configurations"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
@@ -298,12 +386,12 @@ if [ -d "${SCRIPT_DIR}/configs" ]; then
   chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
 fi
 
-# Step 10: PAM Integration
+# --- STEP 10: PAM INTEGRATION ---
 step_header "10" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force
-systemctl enable --now oddjobd
+systemctl enable --now oddjobd 2>/dev/null || true
 
-# Step 11: Configure DMS Profile for ALL Users
+# --- STEP 11: DMS THEME DEPLOYMENT ---
 step_header "11" "Applying DMS Themes for New & Existing Users"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
@@ -331,17 +419,17 @@ if [ -f "$THEME_ARCHIVE" ]; then
   msg_ok "DMS themes applied to all existing user profiles."
 fi
 
-# Step 12: Restart Services
+# --- STEP 12: FINALIZE SERVICES ---
 step_header "12" "Finalizing Installation"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
-setsebool -P allow_polyinstantiation 1 || true
-setsebool -P nis_enabled 1 || true
-setsebool -P use_nfs_home_dirs 1 || true
+setsebool -P allow_polyinstantiation 1 2>/dev/null || true
+setsebool -P nis_enabled 1 2>/dev/null || true
+setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 
-sss_cache -E || true
-rm -f /var/lib/sss/db/* || true
-systemctl restart sssd oddjobd greetd || true
+sss_cache -E 2>/dev/null || true
+rm -f /var/lib/sss/db/* 2>/dev/null || true
+systemctl restart sssd oddjobd greetd 2>/dev/null || true
 
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Offline rules tested & auto-refresh activated.    ${NC} ${GREEN}|${NC}"
