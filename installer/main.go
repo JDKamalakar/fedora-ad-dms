@@ -65,7 +65,9 @@ func main() {
 		scriptDir, _ = os.Getwd()
 	}
 
+	// Load configuration files
 	loadLabConfig()
+	loadDomainConfig()
 
 	app = tview.NewApplication()
 	pages = tview.NewPages()
@@ -81,6 +83,45 @@ func main() {
 func logWrite(msg string) {
 	if logFile != nil {
 		logFile.WriteString(msg + "\n")
+	}
+}
+
+// Read domain.conf automatically
+func loadDomainConfig() {
+	// Defaults
+	config.DomainName = "gsfcu.local"
+	config.DomainUser = "Administrator"
+
+	confPath := filepath.Join(scriptDir, "..", "domain.conf")
+	file, err := os.Open(confPath)
+	if err != nil {
+		confPath = filepath.Join(scriptDir, "domain.conf")
+		file, err = os.Open(confPath)
+		if err != nil {
+			return
+		}
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+			switch key {
+			case "DOMAIN_NAME":
+				config.DomainName = val
+			case "AD_DNS_IP":
+				config.ADDNSIP = val
+			case "DOMAIN_USER":
+				config.DomainUser = val
+			}
+		}
 	}
 }
 
@@ -140,9 +181,10 @@ func buildConfigForm() tview.Primitive {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Configuration Settings ").SetTitleColor(tcell.ColorTeal)
 
-	form.AddInputField("Domain Name", "gsfcu.local", 30, nil, func(text string) { config.DomainName = text })
-	form.AddInputField("AD DNS IP", "", 30, nil, func(text string) { config.ADDNSIP = text })
-	form.AddInputField("Domain Admin User", "Administrator", 30, nil, func(text string) { config.DomainUser = text })
+	// Form fields pre-filled from domain.conf
+	form.AddInputField("Domain Name", config.DomainName, 30, nil, func(text string) { config.DomainName = text })
+	form.AddInputField("AD DNS IP", config.ADDNSIP, 30, nil, func(text string) { config.ADDNSIP = text })
+	form.AddInputField("Domain Admin User", config.DomainUser, 30, nil, func(text string) { config.DomainUser = text })
 	form.AddPasswordField("Domain Admin Password", "", 30, '*', func(text string) { config.DomainPass = text })
 
 	// Auto-Detect Lab based on Hostname
