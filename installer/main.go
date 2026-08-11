@@ -36,7 +36,7 @@ type Task struct {
 	Cmd   string
 }
 
-// --- ANIMATED BACKGROUND PRIMITIVE ---
+// --- ANIMATED BACKGROUND ---
 type Particle struct {
 	x, y  float64
 	speed float64
@@ -111,22 +111,23 @@ func (b *Background) Draw(screen tcell.Screen) {
 
 // --- GLOBAL VARIABLES ---
 var (
-	app         *tview.Application
-	pages       *tview.Pages
-	config      Config
-	labEntries  []LabEntry
-	labNameMap  map[string]string
-	logFile     *os.File
-	scriptDir   string
-	logPath     = "/var/log/fedora-ad-setup.log"
-	pendingPkgs int
-	tasks       []Task
-	taskStates  []string
-	statusList  *tview.TextView
-	progressBar *tview.TextView
-	logView     *tview.TextView
-	matchedHost string
-	matchedLab  string
+	app          *tview.Application
+	pages        *tview.Pages
+	config       Config
+	labEntries   []LabEntry
+	labNameMap   map[string]string
+	logFile      *os.File
+	scriptDir    string
+	logPath      = "/var/log/fedora-ad-setup.log"
+	pendingPkgs  int
+	tasks        []Task
+	taskStates   []string
+	statusList   *tview.TextView
+	progressBar  *tview.TextView
+	logView      *tview.TextView
+	matchedHost  string
+	matchedLab   string
+	stopAnimChan = make(chan struct{})
 )
 
 func main() {
@@ -135,7 +136,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Modern Nord/Catppuccin Style Theme
+	// Modern Theme Colors
 	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(24, 26, 38)
 	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(36, 39, 58)
 	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(137, 180, 250)
@@ -168,11 +169,17 @@ func main() {
 	app = tview.NewApplication()
 	pages = tview.NewPages()
 
-	// Background ticker for particles
+	// Particle animation goroutine
 	go func() {
 		ticker := time.NewTicker(60 * time.Millisecond)
-		for range ticker.C {
-			app.QueueUpdateDraw(func() {})
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				app.QueueUpdateDraw(func() {})
+			case <-stopAnimChan:
+				return
+			}
 		}
 	}()
 
@@ -310,8 +317,6 @@ func countPendingUpdates() int {
 	return count
 }
 
-// --- REDESIGNED FORM UI ---
-
 func buildConfigForm() tview.Primitive {
 	form := tview.NewForm()
 	form.SetBorder(true).
@@ -322,13 +327,13 @@ func buildConfigForm() tview.Primitive {
 	form.SetFieldTextColor(tcell.NewRGBColor(205, 214, 244))
 	form.SetLabelColor(tcell.NewRGBColor(147, 153, 178))
 
-	// 1-4. Domain Configuration Fields
+	// Form Inputs
 	form.AddInputField("Domain Name", config.DomainName, 28, nil, func(text string) { config.DomainName = text })
 	form.AddInputField("AD DNS IP", config.ADDNSIP, 28, nil, func(text string) { config.ADDNSIP = text })
 	form.AddInputField("Admin User", config.DomainUser, 28, nil, func(text string) { config.DomainUser = text })
 	form.AddPasswordField("Admin Password", "", 28, '*', func(text string) { config.DomainPass = text })
 
-	// 5. Assigned Lab Dropdown
+	// Assigned Lab Dropdown
 	hostname, _ := os.Hostname()
 	matchedHost = hostname
 	matchedLab = "None"
@@ -355,45 +360,48 @@ func buildConfigForm() tview.Primitive {
 		})
 	}
 
-	// 6. System Updates Dropdown
+	// Updates Dropdown
 	updateLabel := fmt.Sprintf("System Updates (%d pending)", pendingPkgs)
 	form.AddDropDown(updateLabel, []string{"Yes (Update system)", "No (Skip updates)"}, 0, func(option string, index int) {
 		config.UpdateSystem = (index == 0)
 	})
 
-	// Trigger Action
 	startAction := func() {
 		if strings.TrimSpace(config.DomainPass) == "" {
 			showErrorModal("Domain Admin Password is required!")
 			return
 		}
+		// Stop particle animation goroutine safely
+		select {
+		case stopAnimChan <- struct{}{}:
+		default:
+		}
+
 		buildTasksList()
-		pages.AddPage("execution", buildExecutionPage(), true, true)
+		execPage := buildExecutionPage()
+		pages.AddPage("execution", execPage, true, true)
 		pages.SwitchToPage("execution")
+		app.SetFocus(logView)
+
 		go runDeploymentTasks()
 	}
 
-	// Buttons
 	form.AddButton("Start Deployment", startAction)
 	form.AddButton("Exit", func() { app.Stop() })
 
-	// Style Start & Exit buttons
-	form.SetButtonBackgroundColor(tcell.NewRGBColor(166, 227, 161)) // Emerald Green
+	form.SetButtonBackgroundColor(tcell.NewRGBColor(166, 227, 161))
 	form.SetButtonTextColor(tcell.NewRGBColor(17, 17, 27))
 	form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.NewRGBColor(249, 226, 175)).Foreground(tcell.NewRGBColor(17, 17, 27)))
 
-	// Focused on Admin Password Field (Index 3) by default
+	// Focus directly on password input (Index 3)
 	form.SetFocus(3)
 
-	// Key Capture: ENTER on Password field or Ctrl+Enter / Ctrl+S triggers Deployment
 	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		focusedItem, _ := form.GetFocusedItemIndex()
 
-		if event.Key() == tcell.KeyEnter {
-			if focusedItem == 3 { // Password field index
-				startAction()
-				return nil
-			}
+		if event.Key() == tcell.KeyEnter && focusedItem == 3 {
+			startAction()
+			return nil
 		}
 
 		if event.Key() == tcell.KeyCtrlS || (event.Key() == tcell.KeyEnter && event.Modifiers()&tcell.ModCtrl != 0) {
@@ -403,13 +411,11 @@ func buildConfigForm() tview.Primitive {
 		return event
 	})
 
-	// Sub-info header
 	infoText := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignCenter).
 		SetText(fmt.Sprintf("[gray]Host:[white] %s  [gray]|  Matched Lab:[yellow] %s[white]", matchedHost, matchedLab))
 
-	// Footer Help
 	helpText := tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignCenter).
@@ -420,7 +426,6 @@ func buildConfigForm() tview.Primitive {
 		AddItem(form, 18, 1, true).
 		AddItem(helpText, 1, 1, false)
 
-	// Center layout container
 	centeredFlex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
@@ -443,7 +448,7 @@ func showErrorModal(msg string) {
 	pages.AddPage("errorModal", modal, true, true)
 }
 
-// --- EXECUTION DASHBOARD PAGE ---
+// --- EXECUTION PAGE ---
 
 func buildTasksList() {
 	tasks = []Task{
@@ -474,9 +479,9 @@ func buildExecutionPage() tview.Primitive {
 	statusList = tview.NewTextView().SetDynamicColors(true)
 	statusList.SetBorder(true).SetTitle(" Deployment Checklist ").SetTitleColor(tcell.NewRGBColor(137, 180, 250))
 
-	logView = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetChangedFunc(func() {
-		app.Draw()
-	})
+	logView = tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true)
 	logView.SetBorder(true).SetTitle(" Live Output ").SetTitleColor(tcell.NewRGBColor(166, 227, 161))
 
 	progressBar = tview.NewTextView().SetDynamicColors(true)
@@ -553,8 +558,8 @@ func runDeploymentTasks() {
 		renderProgressBar(i+1, total)
 	}
 
-	appendLog("\n[gold]===============================================[white]")
-	appendLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]")
+	appendLog("\n[gold]===============================================[white]\n")
+	appendLog("[green]Deployment Finished Successfully! Press ENTER to exit.[white]\n")
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEnter {
@@ -567,7 +572,7 @@ func runDeploymentTasks() {
 func appendLog(msg string) {
 	logWrite(msg)
 	app.QueueUpdateDraw(func() {
-		logView.Write([]byte(msg))
+		fmt.Fprint(logView, msg)
 		logView.ScrollToEnd()
 	})
 }
@@ -575,8 +580,14 @@ func appendLog(msg string) {
 func execBashCmd(cmdStr string) error {
 	cmd := exec.Command("bash", "-c", cmdStr)
 
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -589,8 +600,7 @@ func execBashCmd(cmdStr string) error {
 		defer wg.Done()
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
-			text := scanner.Text()
-			appendLog(text + "\n")
+			appendLog(scanner.Text() + "\n")
 		}
 	}
 
