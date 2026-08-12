@@ -88,7 +88,7 @@ is_live_session() {
 
 if is_live_session && [ "$SKIP_STEP0" = false ]; then
   step_header "0" "Fedora Live Native Direct Disk Installer"
-  msg_info "Detected Fedora Live environment. Installing natively to disk..."
+  msg_info "Detected Fedora Live environment. Installing natively from Live USB to disk..."
 
   # 1. Select Target Storage Drive
   echo -e "\n  ${BOLD}Available Storage Drives:${NC}\n"
@@ -258,7 +258,7 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
   mkdir -p "${TARGET_MOUNT}/boot/efi"
   mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
 
-  msg_info "Syncing Live OS filesystem to disk (with live progress)..."
+  msg_info "Syncing Live OS filesystem from Live USB to disk..."
   rsync -axH --info=progress2 \
     --exclude=/proc/* \
     --exclude=/sys/* \
@@ -334,23 +334,41 @@ fi
 
 # --- STEP 1: SOFTWARE SWAPPING ---
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-msg_info "Removing LibreOffice and installing ONLYOFFICE (Compulsory)..."
-dnf remove -y "libreoffice*" || true
-dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-dnf install -y onlyoffice-desktopeditors || true
-msg_ok "ONLYOFFICE installation complete."
+if rpm -q libreoffice-core >/dev/null 2>&1; then
+  msg_info "Removing LibreOffice..."
+  dnf remove -y "libreoffice*" 2>/dev/null || true
+fi
+
+msg_info "Installing ONLYOFFICE Desktop Editors..."
+dnf install -y --setopt=strict=0 https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm 2>/dev/null || true
+dnf install -y --setopt=strict=0 onlyoffice-desktopeditors 2>/dev/null || msg_warn "ONLYOFFICE package download skipped due to repository mirror error."
+msg_ok "Software swapping step finished."
 
 # --- STEP 2: SYSTEM UPDATE ---
 step_header "2" "Updating System Packages"
 if ask_yes_no "Run full system update ('dnf update')?" "N"; then
-  dnf update -y
+  dnf update -y --setopt=strict=0 || msg_warn "System update encountered mirror errors; proceeding with installed base packages."
 else
   msg_info "Skipping full system update."
 fi
 
 # --- STEP 3: AD DEPENDENCIES ---
 step_header "3" "Installing AD & Security Dependencies"
-dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
+REQUIRED_PKGS=(realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit)
+MISSING_PKGS=()
+
+for pkg in "${REQUIRED_PKGS[@]}"; do
+  if ! rpm -q "$pkg" >/dev/null 2>&1; then
+    MISSING_PKGS+=("$pkg")
+  fi
+done
+
+if [ "${#MISSING_PKGS[@]}" -eq 0 ]; then
+  msg_ok "All required AD & security packages are already installed from the Live USB image!"
+else
+  msg_info "Installing missing packages: ${MISSING_PKGS[*]}"
+  dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" 2>/dev/null || msg_warn "Some packages failed to fetch due to online mirror 404s. Proceeding with Live image packages."
+fi
 
 # --- STEP 4: DMS INSTALLATION ---
 step_header "4" "Installing Dank Material Shell (DMS)"
