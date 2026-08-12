@@ -70,7 +70,7 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# --- STEP 0: NATIVE LIVE INSTALLER (BYPASSES ANACONDA/KICKSTART) ---
+# --- STEP 0: NATIVE LIVE INSTALLER ---
 is_live_session() {
   [ -d /run/initramfs/live ] || [ -f /etc/livedaemon ] || grep -q "boot=live\|img.livedata" /proc/cmdline
 }
@@ -137,7 +137,7 @@ if is_live_session; then
     exit 1
   fi
 
-  # Determine partition scheme
+  # Determine partition naming convention
   if [[ "$TARGET_DISK" =~ nvme|loop|mmcblk ]]; then
     EFI_PART="${TARGET_DISK}p1"
     ROOT_PART="${TARGET_DISK}p2"
@@ -166,7 +166,15 @@ if is_live_session; then
   mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
 
   msg_info "Syncing Live OS filesystem to disk (this will take 2-3 minutes)..."
-  rsync -aHAX --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/run --exclude=/tmp --exclude=/mnt --exclude=/media / "${TARGET_MOUNT}/"
+  rsync -axH \
+    --exclude=/proc/* \
+    --exclude=/sys/* \
+    --exclude=/dev/* \
+    --exclude=/run/* \
+    --exclude=/tmp/* \
+    --exclude=/mnt/* \
+    --exclude=/media/* \
+    / "${TARGET_MOUNT}/" || true
 
   # Configure fstab
   ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
@@ -199,6 +207,9 @@ EOF
     echo 'root:${NEW_PASS}' | chpasswd
     echo '${NEW_USER}:${NEW_PASS}' | chpasswd
     
+    # Ensure SELinux auto-relabels filesystem on first boot
+    touch /.autorelabel
+
     # Reconfigure Bootloader
     grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
     grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
