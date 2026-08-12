@@ -43,14 +43,24 @@ ask_yes_no() {
   local prompt="$1"
   local default="${2:-Y}"
   local resp
+  local hint="[Y/n]"
+
+  if [[ "$default" =~ ^[Nn]$ ]]; then
+    hint="[y/N]"
+  fi
 
   if [ "$ASSUME_YES" = true ]; then
-    msg_info "${prompt} -> Auto-approved (-y flag)"
-    return 0
+    if [[ "$default" =~ ^[Nn]$ ]]; then
+      msg_info "${prompt} -> Auto-skipped (-y flag default N)"
+      return 1
+    else
+      msg_info "${prompt} -> Auto-approved (-y flag)"
+      return 0
+    fi
   fi
 
   while true; do
-    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
+    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} ${hint}: "
     read -r resp < /dev/tty
     resp="${resp:-$default}"
     case "$resp" in
@@ -149,10 +159,22 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     declare -A STEP0_LAB_IDS
 
     for entry in "${LAB_ENTRIES[@]}"; do
-      IFS=':' read -r name id <<< "$entry"
-      STEP0_LAB_NAMES[$idx]="$name"
-      STEP0_LAB_IDS[$idx]="$id"
-      echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}Identifier: ${id}${NC})"
+      if [[ "$entry" == *":"* ]]; then
+        lab_name_raw="${entry%%:*}"
+        lab_id_raw="${entry#*:}"
+      else
+        lab_name_raw="$entry"
+        lab_id_raw="$entry"
+      fi
+
+      lab_name=$(echo "$lab_name_raw" | xargs)
+      lab_id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
+
+      STEP0_LAB_NAMES[$idx]="$lab_name"
+      STEP0_LAB_IDS[$idx]="$lab_id"
+
+      # Displays ONLY the lab name
+      echo -e "    ${CYAN}[$idx]${NC} ${lab_name}"
       ((idx++))
     done
     total_labs=$((idx - 1))
@@ -162,7 +184,7 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
       read -r LAB_CHOICE < /dev/tty
       if [[ "$LAB_CHOICE" =~ ^[0-9]+$ ]] && [ "$LAB_CHOICE" -ge 1 ] && [ "$LAB_CHOICE" -le "$total_labs" ]; then
         SELECTED_LAB_PREFIX="${STEP0_LAB_IDS[$LAB_CHOICE]}"
-        msg_ok "Selected Lab: ${STEP0_LAB_NAMES[$LAB_CHOICE]} (${SELECTED_LAB_PREFIX})"
+        msg_ok "Selected Lab: ${STEP0_LAB_NAMES[$LAB_CHOICE]}"
         break
       fi
       msg_err "Invalid selection. Please enter a number between 1 and ${total_labs}."
@@ -171,7 +193,7 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
 
   # 3. Device Number Input
   while true; do
-    echo -en "  ${YELLOW}[INPUT]${NC} Enter Device Number (e.g., 4 or 004): "
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Device Number (e.g., 2 or 002): "
     read -r DEV_NUM < /dev/tty
     DEV_NUM_CLEAN=$(echo "$DEV_NUM" | tr -cd '0-9')
     if [ -n "$DEV_NUM_CLEAN" ]; then
@@ -181,7 +203,8 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     msg_err "Invalid input. Please enter a valid number."
   done
 
-  NEW_HOSTNAME="${SELECTED_LAB_PREFIX}${PADDED_DEV_NUM}"
+  # Strictly sanitize Hostname and Username
+  NEW_HOSTNAME=$(echo "${SELECTED_LAB_PREFIX}${PADDED_DEV_NUM}" | tr -cd 'a-zA-Z0-9_-' | tr '[:lower:]' '[:upper:]')
   NEW_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 
   msg_ok "Generated Hostname: ${NEW_HOSTNAME}"
@@ -319,8 +342,10 @@ msg_ok "ONLYOFFICE installation complete."
 
 # --- STEP 2: SYSTEM UPDATE ---
 step_header "2" "Updating System Packages"
-if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
+if ask_yes_no "Run full system update ('dnf update')?" "N"; then
   dnf update -y
+else
+  msg_info "Skipping full system update."
 fi
 
 # --- STEP 3: AD DEPENDENCIES ---
@@ -418,7 +443,17 @@ if [ -f "$LAB_CONF" ]; then
     
     echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
     for entry in "${LAB_ENTRIES[@]}"; do
-      IFS=':' read -r name id <<< "$entry"
+      if [[ "$entry" == *":"* ]]; then
+        lab_name_raw="${entry%%:*}"
+        lab_id_raw="${entry#*:}"
+      else
+        lab_name_raw="$entry"
+        lab_id_raw="$entry"
+      fi
+
+      name=$(echo "$lab_name_raw" | xargs)
+      id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
+
       LAB_NAMES[$idx]="$name"
       LAB_IDS[$idx]="$id"
       
@@ -431,7 +466,8 @@ if [ -f "$LAB_CONF" ]; then
         fi
       fi
       
-      echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}ID: ${id}${NC})"
+      # Displays ONLY the lab name
+      echo -e "    ${CYAN}[$idx]${NC} ${name}"
       ((idx++))
     done
 
