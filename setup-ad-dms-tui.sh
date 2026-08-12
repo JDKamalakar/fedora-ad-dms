@@ -146,15 +146,24 @@ if is_live_session; then
     ROOT_PART="${TARGET_DISK}2"
   fi
 
+  # Turn off active swap & unmount partitions on target drive
+  msg_info "Preparing disk ${TARGET_DISK}..."
+  swapoff -a 2>/dev/null || true
+  umount -f "${TARGET_DISK}"* 2>/dev/null || true
+
   msg_info "Partitioning target drive ${TARGET_DISK}..."
-  umount "${TARGET_DISK}"* 2>/dev/null || true
-  wipefs -a "$TARGET_DISK" >/dev/null 2>&1
+  wipefs -a "$TARGET_DISK" >/dev/null 2>&1 || true
   parted -s "$TARGET_DISK" mklabel gpt
   parted -s "$TARGET_DISK" mkpart ESP fat32 1MiB 1025MiB
   parted -s "$TARGET_DISK" set 1 boot on
   parted -s "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
 
-  msg_info "Formatting partitions..."
+  # Force kernel to re-read partition table
+  partprobe "$TARGET_DISK" 2>/dev/null || true
+  udevadm settle 2>/dev/null || true
+  sleep 2
+
+  msg_info "Formatting partitions (${EFI_PART} & ${ROOT_PART})..."
   mkfs.vfat -F32 "$EFI_PART" >/dev/null
   mkfs.ext4 -F "$ROOT_PART" >/dev/null
 
