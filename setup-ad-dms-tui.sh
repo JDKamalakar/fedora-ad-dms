@@ -116,17 +116,76 @@ if is_live_session; then
 
   msg_ok "Selected Target Disk: ${TARGET_DISK}"
 
-  # 2. Hostname & User Details
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter System Hostname (e.g., GSFCUOSLAB001): "
-  read -r NEW_HOSTNAME < /dev/tty
-  NEW_HOSTNAME=$(echo "$NEW_HOSTNAME" | xargs | tr '[:lower:]' '[:upper:]')
-  
-  DEFAULT_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter Local Admin Username [Default: ${DEFAULT_USER}]: "
-  read -r NEW_USER < /dev/tty
-  NEW_USER="${NEW_USER:-$DEFAULT_USER}"
+  # 2. Lab Selection & Hostname Generation
+  mkdir -p /tmp/installer_init
+  LAB_CONF_SOURCE=""
 
-  # 3. Password
+  if [ -f "${SCRIPT_DIR}/lab.conf" ]; then
+    LAB_CONF_SOURCE="${SCRIPT_DIR}/lab.conf"
+  else
+    msg_info "Fetching lab configuration..."
+    curl -fsSL "https://raw.githubusercontent.com/jayrajkamalakar-gsfcu/fedora-ad-dms/main/lab.conf" -o /tmp/installer_init/lab.conf 2>/dev/null || true
+    LAB_CONF_SOURCE="/tmp/installer_init/lab.conf"
+  fi
+
+  LAB_ENTRIES=()
+  if [ -f "$LAB_CONF_SOURCE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      trimmed=$(echo "$line" | xargs)
+      [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
+      LAB_ENTRIES+=("$trimmed")
+    done < "$LAB_CONF_SOURCE"
+  fi
+
+  if [ "${#LAB_ENTRIES[@]}" -eq 0 ]; then
+    msg_warn "lab.conf not found or empty. Using default prefix 'GSFCUOSLAB'."
+    SELECTED_LAB_PREFIX="GSFCUOSLAB"
+  else
+    echo -e "\n  ${BOLD}Select Target Lab:${NC}\n"
+    idx=1
+    declare -A STEP0_LAB_NAMES
+    declare -A STEP0_LAB_IDS
+
+    for entry in "${LAB_ENTRIES[@]}"; do
+      IFS=':' read -r name id <<< "$entry"
+      STEP0_LAB_NAMES[$idx]="$name"
+      STEP0_LAB_IDS[$idx]="$id"
+      echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}Identifier: ${id}${NC})"
+      ((idx++))
+    done
+    total_labs=$((idx - 1))
+
+    while true; do
+      echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
+      read -r LAB_CHOICE < /dev/tty
+      if [[ "$LAB_CHOICE" =~ ^[0-9]+$ ]] && [ "$LAB_CHOICE" -ge 1 ] && [ "$LAB_CHOICE" -le "$total_labs" ]; then
+        SELECTED_LAB_PREFIX="${STEP0_LAB_IDS[$LAB_CHOICE]}"
+        msg_ok "Selected Lab: ${STEP0_LAB_NAMES[$LAB_CHOICE]} (${SELECTED_LAB_PREFIX})"
+        break
+      fi
+      msg_err "Invalid selection. Please enter a number between 1 and ${total_labs}."
+    done
+  fi
+
+  # 3. Device Number Input
+  while true; do
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Device Number (e.g., 4 or 004): "
+    read -r DEV_NUM < /dev/tty
+    DEV_NUM_CLEAN=$(echo "$DEV_NUM" | tr -cd '0-9')
+    if [ -n "$DEV_NUM_CLEAN" ]; then
+      PADDED_DEV_NUM=$(printf "%03d" "$((10#$DEV_NUM_CLEAN))")
+      break
+    fi
+    msg_err "Invalid input. Please enter a valid number."
+  done
+
+  NEW_HOSTNAME="${SELECTED_LAB_PREFIX}${PADDED_DEV_NUM}"
+  NEW_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
+
+  msg_ok "Generated Hostname: ${NEW_HOSTNAME}"
+  msg_ok "Local Admin Username: ${NEW_USER} (Auto-assigned)"
+
+  # 4. Password Input
   echo -en "  ${YELLOW}[INPUT]${NC} Enter Password for user '${NEW_USER}' and root: "
   read -sp "" NEW_PASS < /dev/tty
   echo ""
