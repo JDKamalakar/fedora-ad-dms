@@ -79,7 +79,7 @@ if is_live_session; then
   step_header "0" "Fedora Live Native Direct Disk Installer"
   msg_info "Detected Fedora Live environment. Installing natively to disk..."
 
-  # 1. Select Target Storage Drive by Number
+  # 1. Select Target Storage Drive
   echo -e "\n  ${BOLD}Available Storage Drives:${NC}\n"
 
   mapfile -t DRIVE_LIST < <(lsblk -d -n -o NAME,SIZE,MODEL | grep -v "loop\|zram")
@@ -146,7 +146,7 @@ if is_live_session; then
     ROOT_PART="${TARGET_DISK}2"
   fi
 
-  # Turn off active swap & unmount partitions on target drive
+  # Unmount active partitions & disable swap
   msg_info "Preparing disk ${TARGET_DISK}..."
   swapoff -a 2>/dev/null || true
   umount -f "${TARGET_DISK}"* 2>/dev/null || true
@@ -158,7 +158,7 @@ if is_live_session; then
   parted -s "$TARGET_DISK" set 1 boot on
   parted -s "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
 
-  # Force kernel to re-read partition table
+  # Force kernel partition reread
   partprobe "$TARGET_DISK" 2>/dev/null || true
   udevadm settle 2>/dev/null || true
   sleep 2
@@ -174,8 +174,8 @@ if is_live_session; then
   mkdir -p "${TARGET_MOUNT}/boot/efi"
   mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
 
-  msg_info "Syncing Live OS filesystem to disk (this will take 2-3 minutes)..."
-  rsync -axH \
+  msg_info "Syncing Live OS filesystem to disk (with live progress)..."
+  rsync -axH --info=progress2 \
     --exclude=/proc/* \
     --exclude=/sys/* \
     --exclude=/dev/* \
@@ -197,26 +197,33 @@ EOF
   # Set Hostname
   echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
 
-  # Create User & Set Passwords
-  PASS_HASH=$(openssl passwd -6 "$NEW_PASS")
-  
-  msg_info "Configuring GRUB and running post-installation chroot..."
+  msg_info "Configuring GRUB and preparing chroot..."
   for dir in dev dev/pts proc sys run; do
     mkdir -p "${TARGET_MOUNT}/$dir"
     mount --bind "/$dir" "${TARGET_MOUNT}/$dir"
   done
 
-  # Copy repository setup scripts into target system
+  # Fetch or copy installer repo into target system
   mkdir -p "${TARGET_MOUNT}/tmp/installer"
-  cp -r "${SCRIPT_DIR}/"* "${TARGET_MOUNT}/tmp/installer/"
+  if [ -f "${SCRIPT_DIR}/setup-ad-dms-tui.sh" ]; then
+    cp -r "${SCRIPT_DIR}/"* "${TARGET_MOUNT}/tmp/installer/"
+  else
+    msg_info "Fetching repository files into target drive..."
+    curl -fsSL https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz | tar -xz -C "${TARGET_MOUNT}/tmp/installer" --strip-components=1
+  fi
 
-  # Run Setup Steps 1-12 in target chroot
+  # Run Setup Steps inside target chroot
   chroot "$TARGET_MOUNT" bash -c "
-    useradd -m -g wheel -p '${PASS_HASH}' '${NEW_USER}' 2>/dev/null || true
+    getent group wheel >/dev/null 2>&1 || groupadd wheel
+    
+    if ! id '${NEW_USER}' >/dev/null 2>&1; then
+      useradd -m -G wheel '${NEW_USER}' || useradd -m '${NEW_USER}'
+    fi
+
     echo 'root:${NEW_PASS}' | chpasswd
     echo '${NEW_USER}:${NEW_PASS}' | chpasswd
     
-    # Ensure SELinux auto-relabels filesystem on first boot
+    # Ensure SELinux auto-relabels on first boot
     touch /.autorelabel
 
     # Reconfigure Bootloader
