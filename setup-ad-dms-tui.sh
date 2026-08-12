@@ -12,17 +12,18 @@ MAGENTA="\033[1;35m"
 NC="\033[0m"
 
 ASSUME_YES=false
+SKIP_STEP0=false
 SELECTED_LAB_INDEX=""
 
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=true ;;
     --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
+    --skip-step0) SKIP_STEP0=true ;;
   esac
 done
 
 draw_banner() {
-  clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
   echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
@@ -75,7 +76,7 @@ is_live_session() {
   [ -d /run/initramfs/live ] || [ -f /etc/livedaemon ] || grep -q "boot=live\|img.livedata" /proc/cmdline
 }
 
-if is_live_session; then
+if is_live_session && [ "$SKIP_STEP0" = false ]; then
   step_header "0" "Fedora Live Native Direct Disk Installer"
   msg_info "Detected Fedora Live environment. Installing natively to disk..."
 
@@ -140,6 +141,7 @@ if is_live_session; then
   if [ "${#LAB_ENTRIES[@]}" -eq 0 ]; then
     msg_warn "lab.conf not found or empty. Using default prefix 'GSFCUOSLAB'."
     SELECTED_LAB_PREFIX="GSFCUOSLAB"
+    LAB_CHOICE=1
   else
     echo -e "\n  ${BOLD}Select Target Lab:${NC}\n"
     idx=1
@@ -244,6 +246,9 @@ if is_live_session; then
     --exclude=/media/* \
     / "${TARGET_MOUNT}/" || true
 
+  # Clean up stale Live OS home directories on target drive
+  rm -rf "${TARGET_MOUNT}/home/"*
+
   # Configure fstab
   ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
   EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
@@ -291,7 +296,7 @@ EOF
 
     cd /tmp/installer
     chmod +x setup-ad-dms-tui.sh
-    ./setup-ad-dms-tui.sh -y
+    ./setup-ad-dms-tui.sh --skip-step0 -y --lab-index=${LAB_CHOICE}
   "
 
   # Clean up mounts
@@ -553,13 +558,13 @@ if [ -f "$THEME_ARCHIVE" ]; then
   chmod -R 755 /etc/skel/.config /etc/skel/.local
   msg_ok "DMS profile unpacked into /etc/skel (for new users)."
 
-  # 2. Apply to ALL Existing User Home Directories (/home/*)
+  # 2. Apply to ALL Existing Valid User Home Directories (/home/*)
   for user_home in /home/*; do
     if [ -d "$user_home" ]; then
       owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
       group=$(stat -c '%G' "$user_home" 2>/dev/null || true)
       
-      if [ -n "$owner" ] && [ "$owner" != "root" ] && [ "$owner" != "UNKNOWN" ]; then
+      if [ -n "$owner" ] && [ "$owner" != "root" ] && [ "$owner" != "UNKNOWN" ] && id "$owner" >/dev/null 2>&1; then
         msg_info "Applying DMS theme profile to existing user home: $user_home ($owner)"
         mkdir -p "$user_home/.config" "$user_home/.local/share"
         tar -xzf "$THEME_ARCHIVE" -C "$user_home" || true
