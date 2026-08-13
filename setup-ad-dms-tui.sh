@@ -99,12 +99,15 @@ setup_pvpn() {
   case "${PVPN_ENABLE,,}" in
     "yes") run_pvpn=true ;;
     "no")
-      msg_info "pVPN installation disabled in configuration."
+      msg_info "pVPN disabled in domain.conf. Skipping installation & connection entirely."
       return 0
       ;;
     "ask")
       if ask_yes_no "Do you want to install and connect ProtonVPN (pVPN)?" "Y"; then
         run_pvpn=true
+      else
+        msg_info "pVPN installation denied by user. Skipping entirely."
+        return 0
       fi
       ;;
     *)
@@ -114,16 +117,40 @@ setup_pvpn() {
   esac
 
   if [ "$run_pvpn" = true ]; then
-    msg_info "Installing system-wide pVPN daemon and CLI..."
-    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash || msg_warn "pVPN installer notice."
+    msg_info "Installing system-wide pVPN CLI..."
+    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash
 
-    msg_info "Authenticating system pVPN under root context..."
-    if command -v pvpnctl >/dev/null 2>&1; then
-      pvpnctl login -u "$PVPN_ID" -p "$PVPN_PASS" 2>/dev/null || printf "%s\n%s\n" "$PVPN_ID" "$PVPN_PASS" | pvpnctl login 2>/dev/null || true
-      pvpnctl connect fastest 2>/dev/null || pvpnctl connect 2>/dev/null || msg_warn "pVPN system login attempted."
-      msg_ok "pVPN system-wide setup complete (credentials isolated from user accounts)."
+    if ! command -v pvpnctl >/dev/null 2>&1; then
+      msg_err "pvpnctl binary not found. Installation failed."
+      exit 1
+    fi
+
+    msg_info "Logging into pVPN..."
+    pvpnctl login "$PVPN_ID" "$PVPN_PASS"
+
+    msg_info "Connecting pVPN..."
+    pvpnctl connect
+
+    msg_info "Verifying pVPN connection status..."
+    local attempts=0
+    local max_attempts=10
+    local is_connected=false
+
+    while [ $attempts -lt $max_attempts ]; do
+      if pvpnctl status 2>/dev/null | grep -iq "connected"; then
+        is_connected=true
+        break
+      fi
+      msg_info "Waiting for active pVPN connection... ($((attempts + 1))/$max_attempts)"
+      sleep 3
+      ((attempts++))
+    done
+
+    if [ "$is_connected" = true ]; then
+      msg_ok "pVPN is connected! Proceeding with setup..."
     else
-      msg_warn "pvpnctl binary not found in PATH."
+      msg_err "pVPN failed to connect after multiple checks. Cannot proceed."
+      exit 1
     fi
   fi
 }
@@ -622,7 +649,6 @@ for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-
   fi
 done
 
-# Secure confidential configuration files (restrict to root-only)
 if [ -f /etc/fedora-ad-dms/domain.conf ]; then
   chmod 600 /etc/fedora-ad-dms/domain.conf
   msg_ok "Secured /etc/fedora-ad-dms/domain.conf permissions (600)."
@@ -682,7 +708,7 @@ systemctl enable --now oddjobd 2>/dev/null || true
 # --- STEP 11: DMS & KITTY CONF SETUP ---
 step_header "11" "Deploying Theme & Mandatory Kitty Terminal Configuration"
 
-# 1. Generate Mandatory Kitty QOL Config
+# Generate Compulsory Kitty QOL Config
 msg_info "Creating compulsory Kitty configuration..."
 mkdir -p /etc/skel/.config/kitty
 
@@ -722,7 +748,7 @@ for user_home in /home/*; do
   fi
 done
 
-# 2. Deploy Theme Profile Archives
+# Deploy Theme Profile Archives
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
