@@ -118,8 +118,8 @@ setup_pvpn() {
   esac
 
   if [ "$run_pvpn" = true ]; then
-    msg_info "Installing pVPN..."
-    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash || msg_warn "pVPN script installer returned warning."
+    msg_info "Installing pVPN daemon and CLI..."
+    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | sudo bash || msg_warn "pVPN script installer returned warning."
 
     msg_info "Authenticating pVPN with '${PVPN_ID}'..."
     if command -v pvpnctl >/dev/null 2>&1; then
@@ -353,7 +353,7 @@ EOF
     curl -fsSL https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz | tar -xz -C "${TARGET_MOUNT}/tmp/installer" --strip-components=1
   fi
 
-  # Run Setup Steps inside target chroot (Pre-baking all packages & DMS)
+  # Run Setup Steps inside target chroot
   chroot "$TARGET_MOUNT" bash -c "
     getent group wheel >/dev/null 2>&1 || groupadd wheel
     
@@ -424,10 +424,17 @@ else
   dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" 2>/dev/null || msg_warn "Some packages failed to fetch due to mirror errors. Proceeding with installed base."
 fi
 
-# --- STEP 4: DMS INSTALLATION (PRE-BAKED) ---
+# --- STEP 4: DMS INSTALLATION (ROOT ELEVATED FIX) ---
 step_header "4" "Pre-baking Dank Material Shell (DMS)"
-msg_info "Executing DMS installer during setup phase..."
-curl -fsSL https://install.danklinux.com | bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
+msg_info "Executing DMS installer directly as root..."
+
+# Force explicit root shell execution to resolve Live ISO root requirement
+if command -v sudo >/dev/null 2>&1; then
+  curl -fsSL https://install.danklinux.com | sudo bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
+else
+  curl -fsSL https://install.danklinux.com | bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
+fi
+
 msg_ok "DMS native installation pre-baked into system."
 
 # --- STEP 5: DOMAIN SETTINGS ---
@@ -638,13 +645,13 @@ step_header "11" "Deploying Pre-configured DMS Themes"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
-  # 1. Unpack to /etc/skel (Pre-bakes environment for all future users)
+  # Unpack to /etc/skel
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel
   chmod -R 755 /etc/skel/.config /etc/skel/.local
   msg_ok "DMS profile unpacked into /etc/skel."
 
-  # 2. Unpack to created user home directories
+  # Unpack to existing user homes
   for user_home in /home/*; do
     if [ -d "$user_home" ]; then
       owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
