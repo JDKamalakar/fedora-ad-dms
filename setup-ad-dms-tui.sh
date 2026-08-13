@@ -310,8 +310,8 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
   mkdir -p "${TARGET_MOUNT}/boot/efi"
   mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
 
-  msg_info "Syncing Live OS filesystem to disk..."
-  rsync -axH --info=progress2 \
+  msg_info "Syncing Live OS filesystem to disk (Preserving SELinux xattrs with -aHAX)..."
+  rsync -aHAX --info=progress2 \
     --exclude=/proc/* \
     --exclude=/sys/* \
     --exclude=/dev/* \
@@ -331,7 +331,7 @@ UUID=${ROOT_UUID}  /          ext4  defaults,noatime  1 1
 UUID=${EFI_UUID}   /boot/efi  vfat  umask=0077,shortname=winnt 0 2
 EOF
 
-  # Clean GRUB configuration (Removed rhgb quiet for verbose boot diagnosis)
+  # GRUB configuration with SELinux fail-safe enforcing=0
   mkdir -p "${TARGET_MOUNT}/etc/default" "${TARGET_MOUNT}/etc/kernel"
   cat << EOF > "${TARGET_MOUNT}/etc/default/grub"
 GRUB_TIMEOUT=3
@@ -339,13 +339,18 @@ GRUB_DISTRIBUTOR="\$(sed 's/.*release //;s/ .*//' /etc/redhat-release)"
 GRUB_DEFAULT=saved
 GRUB_DISABLE_SUBMENU=true
 GRUB_TERMINAL_OUTPUT="console"
-GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw"
+GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw enforcing=0"
 GRUB_DISABLE_RECOVERY="true"
 GRUB_ENABLE_BLSCFG=true
 EOF
 
-  echo "root=UUID=${ROOT_UUID} rw" > "${TARGET_MOUNT}/etc/kernel/cmdline"
+  echo "root=UUID=${ROOT_UUID} rw enforcing=0" > "${TARGET_MOUNT}/etc/kernel/cmdline"
   echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
+
+  # Prevent SELinux boot crashes by placing config in permissive mode
+  if [ -f "${TARGET_MOUNT}/etc/selinux/config" ]; then
+    sed -i 's/^SELINUX=.*/SELINUX=permissive/' "${TARGET_MOUNT}/etc/selinux/config"
+  fi
 
   msg_info "Configuring virtual mounts & chroot environment..."
   for dir in dev dev/pts proc sys run; do
@@ -364,7 +369,7 @@ EOF
     curl -fsSL https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz | tar -xz -C "${TARGET_MOUNT}/tmp/installer" --strip-components=1
   fi
 
-  # Execute inside target chroot without read-only EUID assignment
+  # Execute inside target chroot
   chroot "$TARGET_MOUNT" bash -c "
     export USER=root
     export HOME=/root
@@ -378,6 +383,7 @@ EOF
     echo 'root:${NEW_PASS}' | chpasswd
     echo '${NEW_USER}:${NEW_PASS}' | chpasswd
     
+    # Flag system for SELinux background relabeling
     touch /.autorelabel
 
     rm -rf /boot/loader/entries/*
@@ -457,17 +463,15 @@ else
   dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" || msg_warn "Some packages encountered download warnings."
 fi
 
-# --- STEP 4: DMS INSTALLATION ---
-step_header "4" "Installing Dank Material Shell (DMS)"
-DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $3 < 65000 {print $1}' /etc/passwd | head -n1 || echo "")
+# --- STEP 4: DMS & DANKCALENDAR INSTALLATION ---
+step_header "4" "Installing Dank Material Shell (DMS) & DankCalendar"
+msg_info "Enabling Copr repositories for DMS suite..."
+dnf copr enable -y avengemedia/danklinux || true
+dnf copr enable -y avengemedia/dms || true
 
-if [ -n "$DMS_TARGET_USER" ]; then
-  msg_info "Executing DMS installer under non-root user context '${DMS_TARGET_USER}'..."
-  su - "$DMS_TARGET_USER" -c "curl -fsSL https://install.danklinux.com | bash" || msg_warn "DMS user-level installer completed with warnings."
-  msg_ok "DMS installation process finished."
-else
-  msg_warn "No non-root user account detected to run the DMS installer script."
-fi
+msg_info "Installing DMS, Greeter, DGOP, DankSearch, and DankCalendar non-interactively..."
+dnf install -y dms dms-greeter dgop danksearch dankcalendar || msg_warn "DMS Copr packages completed with warnings."
+msg_ok "DMS suite and DankCalendar installation finished."
 
 # --- STEP 5: DOMAIN SETTINGS ---
 step_header "5" "Active Directory Configuration"
