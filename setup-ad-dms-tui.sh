@@ -195,7 +195,7 @@ fi
 
 # --- STEP 4: AD DEPENDENCIES ---
 step_header "4" "Installing AD & Security Dependencies"
-REQUIRED_PKGS=(realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty)
+REQUIRED_PKGS=(realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty dnf-plugins-core)
 MISSING_PKGS=()
 
 for pkg in "${REQUIRED_PKGS[@]}"; do
@@ -213,14 +213,15 @@ fi
 
 # --- STEP 5: DMS INSTALLATION ---
 step_header "5" "Installing Dank Material Shell (DMS)"
-DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $3 < 65000 {print $1}' /etc/passwd | head -n1 || echo "")
+msg_info "Enabling Dank Linux Fedora COPR Repository..."
+dnf copr enable -y avengemedia/danklinux || msg_warn "Could not enable COPR repository automatically, proceeding with script installer..."
 
-if [ -n "$DMS_TARGET_USER" ]; then
-  msg_info "Executing DMS installer under non-root user context '${DMS_TARGET_USER}'..."
-  su - "$DMS_TARGET_USER" -c "curl -fsSL https://install.danklinux.com | bash" || msg_warn "DMS user-level installer completed with warnings."
-  msg_ok "DMS installation process finished."
+msg_info "Executing DMS installer via sh..."
+if curl -fsSL https://install.danklinux.com | sh; then
+  msg_ok "DMS installation process finished successfully."
 else
-  msg_warn "No non-root user account detected to run the DMS installer script."
+  msg_warn "DMS installer script returned a warning/error, attempting fallback package install..."
+  dnf install -y dms || msg_err "DMS package installation failed."
 fi
 
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
@@ -458,6 +459,7 @@ EOF
 chmod -R 755 /etc/skel/.config/kitty
 msg_ok "Compulsory Kitty config populated in /etc/skel/.config/kitty/kitty.conf"
 
+shopt -s nullglob
 # Sync Kitty Config to Existing Users
 for user_home in /home/*; do
   if [ -d "$user_home" ]; then
