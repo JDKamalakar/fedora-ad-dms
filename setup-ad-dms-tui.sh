@@ -12,8 +12,8 @@ MAGENTA="\033[1;35m"
 NC="\033[0m"
 
 ASSUME_YES=false
-SKIP_STEP0=false
 SELECTED_LAB_INDEX=""
+UPDATE_SYSTEM="" # Empty = prompt, true = force update, false = force skip
 
 # --- CONFIGURATION DEFAULTS ---
 PVPN_ENABLE="${PVPN_ENABLE:-yes}"
@@ -24,7 +24,8 @@ for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=true ;;
     --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
-    --skip-step0) SKIP_STEP0=true ;;
+    --update|--update-system) UPDATE_SYSTEM=true ;;
+    --no-update|--skip-update) UPDATE_SYSTEM=false ;;
   esac
 done
 
@@ -35,7 +36,7 @@ draw_banner() {
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/11]${NC} ${BOLD}$2${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -91,9 +92,9 @@ if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   source "${SCRIPT_DIR}/domain.conf"
 fi
 
-# --- STEP 0A: PROTON VPN SETUP ---
+# --- STEP 1: PROTON VPN SETUP ---
 setup_pvpn() {
-  step_header "0A" "ProtonVPN (pVPN) Integration"
+  step_header "1" "ProtonVPN (pVPN) Integration"
   
   local run_pvpn=false
   case "${PVPN_ENABLE,,}" in
@@ -157,295 +158,8 @@ setup_pvpn() {
 
 setup_pvpn
 
-# --- STEP 0B: NATIVE LIVE INSTALLER ---
-is_live_session() {
-  [ -d /run/initramfs/live ] || [ -f /etc/livedaemon ] || grep -q "boot=live\|img.livedata" /proc/cmdline
-}
-
-if is_live_session && [ "$SKIP_STEP0" = false ]; then
-  step_header "0B" "Fedora Live Native Direct Disk Installer"
-  msg_info "Detected Fedora Live environment. Installing natively from Live USB to disk..."
-
-  # 1. Select Target Storage Drive
-  echo -e "\n  ${BOLD}Available Storage Drives:${NC}\n"
-
-  mapfile -t DRIVE_LIST < <(lsblk -d -n -o NAME,SIZE,MODEL | grep -v "loop\|zram")
-
-  if [ "${#DRIVE_LIST[@]}" -eq 0 ]; then
-    msg_err "No available storage drives found!"
-    exit 1
-  fi
-
-  declare -A DRIVE_PATHS
-  idx=1
-
-  for line in "${DRIVE_LIST[@]}"; do
-    dev_name=$(echo "$line" | awk '{print $1}')
-    dev_size=$(echo "$line" | awk '{print $2}')
-    dev_model=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | xargs)
-    
-    DRIVE_PATHS[$idx]="/dev/${dev_name}"
-    formatted_idx=$(printf "%02d" "$idx")
-    echo -e "    ${CYAN}[${formatted_idx}]${NC} /dev/${dev_name} (${YELLOW}${dev_size}${NC} - ${dev_model})"
-    ((idx++))
-  done
-
-  total_drives=$((idx - 1))
-
-  while true; do
-    echo -en "\n  ${YELLOW}[INPUT]${NC} Select target disk number [1-${total_drives}]: "
-    read -r DISK_RAW < /dev/tty
-    DISK_CHOICE=$(echo "$DISK_RAW" | tr -cd '0-9' | sed 's/^0*//')
-    DISK_CHOICE="${DISK_CHOICE:-0}"
-
-    if [ "$DISK_CHOICE" -ge 1 ] && [ "$DISK_CHOICE" -le "$total_drives" ]; then
-      TARGET_DISK="${DRIVE_PATHS[$DISK_CHOICE]}"
-      break
-    fi
-    msg_err "Invalid selection. Please enter a number between 1 and ${total_drives}."
-  done
-
-  msg_ok "Selected Target Disk: ${TARGET_DISK}"
-
-  # 2. Lab Selection
-  mkdir -p /tmp/installer_init
-  LAB_CONF_SOURCE=""
-
-  if [ -f "${SCRIPT_DIR}/lab.conf" ]; then
-    LAB_CONF_SOURCE="${SCRIPT_DIR}/lab.conf"
-  else
-    msg_info "Fetching lab configuration..."
-    curl -fsSL "https://raw.githubusercontent.com/jayrajkamalakar-gsfcu/fedora-ad-dms/main/lab.conf" -o /tmp/installer_init/lab.conf 2>/dev/null || true
-    LAB_CONF_SOURCE="/tmp/installer_init/lab.conf"
-  fi
-
-  LAB_ENTRIES=()
-  if [ -f "$LAB_CONF_SOURCE" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      trimmed=$(echo "$line" | xargs)
-      [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
-      LAB_ENTRIES+=("$trimmed")
-    done < "$LAB_CONF_SOURCE"
-  fi
-
-  if [ "${#LAB_ENTRIES[@]}" -eq 0 ]; then
-    msg_warn "lab.conf not found or empty. Using default prefix 'GSFCUOSLAB'."
-    SELECTED_LAB_PREFIX="GSFCUOSLAB"
-    LAB_CHOICE=1
-  else
-    echo -e "\n  ${BOLD}Select Target Lab:${NC}\n"
-    idx=1
-    declare -A STEP0_LAB_NAMES
-    declare -A STEP0_LAB_IDS
-
-    for entry in "${LAB_ENTRIES[@]}"; do
-      if [[ "$entry" == *":"* ]]; then
-        lab_name_raw="${entry%%:*}"
-        lab_id_raw="${entry#*:}"
-      else
-        lab_name_raw="$entry"
-        lab_id_raw="$entry"
-      fi
-
-      lab_name=$(echo "$lab_name_raw" | xargs)
-      lab_id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
-
-      STEP0_LAB_NAMES[$idx]="$lab_name"
-      STEP0_LAB_IDS[$idx]="$lab_id"
-
-      formatted_idx=$(printf "%02d" "$idx")
-      echo -e "    ${CYAN}[${formatted_idx}]${NC} ${lab_name}"
-      ((idx++))
-    done
-    total_labs=$((idx - 1))
-
-    while true; do
-      echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
-      read -r LAB_RAW < /dev/tty
-      LAB_VAL=$(echo "$LAB_RAW" | tr -cd '0-9' | sed 's/^0*//')
-      LAB_VAL="${LAB_VAL:-0}"
-
-      if [ "$LAB_VAL" -ge 1 ] && [ "$LAB_VAL" -le "$total_labs" ]; then
-        LAB_CHOICE="$LAB_VAL"
-        SELECTED_LAB_PREFIX="${STEP0_LAB_IDS[$LAB_CHOICE]}"
-        msg_ok "Selected Lab: ${STEP0_LAB_NAMES[$LAB_CHOICE]}"
-        break
-      fi
-      msg_err "Invalid selection. Please enter a number between 1 and ${total_labs}."
-    done
-  fi
-
-  # 3. Device Number Input
-  while true; do
-    echo -en "  ${YELLOW}[INPUT]${NC} Enter Device Number (e.g., 2 or 002): "
-    read -r DEV_NUM < /dev/tty
-    DEV_NUM_CLEAN=$(echo "$DEV_NUM" | tr -cd '0-9')
-    if [ -n "$DEV_NUM_CLEAN" ]; then
-      PADDED_DEV_NUM=$(printf "%03d" "$((10#$DEV_NUM_CLEAN))")
-      break
-    fi
-    msg_err "Invalid input. Please enter a valid number."
-  done
-
-  NEW_HOSTNAME=$(echo "${SELECTED_LAB_PREFIX}${PADDED_DEV_NUM}" | tr -cd 'a-zA-Z0-9_-' | tr '[:lower:]' '[:upper:]')
-  NEW_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
-
-  msg_ok "Generated Hostname: ${NEW_HOSTNAME}"
-  msg_ok "Local Admin Username: ${NEW_USER}"
-
-  # 4. Password Input
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter Password for user '${NEW_USER}' and root: "
-  read -sp "" NEW_PASS < /dev/tty
-  echo ""
-
-  msg_warn "CRITICAL WARNING: ${TARGET_DISK} WILL BE COMPLETELY WIPED."
-  if ! ask_yes_no "Format ${TARGET_DISK} and install Fedora?" "Y"; then
-    msg_err "Installation aborted."
-    exit 1
-  fi
-
-  if [[ "$TARGET_DISK" =~ nvme|loop|mmcblk ]]; then
-    EFI_PART="${TARGET_DISK}p1"
-    ROOT_PART="${TARGET_DISK}p2"
-  else
-    EFI_PART="${TARGET_DISK}1"
-    ROOT_PART="${TARGET_DISK}2"
-  fi
-
-  msg_info "Preparing disk ${TARGET_DISK}..."
-  swapoff -a 2>/dev/null || true
-  umount -f "${TARGET_DISK}"* 2>/dev/null || true
-
-  msg_info "Partitioning target drive ${TARGET_DISK}..."
-  wipefs -a "$TARGET_DISK" >/dev/null 2>&1 || true
-  parted -s "$TARGET_DISK" mklabel gpt
-  parted -s "$TARGET_DISK" mkpart ESP fat32 1MiB 1025MiB
-  parted -s "$TARGET_DISK" set 1 boot on
-  parted -s "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
-
-  partprobe "$TARGET_DISK" 2>/dev/null || true
-  udevadm settle 2>/dev/null || true
-  sleep 2
-
-  msg_info "Formatting partitions..."
-  mkfs.vfat -F32 "$EFI_PART" >/dev/null
-  mkfs.ext4 -F "$ROOT_PART" >/dev/null
-
-  TARGET_MOUNT="/mnt/target_system"
-  mkdir -p "$TARGET_MOUNT"
-  mount "$ROOT_PART" "$TARGET_MOUNT"
-  mkdir -p "${TARGET_MOUNT}/boot/efi"
-  mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
-
-  msg_info "Syncing Live OS filesystem to disk..."
-  rsync -axH --info=progress2 \
-    --exclude=/proc/* \
-    --exclude=/sys/* \
-    --exclude=/dev/* \
-    --exclude=/run/* \
-    --exclude=/tmp/* \
-    --exclude=/mnt/* \
-    --exclude=/media/* \
-    / "${TARGET_MOUNT}/" || true
-
-  rm -rf "${TARGET_MOUNT}/home/"*
-
-  ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
-  EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
-
-  cat << EOF > "${TARGET_MOUNT}/etc/fstab"
-UUID=${ROOT_UUID}  /          ext4  defaults,noatime  1 1
-UUID=${EFI_UUID}   /boot/efi  vfat  umask=0077,shortname=winnt 0 2
-EOF
-
-  mkdir -p "${TARGET_MOUNT}/etc/default" "${TARGET_MOUNT}/etc/kernel"
-  cat << EOF > "${TARGET_MOUNT}/etc/default/grub"
-GRUB_TIMEOUT=3
-GRUB_DISTRIBUTOR="\$(sed 's/.*release //;s/ .*//' /etc/redhat-release)"
-GRUB_DEFAULT=saved
-GRUB_DISABLE_SUBMENU=true
-GRUB_TERMINAL_OUTPUT="console"
-GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw"
-GRUB_DISABLE_RECOVERY="true"
-GRUB_ENABLE_BLSCFG=true
-EOF
-
-  echo "root=UUID=${ROOT_UUID} rw" > "${TARGET_MOUNT}/etc/kernel/cmdline"
-  echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
-
-  msg_info "Configuring virtual mounts & chroot environment..."
-  for dir in dev dev/pts proc sys run; do
-    mkdir -p "${TARGET_MOUNT}/$dir"
-    mount --bind "/$dir" "${TARGET_MOUNT}/$dir"
-  done
-  if [ -d /sys/firmware/efi/efivars ]; then
-    mkdir -p "${TARGET_MOUNT}/sys/firmware/efi/efivars"
-    mount --bind /sys/firmware/efi/efivars "${TARGET_MOUNT}/sys/firmware/efi/efivars" 2>/dev/null || true
-  fi
-
-  mkdir -p "${TARGET_MOUNT}/tmp/installer"
-  if [ -f "${SCRIPT_DIR}/setup-ad-dms-tui.sh" ]; then
-    cp -r "${SCRIPT_DIR}/"* "${TARGET_MOUNT}/tmp/installer/"
-  else
-    curl -fsSL https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz | tar -xz -C "${TARGET_MOUNT}/tmp/installer" --strip-components=1
-  fi
-
-  chroot "$TARGET_MOUNT" bash -c "
-    export USER=root
-    export HOME=/root
-
-    getent group wheel >/dev/null 2>&1 || groupadd wheel
-    
-    if ! id '${NEW_USER}' >/dev/null 2>&1; then
-      useradd -m -G wheel '${NEW_USER}' || useradd -m '${NEW_USER}'
-    fi
-
-    echo 'root:${NEW_PASS}' | chpasswd
-    echo '${NEW_USER}:${NEW_PASS}' | chpasswd
-    
-    touch /.autorelabel
-
-    rm -rf /boot/loader/entries/*
-
-    if [ ! -s /etc/machine-id ]; then
-      systemd-machine-id-setup 2>/dev/null || dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
-    fi
-
-    KERNEL_VER=\$(ls /lib/modules 2>/dev/null | sort -V | tail -n1)
-
-    if [ -n \"\$KERNEL_VER\" ]; then
-      if [ ! -f \"/boot/vmlinuz-\$KERNEL_VER\" ] && [ -f \"/lib/modules/\$KERNEL_VER/vmlinuz\" ]; then
-        cp \"/lib/modules/\$KERNEL_VER/vmlinuz\" \"/boot/vmlinuz-\$KERNEL_VER\"
-      fi
-
-      dracut --force --no-hostonly --kver \"\$KERNEL_VER\" \"/boot/initramfs-\$KERNEL_VER.img\" 2>/dev/null || dracut --force --regenerate-all
-
-      if command -v kernel-install >/dev/null 2>&1; then
-        kernel-install add \"\$KERNEL_VER\" \"/boot/vmlinuz-\$KERNEL_VER\" 2>/dev/null || true
-      fi
-    fi
-
-    grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
-    if [ -d /boot/efi/EFI/fedora ]; then
-      grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
-    fi
-
-    cd /tmp/installer
-    chmod +x setup-ad-dms-tui.sh
-    ./setup-ad-dms-tui.sh --skip-step0 -y --lab-index=${LAB_CHOICE}
-  "
-
-  umount -R "$TARGET_MOUNT" 2>/dev/null || true
-
-  echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${GREEN}|${NC} ${BOLD}Native Fedora installation completed!                              ${NC} ${GREEN}|${NC}"
-  echo -e "${GREEN}|${NC} ${BOLD}You can now restart the system.                                   ${NC} ${GREEN}|${NC}"
-  echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
-  exit 0
-fi
-
-# --- STEP 1: SOFTWARE SWAPPING ---
-step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
+# --- STEP 2: SOFTWARE SWAPPING ---
+step_header "2" "Software Swapping (LibreOffice -> ONLYOFFICE)"
 if rpm -q libreoffice-core >/dev/null 2>&1; then
   msg_info "Removing LibreOffice..."
   dnf remove -y "libreoffice*"
@@ -456,16 +170,31 @@ dnf install -y --setopt=strict=0 https://download.onlyoffice.com/repo/centos/mai
 dnf install -y --setopt=strict=0 onlyoffice-desktopeditors || msg_warn "ONLYOFFICE installation encountered a repository warning."
 msg_ok "Software swapping step finished."
 
-# --- STEP 2: SYSTEM UPDATE ---
-step_header "2" "Updating System Packages"
-if ask_yes_no "Run full system update ('dnf update')?" "N"; then
+# --- STEP 3: SYSTEM UPDATE ---
+step_header "3" "Updating System Packages"
+run_update=false
+
+if [ "$UPDATE_SYSTEM" = true ]; then
+  run_update=true
+  msg_info "System update explicitly requested via CLI flag."
+elif [ "$UPDATE_SYSTEM" = false ]; then
+  run_update=false
+  msg_info "System update explicitly skipped via CLI flag."
+else
+  if ask_yes_no "Run full system update ('dnf update')?" "N"; then
+    run_update=true
+  fi
+fi
+
+if [ "$run_update" = true ]; then
+  msg_info "Running full system update..."
   dnf update -y --setopt=strict=0 || msg_warn "System update completed with mirror warnings."
 else
   msg_info "Skipping full system update."
 fi
 
-# --- STEP 3: AD DEPENDENCIES ---
-step_header "3" "Installing AD & Security Dependencies"
+# --- STEP 4: AD DEPENDENCIES ---
+step_header "4" "Installing AD & Security Dependencies"
 REQUIRED_PKGS=(realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty)
 MISSING_PKGS=()
 
@@ -482,8 +211,8 @@ else
   dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" || msg_warn "Some packages encountered download warnings."
 fi
 
-# --- STEP 4: DMS INSTALLATION ---
-step_header "4" "Installing Dank Material Shell (DMS)"
+# --- STEP 5: DMS INSTALLATION ---
+step_header "5" "Installing Dank Material Shell (DMS)"
 DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $3 < 65000 {print $1}' /etc/passwd | head -n1 || echo "")
 
 if [ -n "$DMS_TARGET_USER" ]; then
@@ -494,8 +223,8 @@ else
   msg_warn "No non-root user account detected to run the DMS installer script."
 fi
 
-# --- STEP 5: DOMAIN SETTINGS ---
-step_header "5" "Active Directory Configuration"
+# --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
+step_header "6" "Active Directory Configuration & Realm Join"
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
@@ -507,8 +236,6 @@ fi
 systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 
-# --- STEP 6: REALM JOIN ---
-step_header "6" "Joining Active Directory Realm"
 while true; do
   if [ "$ASSUME_YES" = true ]; then
     DOMAIN_PASS="${DOMAIN_PASS:-}"
@@ -544,7 +271,7 @@ while true; do
   fi
 done
 
-# --- STEP 7: AUTO-DETECT & CONFIGURE LAB RULES ---
+# --- STEP 7: LAB ACCESS CONTROL RULES ---
 step_header "7" "Configuring Lab Access Control Rules"
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
@@ -691,8 +418,8 @@ systemctl daemon-reload
 systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 /usr/local/bin/refresh-app-policies 2>/dev/null || true
 
-# --- STEP 9: SYSTEM CONFIGS ---
-step_header "9" "Applying System Configurations"
+# --- STEP 9: SYSTEM CONFIGS & PAM ---
+step_header "9" "Applying System Configurations & PAM Rules"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
@@ -700,13 +427,11 @@ if [ -d "${SCRIPT_DIR}/configs" ]; then
   chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
 fi
 
-# --- STEP 10: PAM INTEGRATION ---
-step_header "10" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force
 systemctl enable --now oddjobd 2>/dev/null || true
 
-# --- STEP 11: DMS & KITTY CONF SETUP ---
-step_header "11" "Deploying Theme & Mandatory Kitty Terminal Configuration"
+# --- STEP 10: DMS & KITTY CONF SETUP ---
+step_header "10" "Deploying Theme & Mandatory Kitty Terminal Configuration"
 
 # Generate Compulsory Kitty QOL Config
 msg_info "Creating compulsory Kitty configuration..."
@@ -773,8 +498,8 @@ if [ -f "$THEME_ARCHIVE" ]; then
   msg_ok "Pre-configured DMS theme profiles applied."
 fi
 
-# --- STEP 12: FINALIZE SERVICES ---
-step_header "12" "Finalizing Installation"
+# --- STEP 11: FINALIZE SERVICES ---
+step_header "11" "Finalizing Installation"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
