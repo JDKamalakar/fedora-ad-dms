@@ -126,6 +126,13 @@ setup_pvpn() {
       exit 1
     fi
 
+    # Check connection status BEFORE attempting login
+    msg_info "Checking current pVPN connection status..."
+    if pvpnctl status 2>/dev/null | grep -iq "connected"; then
+      msg_ok "pVPN is already connected! Skipping login and connection steps."
+      return 0
+    fi
+
     msg_info "Logging into pVPN..."
     pvpnctl login "$PVPN_ID" "$PVPN_PASS"
 
@@ -213,15 +220,24 @@ fi
 
 # --- STEP 5: DMS INSTALLATION ---
 step_header "5" "Installing Dank Material Shell (DMS)"
-msg_info "Enabling Dank Linux Fedora COPR Repository..."
-dnf copr enable -y avengemedia/danklinux || msg_warn "Could not enable COPR repository automatically, proceeding with script installer..."
 
-msg_info "Executing DMS installer via sh..."
-if curl -fsSL https://install.danklinux.com | sh; then
-  msg_ok "DMS installation process finished successfully."
+# Detect non-root user to run the installation script
+DMS_USER="${SUDO_USER:-}"
+if [ -z "$DMS_USER" ] || [ "$DMS_USER" = "root" ]; then
+  DMS_USER=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || true)
+fi
+
+if [ -n "$DMS_USER" ] && id "$DMS_USER" >/dev/null 2>&1; then
+  msg_info "Executing DMS installer script as non-root user '$DMS_USER'..."
+  if sudo -u "$DMS_USER" -H sh -c "curl -fsSL https://install.danklinux.com | sh"; then
+    msg_ok "DMS installer script executed successfully."
+  else
+    msg_err "DMS installer script failed."
+    exit 1
+  fi
 else
-  msg_warn "DMS installer script returned a warning/error, attempting fallback package install..."
-  dnf install -y dms || msg_err "DMS package installation failed."
+  msg_err "No non-root user found to execute the DMS installer script. Exiting."
+  exit 1
 fi
 
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
