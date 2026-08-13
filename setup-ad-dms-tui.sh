@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Auto-re-execute with Bash if called via 'sh' or another shell
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # ANSI Colors
@@ -84,7 +90,9 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 draw_banner
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
+
+# LINE 87 FIX: Safe expansion for BASH_SOURCE under set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
 # Robust configuration loader & fallback extractor
@@ -282,7 +290,6 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-# Reload configuration directly to guarantee fresh values
 load_domain_conf
 
 DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d ' "\r\'' | xargs)
@@ -297,7 +304,6 @@ msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
 if [ -n "$AD_DNS_IP_CLEAN" ]; then
   msg_info "Applying Active Directory DNS ($AD_DNS_IP_CLEAN) prior to domain operations..."
   
-  # Find physical default interface name (e.g., eth0, enp0s3)
   DEFAULT_IF=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1 || true)
   ACTIVE_CONN=""
 
@@ -387,8 +393,11 @@ if [ -f "$LAB_CONF" ]; then
     AUTO_DETECTED_INDEX=""
     
     idx=1
-    declare -A LAB_NAMES
-    declare -A LAB_IDS
+    
+    # LINE 298 FIX: Clear previous declarations and define safe associative arrays
+    unset LAB_NAMES LAB_IDS 2>/dev/null || true
+    declare -A LAB_NAMES=()
+    declare -A LAB_IDS=()
     
     echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
     for entry in "${LAB_ENTRIES[@]}"; do
