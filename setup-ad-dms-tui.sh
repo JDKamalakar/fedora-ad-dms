@@ -118,13 +118,13 @@ load_domain_conf() {
 
     # Direct regex fallback if variables are missing or have spaces around '='
     if [ -z "${DOMAIN_USER:-}" ]; then
-      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
     if [ -z "${DOMAIN_NAME:-}" ]; then
-      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
     if [ -z "${AD_DNS_IP:-}" ]; then
-      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
   fi
 }
@@ -303,10 +303,10 @@ step_header "6" "Active Directory Configuration & Realm Join"
 
 load_domain_conf
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d ' "\r\'' | xargs || true)
-DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d ' "\r\'' | xargs || true)
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d " \"\r'" | xargs || true)
+DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d " \"\r'" | xargs || true)
 DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
-AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d ' "\r\'' | xargs || true)
+AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d " \"\r'" | xargs || true)
 
 msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
 msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
