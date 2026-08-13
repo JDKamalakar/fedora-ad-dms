@@ -119,7 +119,7 @@ setup_pvpn() {
 
   if [ "$run_pvpn" = true ]; then
     msg_info "Installing pVPN daemon and CLI..."
-    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | sudo bash || msg_warn "pVPN script installer returned warning."
+    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash || msg_warn "pVPN script installer returned warning."
 
     msg_info "Authenticating pVPN with '${PVPN_ID}'..."
     if command -v pvpnctl >/dev/null 2>&1; then
@@ -163,7 +163,8 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     dev_model=$(echo "$line" | awk '{$1=""; $2=""; print $0}' | xargs)
     
     DRIVE_PATHS[$idx]="/dev/${dev_name}"
-    echo -e "    ${CYAN}[$idx]${NC} /dev/${dev_name} (${YELLOW}${dev_size}${NC} - ${dev_model})"
+    formatted_idx=$(printf "%02d" "$idx")
+    echo -e "    ${CYAN}[${formatted_idx}]${NC} /dev/${dev_name} (${YELLOW}${dev_size}${NC} - ${dev_model})"
     ((idx++))
   done
 
@@ -171,8 +172,11 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
 
   while true; do
     echo -en "\n  ${YELLOW}[INPUT]${NC} Select target disk number [1-${total_drives}]: "
-    read -r DISK_CHOICE < /dev/tty
-    if [[ "$DISK_CHOICE" =~ ^[0-9]+$ ]] && [ "$DISK_CHOICE" -ge 1 ] && [ "$DISK_CHOICE" -le "$total_drives" ]; then
+    read -r DISK_RAW < /dev/tty
+    DISK_CHOICE=$(echo "$DISK_RAW" | tr -cd '0-9' | sed 's/^0*//')
+    DISK_CHOICE="${DISK_CHOICE:-0}"
+
+    if [ "$DISK_CHOICE" -ge 1 ] && [ "$DISK_CHOICE" -le "$total_drives" ]; then
       TARGET_DISK="${DRIVE_PATHS[$DISK_CHOICE]}"
       break
     fi
@@ -227,15 +231,21 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
       STEP0_LAB_NAMES[$idx]="$lab_name"
       STEP0_LAB_IDS[$idx]="$lab_id"
 
-      echo -e "    ${CYAN}[$idx]${NC} ${lab_name}"
+      formatted_idx=$(printf "%02d" "$idx")
+      echo -e "    ${CYAN}[${formatted_idx}]${NC} ${lab_name}"
       ((idx++))
     done
     total_labs=$((idx - 1))
 
     while true; do
       echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
-      read -r LAB_CHOICE < /dev/tty
-      if [[ "$LAB_CHOICE" =~ ^[0-9]+$ ]] && [ "$LAB_CHOICE" -ge 1 ] && [ "$LAB_CHOICE" -le "$total_labs" ]; then
+      read -r LAB_RAW < /dev/tty
+      # Strip leading zeros so '01' and '1' both evaluate to 1
+      LAB_VAL=$(echo "$LAB_RAW" | tr -cd '0-9' | sed 's/^0*//')
+      LAB_VAL="${LAB_VAL:-0}"
+
+      if [ "$LAB_VAL" -ge 1 ] && [ "$LAB_VAL" -le "$total_labs" ]; then
+        LAB_CHOICE="$LAB_VAL"
         SELECTED_LAB_PREFIX="${STEP0_LAB_IDS[$LAB_CHOICE]}"
         msg_ok "Selected Lab: ${STEP0_LAB_NAMES[$LAB_CHOICE]}"
         break
@@ -330,9 +340,24 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
   EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
 
   cat << EOF > "${TARGET_MOUNT}/etc/fstab"
-UUID=${ROOT_UUID}  /          ext4  defaults  1 1
+UUID=${ROOT_UUID}  /          ext4  defaults,noatime  1 1
 UUID=${EFI_UUID}   /boot/efi  vfat  umask=0077,shortname=winnt 0 2
 EOF
+
+  # Clean GRUB configuration (Removes live USB kernel parameters that cause hangs at Fedora boot logo)
+  mkdir -p "${TARGET_MOUNT}/etc/default" "${TARGET_MOUNT}/etc/kernel"
+  cat << EOF > "${TARGET_MOUNT}/etc/default/grub"
+GRUB_TIMEOUT=3
+GRUB_DISTRIBUTOR="\$(sed 's/.*release //;s/ .*//' /etc/redhat-release)"
+GRUB_DEFAULT=saved
+GRUB_DISABLE_SUBMENU=true
+GRUB_TERMINAL_OUTPUT="console"
+GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw rhgb quiet"
+GRUB_DISABLE_RECOVERY="true"
+GRUB_ENABLE_BLSCFG=true
+EOF
+
+  echo "root=UUID=${ROOT_UUID} rw rhgb quiet" > "${TARGET_MOUNT}/etc/kernel/cmdline"
 
   # Set Hostname
   echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
@@ -358,6 +383,10 @@ EOF
 
   # Run Setup Steps inside target chroot
   chroot "$TARGET_MOUNT" bash -c "
+    export USER=root
+    export HOME=/root
+    export EUID=0
+
     getent group wheel >/dev/null 2>&1 || groupadd wheel
     
     if ! id '${NEW_USER}' >/dev/null 2>&1; then
@@ -385,8 +414,8 @@ EOF
         cp \"/lib/modules/\$KERNEL_VER/vmlinuz\" \"/boot/vmlinuz-\$KERNEL_VER\"
       fi
 
-      # Generate fresh initramfs for installed hard drive
-      dracut --force --kver \"\$KERNEL_VER\" \"/boot/initramfs-\$KERNEL_VER.img\" 2>/dev/null || dracut --force --regenerate-all
+      # Generate fresh generic initramfs for installed hard drive
+      dracut --force --no-hostonly --kver \"\$KERNEL_VER\" \"/boot/initramfs-\$KERNEL_VER.img\" 2>/dev/null || dracut --force --regenerate-all
 
       # Create valid BLS entry bound to disk UUID
       if command -v kernel-install >/dev/null 2>&1; then
@@ -457,13 +486,15 @@ fi
 step_header "4" "Pre-baking Dank Material Shell (DMS)"
 msg_info "Executing DMS installer directly as root..."
 
-if command -v sudo >/dev/null 2>&1; then
-  curl -fsSL https://install.danklinux.com | sudo bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
-else
-  curl -fsSL https://install.danklinux.com | bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
-fi
+export USER=root
+export HOME=/root
+export EUID=0
 
-msg_ok "DMS native installation pre-baked into system."
+if curl -fsSL https://install.danklinux.com | bash; then
+  msg_ok "DMS native installation pre-baked into system."
+else
+  msg_warn "DMS core installer finished with warnings or non-critical notices."
+fi
 
 # --- STEP 5: DOMAIN SETTINGS ---
 step_header "5" "Active Directory Configuration"
@@ -559,7 +590,8 @@ if [ -f "$LAB_CONF" ]; then
         fi
       fi
       
-      echo -e "    ${CYAN}[$idx]${NC} ${name}"
+      formatted_idx=$(printf "%02d" "$idx")
+      echo -e "    ${CYAN}[${formatted_idx}]${NC} ${name}"
       ((idx++))
     done
 
@@ -578,8 +610,11 @@ if [ -f "$LAB_CONF" ]; then
       else
         while true; do
           echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-$((idx-1))]: "
-          read -r CHOICE < /dev/tty
-          if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -lt "$idx" ]; then
+          read -r RAW_CHOICE < /dev/tty
+          CHOICE=$(echo "$RAW_CHOICE" | tr -cd '0-9' | sed 's/^0*//')
+          CHOICE="${CHOICE:-0}"
+
+          if [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -lt "$idx" ]; then
             break
           fi
           msg_err "Invalid choice. Please enter a valid number."
