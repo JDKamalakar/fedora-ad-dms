@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-# --- BASH ENFORCEMENT GUARD ---
 # Auto-re-executes with Bash if launched with 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
   exec /usr/bin/env bash "$0" "$@"
@@ -125,7 +124,9 @@ setup_pvpn() {
   step_header "1" "ProtonVPN (pVPN) Integration"
   
   local run_pvpn=false
-  case "${PVPN_ENABLE,,}" in
+  PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-yes}" | tr '[:upper:]' '[:lower:]')
+  
+  case "$PVPN_ENABLE_LOWER" in
     "yes") run_pvpn=true ;;
     "no")
       msg_info "pVPN disabled in domain.conf. Skipping installation & connection entirely."
@@ -245,20 +246,20 @@ fi
 
 # --- STEP 4: AD DEPENDENCIES ---
 step_header "4" "Installing AD & Security Dependencies"
-REQUIRED_PKGS=(realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty dnf-plugins-core)
-MISSING_PKGS=()
+REQUIRED_PKGS="realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty dnf-plugins-core"
+MISSING_PKGS=""
 
-for pkg in "${REQUIRED_PKGS[@]}"; do
+for pkg in $REQUIRED_PKGS; do
   if ! rpm -q "$pkg" >/dev/null 2>&1; then
-    MISSING_PKGS+=("$pkg")
+    MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
 done
 
-if [ "${#MISSING_PKGS[@]}" -eq 0 ]; then
+if [ -z "$(echo "$MISSING_PKGS" | xargs)" ]; then
   msg_ok "All required AD & security packages are already installed!"
 else
-  msg_info "Installing missing packages: ${MISSING_PKGS[*]}"
-  dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" || msg_warn "Some packages encountered download warnings."
+  msg_info "Installing missing packages:${MISSING_PKGS}"
+  dnf install -y --setopt=strict=0 $MISSING_PKGS || msg_warn "Some packages encountered download warnings."
 fi
 
 # --- STEP 5: DMS INSTALLATION ---
@@ -380,37 +381,28 @@ step_header "7" "Configuring Lab Access Control Rules"
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
   sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
-  LAB_ENTRIES=()
-  while IFS= read -r line || [ -n "$line" ]; do
-    trimmed=$(echo "$line" | xargs)
-    [[ -z "$trimmed" || "$trimmed" =~ ^# ]] && continue
-    LAB_ENTRIES+=("$trimmed")
-  done < "$LAB_CONF"
+  CLEAN_LABS=$(grep -v -E '^\s*#|^\s*$' "$LAB_CONF" | xargs -L1 || true)
   
-  if [ "${#LAB_ENTRIES[@]}" -gt 0 ]; then
+  if [ -n "$CLEAN_LABS" ]; then
     SYS_HOSTNAME=$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]' || echo "")
     AUTO_DETECTED_INDEX=""
     
     idx=1
-    declare -A LAB_NAMES
-    declare -A LAB_IDS
-    
     echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
-    for entry in "${LAB_ENTRIES[@]}"; do
-      if [[ "$entry" == *":"* ]]; then
-        lab_name_raw="${entry%%:*}"
-        lab_id_raw="${entry#*:}"
+    
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      if [[ "$line" == *":"* ]]; then
+        lab_name_raw="${line%%:*}"
+        lab_id_raw="${line#*:}"
       else
-        lab_name_raw="$entry"
-        lab_id_raw="$entry"
+        lab_name_raw="$line"
+        lab_id_raw="$line"
       fi
 
       name=$(echo "$lab_name_raw" | xargs)
       id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
 
-      LAB_NAMES[$idx]="$name"
-      LAB_IDS[$idx]="$id"
-      
       CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       
@@ -422,14 +414,17 @@ if [ -f "$LAB_CONF" ]; then
       
       formatted_idx=$(printf "%02d" "$idx")
       echo -e "    ${CYAN}[${formatted_idx}]${NC} ${name}"
-      ((idx++))
-    done
+      idx=$((idx + 1))
+    done <<< "$CLEAN_LABS"
 
+    total_labs=$((idx - 1))
     CHOICE="$SELECTED_LAB_INDEX"
     
     if [ -z "$CHOICE" ] && [ -n "$AUTO_DETECTED_INDEX" ]; then
-      msg_ok "Auto-detected Lab from Hostname ('${SYS_HOSTNAME}'): ${LAB_NAMES[$AUTO_DETECTED_INDEX]}"
-      if ask_yes_no "Use auto-detected lab selection [${LAB_NAMES[$AUTO_DETECTED_INDEX]}]?" "Y"; then
+      DETECTED_LINE=$(echo "$CLEAN_LABS" | sed -n "${AUTO_DETECTED_INDEX}p")
+      DETECTED_NAME=$(echo "${DETECTED_LINE%%:*}" | xargs)
+      msg_ok "Auto-detected Lab from Hostname ('${SYS_HOSTNAME}'): ${DETECTED_NAME}"
+      if ask_yes_no "Use auto-detected lab selection [${DETECTED_NAME}]?" "Y"; then
         CHOICE="$AUTO_DETECTED_INDEX"
       fi
     fi
@@ -439,12 +434,12 @@ if [ -f "$LAB_CONF" ]; then
         CHOICE=1
       else
         while true; do
-          echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-$((idx-1))]: "
+          echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
           read -r RAW_CHOICE < /dev/tty
           CHOICE=$(echo "$RAW_CHOICE" | tr -cd '0-9' | sed 's/^0*//')
           CHOICE="${CHOICE:-0}"
 
-          if [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -lt "$idx" ]; then
+          if [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "$total_labs" ]; then
             break
           fi
           msg_err "Invalid choice. Please enter a valid number."
@@ -452,20 +447,29 @@ if [ -f "$LAB_CONF" ]; then
       fi
     fi
 
-    ALLOWED_ID="${LAB_IDS[$CHOICE]}"
-    ALLOWED_NAME="${LAB_NAMES[$CHOICE]}"
-    
-    msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
-
-    realm permit -g "$ALLOWED_ID" 2>/dev/null || msg_warn "Skipped 'realm permit'."
-
-    for key in "${!LAB_IDS[@]}"; do
-      if [ "$key" -ne "$CHOICE" ]; then
-        DENY_ID="${LAB_IDS[$key]}"
-        realm deny -g "$DENY_ID" 2>/dev/null || true
-        msg_warn "Recorded block rule for Lab ID: ${DENY_ID}"
+    curr_idx=1
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      if [[ "$line" == *":"* ]]; then
+        lab_name_raw="${line%%:*}"
+        lab_id_raw="${line#*:}"
+      else
+        lab_name_raw="$line"
+        lab_id_raw="$line"
       fi
-    done
+      
+      name=$(echo "$lab_name_raw" | xargs)
+      id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
+
+      if [ "$curr_idx" -eq "$CHOICE" ]; then
+        msg_ok "Selected Lab: ${name} (${id})"
+        realm permit -g "$id" 2>/dev/null || msg_warn "Skipped 'realm permit'."
+      else
+        realm deny -g "$id" 2>/dev/null || true
+        msg_warn "Recorded block rule for Lab ID: ${id}"
+      fi
+      curr_idx=$((curr_idx + 1))
+    done <<< "$CLEAN_LABS"
     
     msg_ok "Unlisted domain IDs remain allowed."
   fi
