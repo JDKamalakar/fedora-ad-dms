@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# Auto-re-execute with Bash if called via 'sh' or another shell
+# --- BASH ENFORCEMENT GUARD ---
+# Auto-re-executes with Bash if launched with 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@"
+  exec /usr/bin/env bash "$0" "$@"
 fi
 
 set -euo pipefail
@@ -42,7 +43,7 @@ draw_banner() {
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/11]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP ${1:-1}/11]${NC} ${BOLD}${2:-}${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -83,15 +84,13 @@ ask_yes_no() {
   done
 }
 
-if [ "$EUID" -ne 0 ]; then
+if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   draw_banner
   msg_err "This script requires administrative privileges. Run with 'sudo'."
   exit 1
 fi
 
 draw_banner
-
-# LINE 87 FIX: Safe expansion for BASH_SOURCE under set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
@@ -393,11 +392,8 @@ if [ -f "$LAB_CONF" ]; then
     AUTO_DETECTED_INDEX=""
     
     idx=1
-    
-    # LINE 298 FIX: Clear previous declarations and define safe associative arrays
-    unset LAB_NAMES LAB_IDS 2>/dev/null || true
-    declare -A LAB_NAMES=()
-    declare -A LAB_IDS=()
+    declare -A LAB_NAMES
+    declare -A LAB_IDS
     
     echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
     for entry in "${LAB_ENTRIES[@]}"; do
