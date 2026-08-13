@@ -16,7 +16,6 @@ SKIP_STEP0=false
 SELECTED_LAB_INDEX=""
 
 # --- CONFIGURATION DEFAULTS ---
-# Options for PVPN_ENABLE: "yes" (auto-run), "no" (skip), "ask" (prompt user)
 PVPN_ENABLE="${PVPN_ENABLE:-yes}"
 PVPN_ID="${PVPN_ID:-gsfcu@proton.me}"
 PVPN_PASS="${PVPN_PASS:-Test@1199}"
@@ -87,23 +86,20 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# Load domain.conf if present to override PVPN settings
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/domain.conf"
 fi
 
-# --- STEP 0A: PROTON VPN (pVPN) SETUP ---
+# --- STEP 0A: PROTON VPN SETUP ---
 setup_pvpn() {
   step_header "0A" "ProtonVPN (pVPN) Integration"
   
   local run_pvpn=false
   case "${PVPN_ENABLE,,}" in
-    "yes")
-      run_pvpn=true
-      ;;
+    "yes") run_pvpn=true ;;
     "no")
-      msg_info "pVPN installation disabled in configuration (PVPN_ENABLE=no)."
+      msg_info "pVPN installation disabled in configuration."
       return 0
       ;;
     "ask")
@@ -119,12 +115,12 @@ setup_pvpn() {
 
   if [ "$run_pvpn" = true ]; then
     msg_info "Installing pVPN daemon and CLI..."
-    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash || msg_warn "pVPN script installer returned warning."
+    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash || msg_warn "pVPN installer notice."
 
     msg_info "Authenticating pVPN with '${PVPN_ID}'..."
     if command -v pvpnctl >/dev/null 2>&1; then
       pvpnctl login -u "$PVPN_ID" -p "$PVPN_PASS" 2>/dev/null || printf "%s\n%s\n" "$PVPN_ID" "$PVPN_PASS" | pvpnctl login 2>/dev/null || true
-      pvpnctl connect fastest 2>/dev/null || pvpnctl connect 2>/dev/null || msg_warn "pVPN login attempted; manual connect may be needed."
+      pvpnctl connect fastest 2>/dev/null || pvpnctl connect 2>/dev/null || msg_warn "pVPN login attempted."
       msg_ok "pVPN setup complete."
     else
       msg_warn "pvpnctl binary not found in PATH."
@@ -132,7 +128,6 @@ setup_pvpn() {
   fi
 }
 
-# Run pVPN Setup
 setup_pvpn
 
 # --- STEP 0B: NATIVE LIVE INSTALLER ---
@@ -185,7 +180,7 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
 
   msg_ok "Selected Target Disk: ${TARGET_DISK}"
 
-  # 2. Lab Selection & Hostname Generation
+  # 2. Lab Selection
   mkdir -p /tmp/installer_init
   LAB_CONF_SOURCE=""
 
@@ -240,7 +235,6 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     while true; do
       echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
       read -r LAB_RAW < /dev/tty
-      # Strip leading zeros so '01' and '1' both evaluate to 1
       LAB_VAL=$(echo "$LAB_RAW" | tr -cd '0-9' | sed 's/^0*//')
       LAB_VAL="${LAB_VAL:-0}"
 
@@ -266,12 +260,11 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     msg_err "Invalid input. Please enter a valid number."
   done
 
-  # Strictly sanitize Hostname and Username
   NEW_HOSTNAME=$(echo "${SELECTED_LAB_PREFIX}${PADDED_DEV_NUM}" | tr -cd 'a-zA-Z0-9_-' | tr '[:lower:]' '[:upper:]')
   NEW_USER=$(echo "$NEW_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 
   msg_ok "Generated Hostname: ${NEW_HOSTNAME}"
-  msg_ok "Local Admin Username: ${NEW_USER} (Auto-assigned)"
+  msg_ok "Local Admin Username: ${NEW_USER}"
 
   # 4. Password Input
   echo -en "  ${YELLOW}[INPUT]${NC} Enter Password for user '${NEW_USER}' and root: "
@@ -284,7 +277,6 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     exit 1
   fi
 
-  # Partition naming convention
   if [[ "$TARGET_DISK" =~ nvme|loop|mmcblk ]]; then
     EFI_PART="${TARGET_DISK}p1"
     ROOT_PART="${TARGET_DISK}p2"
@@ -293,7 +285,6 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     ROOT_PART="${TARGET_DISK}2"
   fi
 
-  # Unmount active partitions & disable swap
   msg_info "Preparing disk ${TARGET_DISK}..."
   swapoff -a 2>/dev/null || true
   umount -f "${TARGET_DISK}"* 2>/dev/null || true
@@ -305,23 +296,21 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
   parted -s "$TARGET_DISK" set 1 boot on
   parted -s "$TARGET_DISK" mkpart primary ext4 1025MiB 100%
 
-  # Force kernel partition reread
   partprobe "$TARGET_DISK" 2>/dev/null || true
   udevadm settle 2>/dev/null || true
   sleep 2
 
-  msg_info "Formatting partitions (${EFI_PART} & ${ROOT_PART})..."
+  msg_info "Formatting partitions..."
   mkfs.vfat -F32 "$EFI_PART" >/dev/null
   mkfs.ext4 -F "$ROOT_PART" >/dev/null
 
-  # Mount target partitions
   TARGET_MOUNT="/mnt/target_system"
   mkdir -p "$TARGET_MOUNT"
   mount "$ROOT_PART" "$TARGET_MOUNT"
   mkdir -p "${TARGET_MOUNT}/boot/efi"
   mount "$EFI_PART" "${TARGET_MOUNT}/boot/efi"
 
-  msg_info "Syncing Live OS filesystem from Live USB to disk..."
+  msg_info "Syncing Live OS filesystem to disk..."
   rsync -axH --info=progress2 \
     --exclude=/proc/* \
     --exclude=/sys/* \
@@ -332,10 +321,8 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
     --exclude=/media/* \
     / "${TARGET_MOUNT}/" || true
 
-  # Clean up stale Live OS home directories
   rm -rf "${TARGET_MOUNT}/home/"*
 
-  # Configure fstab
   ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
   EFI_UUID=$(blkid -s UUID -o value "$EFI_PART")
 
@@ -344,7 +331,7 @@ UUID=${ROOT_UUID}  /          ext4  defaults,noatime  1 1
 UUID=${EFI_UUID}   /boot/efi  vfat  umask=0077,shortname=winnt 0 2
 EOF
 
-  # Clean GRUB configuration (Removes live USB kernel parameters that cause hangs at Fedora boot logo)
+  # Clean GRUB configuration (Removed rhgb quiet for verbose boot diagnosis)
   mkdir -p "${TARGET_MOUNT}/etc/default" "${TARGET_MOUNT}/etc/kernel"
   cat << EOF > "${TARGET_MOUNT}/etc/default/grub"
 GRUB_TIMEOUT=3
@@ -352,14 +339,12 @@ GRUB_DISTRIBUTOR="\$(sed 's/.*release //;s/ .*//' /etc/redhat-release)"
 GRUB_DEFAULT=saved
 GRUB_DISABLE_SUBMENU=true
 GRUB_TERMINAL_OUTPUT="console"
-GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw rhgb quiet"
+GRUB_CMDLINE_LINUX="root=UUID=${ROOT_UUID} rw"
 GRUB_DISABLE_RECOVERY="true"
 GRUB_ENABLE_BLSCFG=true
 EOF
 
-  echo "root=UUID=${ROOT_UUID} rw rhgb quiet" > "${TARGET_MOUNT}/etc/kernel/cmdline"
-
-  # Set Hostname
+  echo "root=UUID=${ROOT_UUID} rw" > "${TARGET_MOUNT}/etc/kernel/cmdline"
   echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
 
   msg_info "Configuring virtual mounts & chroot environment..."
@@ -372,20 +357,17 @@ EOF
     mount --bind /sys/firmware/efi/efivars "${TARGET_MOUNT}/sys/firmware/efi/efivars" 2>/dev/null || true
   fi
 
-  # Copy installer repo into target system
   mkdir -p "${TARGET_MOUNT}/tmp/installer"
   if [ -f "${SCRIPT_DIR}/setup-ad-dms-tui.sh" ]; then
     cp -r "${SCRIPT_DIR}/"* "${TARGET_MOUNT}/tmp/installer/"
   else
-    msg_info "Fetching repository files into target drive..."
     curl -fsSL https://github.com/jayrajkamalakar-gsfcu/fedora-ad-dms/archive/refs/heads/main.tar.gz | tar -xz -C "${TARGET_MOUNT}/tmp/installer" --strip-components=1
   fi
 
-  # Run Setup Steps inside target chroot
+  # Execute inside target chroot without read-only EUID assignment
   chroot "$TARGET_MOUNT" bash -c "
     export USER=root
     export HOME=/root
-    export EUID=0
 
     getent group wheel >/dev/null 2>&1 || groupadd wheel
     
@@ -396,13 +378,10 @@ EOF
     echo 'root:${NEW_PASS}' | chpasswd
     echo '${NEW_USER}:${NEW_PASS}' | chpasswd
     
-    # Ensure SELinux auto-relabels on first boot
     touch /.autorelabel
 
-    # --- REBUILD BOOTLOADER & PURGE STALE LIVE ISO BLS ENTRIES ---
     rm -rf /boot/loader/entries/*
 
-    # Ensure machine-id exists for kernel-install
     if [ ! -s /etc/machine-id ]; then
       systemd-machine-id-setup 2>/dev/null || dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
     fi
@@ -414,16 +393,13 @@ EOF
         cp \"/lib/modules/\$KERNEL_VER/vmlinuz\" \"/boot/vmlinuz-\$KERNEL_VER\"
       fi
 
-      # Generate fresh generic initramfs for installed hard drive
       dracut --force --no-hostonly --kver \"\$KERNEL_VER\" \"/boot/initramfs-\$KERNEL_VER.img\" 2>/dev/null || dracut --force --regenerate-all
 
-      # Create valid BLS entry bound to disk UUID
       if command -v kernel-install >/dev/null 2>&1; then
         kernel-install add \"\$KERNEL_VER\" \"/boot/vmlinuz-\$KERNEL_VER\" 2>/dev/null || true
       fi
     fi
 
-    # Reconfigure GRUB
     grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
     if [ -d /boot/efi/EFI/fedora ]; then
       grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
@@ -434,12 +410,11 @@ EOF
     ./setup-ad-dms-tui.sh --skip-step0 -y --lab-index=${LAB_CHOICE}
   "
 
-  # Clean up mounts
   umount -R "$TARGET_MOUNT" 2>/dev/null || true
 
   echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${GREEN}|${NC} ${BOLD}Native Fedora installation & setup completed successfully!        ${NC} ${GREEN}|${NC}"
-  echo -e "${GREEN}|${NC} ${BOLD}You can now restart the PC and boot directly into the hard drive. ${NC} ${GREEN}|${NC}"
+  echo -e "${GREEN}|${NC} ${BOLD}Native Fedora installation completed!                              ${NC} ${GREEN}|${NC}"
+  echo -e "${GREEN}|${NC} ${BOLD}You can now restart the system.                                   ${NC} ${GREEN}|${NC}"
   echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
   exit 0
 fi
@@ -448,18 +423,18 @@ fi
 step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
 if rpm -q libreoffice-core >/dev/null 2>&1; then
   msg_info "Removing LibreOffice..."
-  dnf remove -y "libreoffice*" 2>/dev/null || true
+  dnf remove -y "libreoffice*"
 fi
 
 msg_info "Installing ONLYOFFICE Desktop Editors..."
-dnf install -y --setopt=strict=0 https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm 2>/dev/null || true
-dnf install -y --setopt=strict=0 onlyoffice-desktopeditors 2>/dev/null || msg_warn "ONLYOFFICE package download skipped due to repository mirror error."
+dnf install -y --setopt=strict=0 https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+dnf install -y --setopt=strict=0 onlyoffice-desktopeditors || msg_warn "ONLYOFFICE installation encountered a repository warning."
 msg_ok "Software swapping step finished."
 
 # --- STEP 2: SYSTEM UPDATE ---
 step_header "2" "Updating System Packages"
 if ask_yes_no "Run full system update ('dnf update')?" "N"; then
-  dnf update -y --setopt=strict=0 || msg_warn "System update encountered mirror errors; proceeding with installed base packages."
+  dnf update -y --setopt=strict=0 || msg_warn "System update completed with mirror warnings."
 else
   msg_info "Skipping full system update."
 fi
@@ -479,21 +454,19 @@ if [ "${#MISSING_PKGS[@]}" -eq 0 ]; then
   msg_ok "All required AD & security packages are already installed!"
 else
   msg_info "Installing missing packages: ${MISSING_PKGS[*]}"
-  dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" 2>/dev/null || msg_warn "Some packages failed to fetch due to mirror errors. Proceeding with installed base."
+  dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" || msg_warn "Some packages encountered download warnings."
 fi
 
 # --- STEP 4: DMS INSTALLATION ---
-step_header "4" "Pre-baking Dank Material Shell (DMS)"
-msg_info "Executing DMS installer directly as root..."
+step_header "4" "Installing Dank Material Shell (DMS)"
+DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $3 < 65000 {print $1}' /etc/passwd | head -n1 || echo "")
 
-export USER=root
-export HOME=/root
-export EUID=0
-
-if curl -fsSL https://install.danklinux.com | bash; then
-  msg_ok "DMS native installation pre-baked into system."
+if [ -n "$DMS_TARGET_USER" ]; then
+  msg_info "Executing DMS installer under non-root user context '${DMS_TARGET_USER}'..."
+  su - "$DMS_TARGET_USER" -c "curl -fsSL https://install.danklinux.com | bash" || msg_warn "DMS user-level installer completed with warnings."
+  msg_ok "DMS installation process finished."
 else
-  msg_warn "DMS core installer finished with warnings or non-critical notices."
+  msg_warn "No non-root user account detected to run the DMS installer script."
 fi
 
 # --- STEP 5: DOMAIN SETTINGS ---
@@ -524,10 +497,10 @@ while true; do
     msg_ok "Joined Active Directory realm successfully."
     break
   else
-    msg_warn "Could not join domain (Domain Controller unreachable or authentication failed)."
+    msg_warn "Could not join domain."
     
     if [ "$ASSUME_YES" = true ]; then
-      msg_warn "Auto-continuing in Offline/Testing mode due to -y flag..."
+      msg_warn "Auto-continuing in Offline mode due to -y flag..."
       break
     fi
 
@@ -535,8 +508,8 @@ while true; do
       msg_info "Retrying domain authentication..."
       continue
     else
-      if ask_yes_no "Continue setup in Offline/Testing mode?" "Y"; then
-        msg_warn "Proceeding with local policy setup, scripts, and theme configuration..."
+      if ask_yes_no "Continue setup in Offline mode?" "Y"; then
+        msg_warn "Proceeding with local policy setup..."
         break
       else
         msg_err "Aborting installation."
@@ -627,7 +600,7 @@ if [ -f "$LAB_CONF" ]; then
     
     msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
 
-    realm permit -g "$ALLOWED_ID" 2>/dev/null || msg_warn "Skipped 'realm permit' (machine offline/not joined)."
+    realm permit -g "$ALLOWED_ID" 2>/dev/null || msg_warn "Skipped 'realm permit'."
 
     for key in "${!LAB_IDS[@]}"; do
       if [ "$key" -ne "$CHOICE" ]; then
@@ -725,7 +698,7 @@ if [ -f "$THEME_ARCHIVE" ]; then
       fi
     fi
   done
-  msg_ok "Pre-configured DMS theme profiles successfully applied."
+  msg_ok "Pre-configured DMS theme profiles applied."
 fi
 
 # --- STEP 12: FINALIZE SERVICES ---
