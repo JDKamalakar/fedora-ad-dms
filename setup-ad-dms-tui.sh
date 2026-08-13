@@ -88,6 +88,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$P
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  # Strip CRLF (Windows carriage returns) if saved from Windows editor
+  sed -i 's/\r$//' "${SCRIPT_DIR}/domain.conf" 2>/dev/null || true
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/domain.conf"
 fi
@@ -228,12 +230,17 @@ if [ -z "$DMS_USER" ] || [ "$DMS_USER" = "root" ]; then
 fi
 
 if [ -n "$DMS_USER" ] && id "$DMS_USER" >/dev/null 2>&1; then
-  msg_info "Executing DMS installer script as non-root user '$DMS_USER'..."
-  if sudo -u "$DMS_USER" -H sh -c "curl -fsSL https://install.danklinux.com | sh"; then
-    msg_ok "DMS installer script executed successfully."
+  # Check if DMS is already installed before attempting script execution
+  if command -v dms >/dev/null 2>&1 || rpm -q dms >/dev/null 2>&1 || [ -f "/usr/bin/dms" ] || [ -f "/usr/local/bin/dms" ] || [ -f "/home/${DMS_USER}/.local/bin/dms" ]; then
+    msg_ok "Dank Material Shell (DMS) is already installed. Skipping installer script."
   else
-    msg_err "DMS installer script failed."
-    exit 1
+    msg_info "Executing DMS installer script as non-root user '$DMS_USER'..."
+    if sudo -u "$DMS_USER" -H sh -c "curl -fsSL https://install.danklinux.com | sh"; then
+      msg_ok "DMS installer script executed successfully."
+    else
+      msg_err "DMS installer script failed."
+      exit 1
+    fi
   fi
 else
   msg_err "No non-root user found to execute the DMS installer script. Exiting."
@@ -242,12 +249,36 @@ fi
 
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
-TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
-if [ -n "${AD_DNS_IP:-}" ]; then
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes 2>/dev/null || true
-  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d '\r' | xargs)
+DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d '\r' | xargs)
+DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
+AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d '\r' | xargs)
+
+if [ -n "$AD_DNS_IP_CLEAN" ]; then
+  msg_info "Configuring DNS ($AD_DNS_IP_CLEAN) for Active Directory..."
+  
+  # Detect active ethernet connection profile accurately (matches both ethernet and 802-3-ethernet)
+  ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
+  if [ -z "$ACTIVE_CONN" ]; then
+    ACTIVE_CONN=$(nmcli -t -f NAME connection show --active 2>/dev/null | head -n1 || true)
+  fi
+  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+
+  msg_info "Target network connection profile: '$TARGET_CONN'"
+  if nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null; then
+    nmcli connection up "$TARGET_CONN" 2>/dev/null || nmcli device reapply "$(nmcli -t -f DEVICE,STATE device 2>/dev/null | grep ':connected' | head -n1 | cut -d: -f1)" 2>/dev/null || true
+    msg_ok "DNS updated successfully on connection profile '$TARGET_CONN'."
+  else
+    msg_warn "Could not modify connection profile '$TARGET_CONN'. Trying active hardware device fallback..."
+    ACTIVE_DEV=$(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep ':connected' | head -n1 | cut -d: -f1 || true)
+    if [ -n "$ACTIVE_DEV" ]; then
+      nmcli device modify "$ACTIVE_DEV" ipv4.dns "$AD_DNS_IP_CLEAN" 2>/dev/null || true
+      msg_ok "DNS applied directly to active network device '$ACTIVE_DEV'."
+    else
+      msg_warn "Failed to apply DNS via NetworkManager."
+    fi
+  fi
 fi
 
 systemctl enable --now chronyd 2>/dev/null || true
@@ -255,14 +286,14 @@ chronyc makestep > /dev/null 2>&1 || true
 
 while true; do
   if [ "$ASSUME_YES" = true ]; then
-    DOMAIN_PASS="${DOMAIN_PASS:-}"
+    DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
   else
-    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
-    read -sp "" DOMAIN_PASS < /dev/tty
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER_CLEAN}@${DOMAIN_NAME_CLEAN}': "
+    read -sp "" DOMAIN_PASS_EXEC < /dev/tty
     echo ""
   fi
 
-  if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
+  if echo "$DOMAIN_PASS_EXEC" | realm join --user="${DOMAIN_USER_CLEAN}" "${DOMAIN_NAME_CLEAN}" --verbose; then
     msg_ok "Joined Active Directory realm successfully."
     break
   else
@@ -292,6 +323,8 @@ done
 step_header "7" "Configuring Lab Access Control Rules"
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
+  # Strip Windows CRLF endings if present
+  sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
   LAB_ENTRIES=()
   while IFS= read -r line || [ -n "$line" ]; do
     trimmed=$(echo "$line" | xargs)
