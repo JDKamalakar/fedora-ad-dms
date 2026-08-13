@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# Auto-re-executes with Bash if launched with 'sh' or another shell
+# Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
-  exec /usr/bin/env bash "$0" "$@"
+  exec bash "$0" "$@"
 fi
 
-set -euo pipefail
+set -eu
 
 # ANSI Colors
 BOLD="\033[1m"
@@ -36,45 +36,51 @@ for arg in "$@"; do
 done
 
 draw_banner() {
-  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP                ${NC} ${CYAN}|${NC}"
-  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
+  printf "%b+--------------------------------------------------------------------+%b\n" "$CYAN" "$NC"
+  printf "%b|%b %b%b        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               %b %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$NC" "$CYAN" "$NC"
+  printf "%b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP ${1:-1}/11]${NC} ${BOLD}${2:-}${NC}"
-  echo -e "${BLUE}======================================================================${NC}"
+  step_num="${1:-1}"
+  step_title="${2:-}"
+  printf "\n%b%b[STEP %s/11]%b %b%s%b\n" "$BOLD" "$BLUE" "$step_num" "$NC" "$BOLD" "$step_title" "$NC"
+  printf "%b======================================================================%b\n" "$BLUE" "$NC"
 }
 
-msg_info()  { echo -e "  ${CYAN}[INFO]${NC} $1"; }
-msg_ok()    { echo -e "  ${GREEN}[OK]${NC} $1"; }
-msg_warn()  { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
-msg_err()   { echo -e "  ${RED}[ERROR]${NC} $1"; }
+msg_info()  { printf "  %b[INFO]%b %s\n" "$CYAN" "$NC" "$1"; }
+msg_ok()    { printf "  %b[OK]%b %s\n" "$GREEN" "$NC" "$1"; }
+msg_warn()  { printf "  %b[WARN]%b %s\n" "$YELLOW" "$NC" "$1"; }
+msg_err()   { printf "  %b[ERROR]%b %s\n" "$RED" "$NC" "$1"; }
 
 ask_yes_no() {
-  local prompt="$1"
-  local default="${2:-Y}"
-  local resp
-  local hint="[Y/n]"
+  prompt="$1"
+  default="${2:-Y}"
+  hint="[Y/n]"
 
-  if [[ "$default" =~ ^[Nn]$ ]]; then
-    hint="[y/N]"
-  fi
+  case "$default" in
+    [Nn]*) hint="[y/N]" ;;
+  esac
 
   if [ "$ASSUME_YES" = true ]; then
-    if [[ "$default" =~ ^[Nn]$ ]]; then
-      msg_info "${prompt} -> Auto-skipped (-y flag default N)"
-      return 1
-    else
-      msg_info "${prompt} -> Auto-approved (-y flag)"
-      return 0
-    fi
+    case "$default" in
+      [Nn]*)
+        msg_info "${prompt} -> Auto-skipped (-y flag default N)"
+        return 1
+        ;;
+      *)
+        msg_info "${prompt} -> Auto-approved (-y flag)"
+        return 0
+        ;;
+    esac
   fi
 
   while true; do
-    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} ${hint}: "
-    read -r resp < /dev/tty
-    resp="${resp:-$default}"
+    printf "  %b[PROMPT]%b %s %s: " "$YELLOW" "$NC" "$prompt" "$hint"
+    read -r resp < /dev/tty || resp=""
+    if [ -z "$resp" ]; then
+      resp="$default"
+    fi
     case "$resp" in
       [Yy]*) return 0 ;;
       [Nn]*) return 1 ;;
@@ -83,36 +89,42 @@ ask_yes_no() {
   done
 }
 
-if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+EUID_VAL=$(id -u 2>/dev/null || echo 0)
+if [ "$EUID_VAL" -ne 0 ]; then
   draw_banner
   msg_err "This script requires administrative privileges. Run with 'sudo'."
   exit 1
 fi
 
 draw_banner
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
-[[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "$PWD")"
+case "$SCRIPT_DIR" in
+  /dev*) SCRIPT_DIR="$PWD" ;;
+esac
 
 # Robust configuration loader & fallback extractor
 load_domain_conf() {
-  local conf_file="${SCRIPT_DIR}/domain.conf"
-  [ ! -f "$conf_file" ] && [ -f "./domain.conf" ] && conf_file="./domain.conf"
-  [ ! -f "$conf_file" ] && [ -f "/etc/fedora-ad-dms/domain.conf" ] && conf_file="/etc/fedora-ad-dms/domain.conf"
+  conf_file="${SCRIPT_DIR}/domain.conf"
+  if [ ! -f "$conf_file" ] && [ -f "./domain.conf" ]; then
+    conf_file="./domain.conf"
+  fi
+  if [ ! -f "$conf_file" ] && [ -f "/etc/fedora-ad-dms/domain.conf" ]; then
+    conf_file="/etc/fedora-ad-dms/domain.conf"
+  fi
 
   if [ -f "$conf_file" ]; then
     sed -i 's/\r$//' "$conf_file" 2>/dev/null || true
-    # shellcheck disable=SC1090
-    source "$conf_file" 2>/dev/null || true
+    . "$conf_file" 2>/dev/null || true
 
     # Direct regex fallback if variables are missing or have spaces around '='
     if [ -z "${DOMAIN_USER:-}" ]; then
-      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
     fi
     if [ -z "${DOMAIN_NAME:-}" ]; then
-      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
     fi
     if [ -z "${AD_DNS_IP:-}" ]; then
-      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
     fi
   fi
 }
@@ -123,7 +135,7 @@ load_domain_conf
 setup_pvpn() {
   step_header "1" "ProtonVPN (pVPN) Integration"
   
-  local run_pvpn=false
+  run_pvpn=false
   PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-yes}" | tr '[:upper:]' '[:lower:]')
   
   case "$PVPN_ENABLE_LOWER" in
@@ -172,18 +184,18 @@ setup_pvpn() {
     pvpnctl connect
 
     msg_info "Verifying pVPN connection status..."
-    local attempts=0
-    local max_attempts=10
-    local is_connected=false
+    attempts=0
+    max_attempts=10
+    is_connected=false
 
-    while [ $attempts -lt $max_attempts ]; do
+    while [ "$attempts" -lt "$max_attempts" ]; do
       if pvpnctl status 2>/dev/null | grep -iq "connected"; then
         is_connected=true
         break
       fi
-      msg_info "Waiting for active pVPN connection... ($((attempts + 1))/$max_attempts)"
+      attempts=$((attempts + 1))
+      msg_info "Waiting for active pVPN connection... ($attempts/$max_attempts)"
       sleep 3
-      ((attempts++))
     done
 
     if [ "$is_connected" = true ]; then
@@ -214,10 +226,8 @@ step_header "3" "Updating System Packages"
 run_update=false
 
 msg_info "Checking for available system updates..."
-set +e
-dnf check-update --quiet >/dev/null 2>&1
-CHECK_UPD_EXIT=$?
-set -e
+CHECK_UPD_EXIT=0
+dnf check-update --quiet >/dev/null 2>&1 || CHECK_UPD_EXIT=$?
 
 if [ "$CHECK_UPD_EXIT" -eq 100 ]; then
   msg_info "System updates are available."
@@ -255,11 +265,12 @@ for pkg in $REQUIRED_PKGS; do
   fi
 done
 
-if [ -z "$(echo "$MISSING_PKGS" | xargs)" ]; then
+MISSING_CLEAN=$(echo "$MISSING_PKGS" | xargs || true)
+if [ -z "$MISSING_CLEAN" ]; then
   msg_ok "All required AD & security packages are already installed!"
 else
-  msg_info "Installing missing packages:${MISSING_PKGS}"
-  dnf install -y --setopt=strict=0 $MISSING_PKGS || msg_warn "Some packages encountered download warnings."
+  msg_info "Installing missing packages: $MISSING_CLEAN"
+  dnf install -y --setopt=strict=0 $MISSING_CLEAN || msg_warn "Some packages encountered download warnings."
 fi
 
 # --- STEP 5: DMS INSTALLATION ---
@@ -292,10 +303,10 @@ step_header "6" "Active Directory Configuration & Realm Join"
 
 load_domain_conf
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d ' "\r\'' | xargs)
-DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d ' "\r\'' | xargs)
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d ' "\r\'' | xargs || true)
+DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d ' "\r\'' | xargs || true)
 DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
-AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d ' "\r\'' | xargs)
+AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d ' "\r\'' | xargs || true)
 
 msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
 msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
@@ -344,9 +355,11 @@ else
     if [ "$ASSUME_YES" = true ]; then
       DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
     else
-      echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER_CLEAN}@${DOMAIN_NAME_CLEAN}': "
-      read -sp "" DOMAIN_PASS_EXEC < /dev/tty
-      echo ""
+      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER_CLEAN" "$DOMAIN_NAME_CLEAN"
+      stty -echo 2>/dev/null || true
+      read -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
+      stty echo 2>/dev/null || true
+      printf "\n"
     fi
 
     if echo "$DOMAIN_PASS_EXEC" | realm join --user="${DOMAIN_USER_CLEAN}" "${DOMAIN_NAME_CLEAN}" --verbose; then
@@ -381,48 +394,54 @@ step_header "7" "Configuring Lab Access Control Rules"
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
   sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
-  CLEAN_LABS=$(grep -v -E '^\s*#|^\s*$' "$LAB_CONF" | xargs -L1 || true)
+  CLEAN_LABS=$(grep -v -E '^\s*#|^\s*$' "$LAB_CONF" 2>/dev/null | xargs -L1 || true)
   
   if [ -n "$CLEAN_LABS" ]; then
     SYS_HOSTNAME=$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]' || echo "")
     AUTO_DETECTED_INDEX=""
     
     idx=1
-    echo -e "  ${BOLD}Available Lab Configurations:${NC}\n"
+    printf "  %bAvailable Lab Configurations:%b\n\n" "$BOLD" "$NC"
     
-    while IFS= read -r line; do
-      [ -z "$line" ] && continue
-      if [[ "$line" == *":"* ]]; then
-        lab_name_raw="${line%%:*}"
-        lab_id_raw="${line#*:}"
-      else
-        lab_name_raw="$line"
-        lab_id_raw="$line"
-      fi
+    printf "%s\n" "$CLEAN_LABS" | while IFS= read -r line; do
+      if [ -z "$line" ]; then continue; fi
+      
+      case "$line" in
+        *:*)
+          lab_name_raw="${line%%:*}"
+          lab_id_raw="${line#*:}"
+          ;;
+        *)
+          lab_name_raw="$line"
+          lab_id_raw="$line"
+          ;;
+      esac
 
-      name=$(echo "$lab_name_raw" | xargs)
+      name=$(echo "$lab_name_raw" | xargs || true)
       id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
 
       CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
       
       if [ -n "$SYS_HOSTNAME" ]; then
-        if [[ "$SYS_HOSTNAME" == *"$CLEAN_NAME"* ]] || [[ "$SYS_HOSTNAME" == *"$CLEAN_ID"* ]]; then
-          AUTO_DETECTED_INDEX="$idx"
-        fi
+        case "$SYS_HOSTNAME" in
+          *"$CLEAN_NAME"*|*"$CLEAN_ID"*)
+            AUTO_DETECTED_INDEX="$idx"
+            ;;
+        esac
       fi
       
       formatted_idx=$(printf "%02d" "$idx")
-      echo -e "    ${CYAN}[${formatted_idx}]${NC} ${name}"
+      printf "    %b[%s]%b %s\n" "$CYAN" "$formatted_idx" "$NC" "$name"
       idx=$((idx + 1))
-    done <<< "$CLEAN_LABS"
+    done
 
-    total_labs=$((idx - 1))
+    total_labs=$(printf "%s\n" "$CLEAN_LABS" | grep -c . || echo 1)
     CHOICE="$SELECTED_LAB_INDEX"
     
     if [ -z "$CHOICE" ] && [ -n "$AUTO_DETECTED_INDEX" ]; then
-      DETECTED_LINE=$(echo "$CLEAN_LABS" | sed -n "${AUTO_DETECTED_INDEX}p")
-      DETECTED_NAME=$(echo "${DETECTED_LINE%%:*}" | xargs)
+      DETECTED_LINE=$(printf "%s\n" "$CLEAN_LABS" | sed -n "${AUTO_DETECTED_INDEX}p")
+      DETECTED_NAME=$(echo "${DETECTED_LINE%%:*}" | xargs || true)
       msg_ok "Auto-detected Lab from Hostname ('${SYS_HOSTNAME}'): ${DETECTED_NAME}"
       if ask_yes_no "Use auto-detected lab selection [${DETECTED_NAME}]?" "Y"; then
         CHOICE="$AUTO_DETECTED_INDEX"
@@ -434,8 +453,8 @@ if [ -f "$LAB_CONF" ]; then
         CHOICE=1
       else
         while true; do
-          echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-${total_labs}]: "
-          read -r RAW_CHOICE < /dev/tty
+          printf "\n  %b[INPUT]%b Select Lab number [1-%s]: " "$YELLOW" "$NC" "$total_labs"
+          read -r RAW_CHOICE < /dev/tty || RAW_CHOICE=""
           CHOICE=$(echo "$RAW_CHOICE" | tr -cd '0-9' | sed 's/^0*//')
           CHOICE="${CHOICE:-0}"
 
@@ -448,17 +467,21 @@ if [ -f "$LAB_CONF" ]; then
     fi
 
     curr_idx=1
-    while IFS= read -r line; do
-      [ -z "$line" ] && continue
-      if [[ "$line" == *":"* ]]; then
-        lab_name_raw="${line%%:*}"
-        lab_id_raw="${line#*:}"
-      else
-        lab_name_raw="$line"
-        lab_id_raw="$line"
-      fi
+    printf "%s\n" "$CLEAN_LABS" | while IFS= read -r line; do
+      if [ -z "$line" ]; then continue; fi
       
-      name=$(echo "$lab_name_raw" | xargs)
+      case "$line" in
+        *:*)
+          lab_name_raw="${line%%:*}"
+          lab_id_raw="${line#*:}"
+          ;;
+        *)
+          lab_name_raw="$line"
+          lab_id_raw="$line"
+          ;;
+      esac
+      
+      name=$(echo "$lab_name_raw" | xargs || true)
       id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
 
       if [ "$curr_idx" -eq "$CHOICE" ]; then
@@ -469,7 +492,7 @@ if [ -f "$LAB_CONF" ]; then
         msg_warn "Recorded block rule for Lab ID: ${id}"
       fi
       curr_idx=$((curr_idx + 1))
-    done <<< "$CLEAN_LABS"
+    done
     
     msg_ok "Unlisted domain IDs remain allowed."
   fi
@@ -566,7 +589,6 @@ EOF
 chmod -R 755 /etc/skel/.config/kitty
 msg_ok "Compulsory Kitty config populated in /etc/skel/.config/kitty/kitty.conf"
 
-shopt -s nullglob
 for user_home in /home/*; do
   if [ -d "$user_home" ]; then
     owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
@@ -617,6 +639,6 @@ sss_cache -E 2>/dev/null || true
 rm -f /var/lib/sss/db/* 2>/dev/null || true
 systemctl restart sssd oddjobd greetd 2>/dev/null || true
 
-echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
-echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Pre-baked DMS, Kitty & pVPN deployment ready.     ${NC} ${GREEN}|${NC}"
-echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+printf "%b+--------------------------------------------------------------------+%b\n" "$GREEN" "$NC"
+printf "%b|%b %bSetup complete! Pre-baked DMS, Kitty & pVPN deployment ready.     %b %b|%b\n" "$GREEN" "$NC" "$BOLD" "$NC" "$GREEN" "$NC"
+printf "%b+--------------------------------------------------------------------+%b\n\n" "$GREEN" "$NC"
