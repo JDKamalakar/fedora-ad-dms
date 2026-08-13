@@ -87,12 +87,31 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
-  # Strip CRLF (Windows carriage returns) if saved from Windows editor
-  sed -i 's/\r$//' "${SCRIPT_DIR}/domain.conf" 2>/dev/null || true
-  # shellcheck disable=SC1090
-  source "${SCRIPT_DIR}/domain.conf"
-fi
+# Robust configuration loader & fallback extractor
+load_domain_conf() {
+  local conf_file="${SCRIPT_DIR}/domain.conf"
+  [ ! -f "$conf_file" ] && [ -f "./domain.conf" ] && conf_file="./domain.conf"
+  [ ! -f "$conf_file" ] && [ -f "/etc/fedora-ad-dms/domain.conf" ] && conf_file="/etc/fedora-ad-dms/domain.conf"
+
+  if [ -f "$conf_file" ]; then
+    sed -i 's/\r$//' "$conf_file" 2>/dev/null || true
+    # shellcheck disable=SC1090
+    source "$conf_file" 2>/dev/null || true
+
+    # Direct regex fallback if variables are missing or have spaces around '='
+    if [ -z "${DOMAIN_USER:-}" ]; then
+      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+    fi
+    if [ -z "${DOMAIN_NAME:-}" ]; then
+      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+    fi
+    if [ -z "${AD_DNS_IP:-}" ]; then
+      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" | cut -d'=' -f2- | tr -d ' "\r\'' | xargs || true)
+    fi
+  fi
+}
+
+load_domain_conf
 
 # --- STEP 1: PROTON VPN SETUP ---
 setup_pvpn() {
@@ -120,15 +139,18 @@ setup_pvpn() {
   esac
 
   if [ "$run_pvpn" = true ]; then
-    msg_info "Installing system-wide pVPN CLI..."
-    curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash
+    if command -v pvpnctl >/dev/null 2>&1; then
+      msg_ok "pVPN CLI (pvpnctl) is already installed. Skipping installation."
+    else
+      msg_info "Installing system-wide pVPN CLI..."
+      curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash
 
-    if ! command -v pvpnctl >/dev/null 2>&1; then
-      msg_err "pvpnctl binary not found. Installation failed."
-      exit 1
+      if ! command -v pvpnctl >/dev/null 2>&1; then
+        msg_err "pvpnctl binary not found. Installation failed."
+        exit 1
+      fi
     fi
 
-    # Check connection status BEFORE attempting login
     msg_info "Checking current pVPN connection status..."
     if pvpnctl status 2>/dev/null | grep -iq "connected"; then
       msg_ok "pVPN is already connected! Skipping login and connection steps."
@@ -183,23 +205,35 @@ msg_ok "Software swapping step finished."
 step_header "3" "Updating System Packages"
 run_update=false
 
-if [ "$UPDATE_SYSTEM" = true ]; then
-  run_update=true
-  msg_info "System update explicitly requested via CLI flag."
-elif [ "$UPDATE_SYSTEM" = false ]; then
-  run_update=false
-  msg_info "System update explicitly skipped via CLI flag."
-else
-  if ask_yes_no "Run full system update ('dnf update')?" "N"; then
+msg_info "Checking for available system updates..."
+set +e
+dnf check-update --quiet >/dev/null 2>&1
+CHECK_UPD_EXIT=$?
+set -e
+
+if [ "$CHECK_UPD_EXIT" -eq 100 ]; then
+  msg_info "System updates are available."
+  if [ "$UPDATE_SYSTEM" = true ]; then
     run_update=true
+    msg_info "System update explicitly requested via CLI flag."
+  elif [ "$UPDATE_SYSTEM" = false ]; then
+    run_update=false
+    msg_info "System update explicitly skipped via CLI flag."
+  else
+    if ask_yes_no "Updates are available. Do you want to run a full system update ('dnf update')?" "N"; then
+      run_update=true
+    fi
   fi
+else
+  msg_ok "No updates available. System is already up to date."
+  run_update=false
 fi
 
 if [ "$run_update" = true ]; then
   msg_info "Running full system update..."
   dnf update -y --setopt=strict=0 || msg_warn "System update completed with mirror warnings."
 else
-  msg_info "Skipping full system update."
+  msg_info "Skipping system update."
 fi
 
 # --- STEP 4: AD DEPENDENCIES ---
@@ -223,14 +257,12 @@ fi
 # --- STEP 5: DMS INSTALLATION ---
 step_header "5" "Installing Dank Material Shell (DMS)"
 
-# Detect non-root user to run the installation script
 DMS_USER="${SUDO_USER:-}"
 if [ -z "$DMS_USER" ] || [ "$DMS_USER" = "root" ]; then
   DMS_USER=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || true)
 fi
 
 if [ -n "$DMS_USER" ] && id "$DMS_USER" >/dev/null 2>&1; then
-  # Check if DMS is already installed before attempting script execution
   if command -v dms >/dev/null 2>&1 || rpm -q dms >/dev/null 2>&1 || [ -f "/usr/bin/dms" ] || [ -f "/usr/local/bin/dms" ] || [ -f "/home/${DMS_USER}/.local/bin/dms" ]; then
     msg_ok "Dank Material Shell (DMS) is already installed. Skipping installer script."
   else
@@ -250,33 +282,47 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d '\r' | xargs)
-DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d '\r' | xargs)
+# Reload configuration directly to guarantee fresh values
+load_domain_conf
+
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d ' "\r\'' | xargs)
+DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d ' "\r\'' | xargs)
 DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
-AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d '\r' | xargs)
+AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d ' "\r\'' | xargs)
 
+msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
+msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
+
+# --- APPLY DNS FIRST BEFORE ANY REALM OR DOMAIN LOOKUPS ---
 if [ -n "$AD_DNS_IP_CLEAN" ]; then
-  msg_info "Configuring DNS ($AD_DNS_IP_CLEAN) for Active Directory..."
+  msg_info "Applying Active Directory DNS ($AD_DNS_IP_CLEAN) prior to domain operations..."
   
-  # Detect active ethernet connection profile accurately (matches both ethernet and 802-3-ethernet)
-  ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
-  if [ -z "$ACTIVE_CONN" ]; then
-    ACTIVE_CONN=$(nmcli -t -f NAME connection show --active 2>/dev/null | head -n1 || true)
-  fi
-  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+  # Find physical default interface name (e.g., eth0, enp0s3)
+  DEFAULT_IF=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1 || true)
+  ACTIVE_CONN=""
 
-  msg_info "Target network connection profile: '$TARGET_CONN'"
+  if [ -n "$DEFAULT_IF" ]; then
+    ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ":${DEFAULT_IF}$" | cut -d: -f1 | head -n1 || true)
+  fi
+
+  if [ -z "$ACTIVE_CONN" ]; then
+    ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
+  fi
+
+  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+  msg_info "Modifying NetworkManager connection profile: '$TARGET_CONN'"
+
   if nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null; then
-    nmcli connection up "$TARGET_CONN" 2>/dev/null || nmcli device reapply "$(nmcli -t -f DEVICE,STATE device 2>/dev/null | grep ':connected' | head -n1 | cut -d: -f1)" 2>/dev/null || true
-    msg_ok "DNS updated successfully on connection profile '$TARGET_CONN'."
+    nmcli connection up "$TARGET_CONN" 2>/dev/null || true
+    systemctl restart NetworkManager 2>/dev/null || true
+    sleep 2
+    msg_ok "Active Directory DNS successfully set on '$TARGET_CONN'."
   else
-    msg_warn "Could not modify connection profile '$TARGET_CONN'. Trying active hardware device fallback..."
-    ACTIVE_DEV=$(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep ':connected' | head -n1 | cut -d: -f1 || true)
-    if [ -n "$ACTIVE_DEV" ]; then
-      nmcli device modify "$ACTIVE_DEV" ipv4.dns "$AD_DNS_IP_CLEAN" 2>/dev/null || true
-      msg_ok "DNS applied directly to active network device '$ACTIVE_DEV'."
-    else
-      msg_warn "Failed to apply DNS via NetworkManager."
+    msg_warn "Primary profile update failed. Trying hardware device direct overwrite..."
+    if [ -n "${DEFAULT_IF:-}" ]; then
+      nmcli device modify "$DEFAULT_IF" ipv4.dns "$AD_DNS_IP_CLEAN" 2>/dev/null || true
+      systemctl restart NetworkManager 2>/dev/null || true
+      msg_ok "DNS applied directly to hardware device '$DEFAULT_IF'."
     fi
   fi
 fi
@@ -284,46 +330,50 @@ fi
 systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 
-while true; do
-  if [ "$ASSUME_YES" = true ]; then
-    DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
-  else
-    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER_CLEAN}@${DOMAIN_NAME_CLEAN}': "
-    read -sp "" DOMAIN_PASS_EXEC < /dev/tty
-    echo ""
-  fi
-
-  if echo "$DOMAIN_PASS_EXEC" | realm join --user="${DOMAIN_USER_CLEAN}" "${DOMAIN_NAME_CLEAN}" --verbose; then
-    msg_ok "Joined Active Directory realm successfully."
-    break
-  else
-    msg_warn "Could not join domain."
-    
+# Check if machine is already joined to domain
+if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME_CLEAN"; then
+  msg_ok "System is already joined to realm '$DOMAIN_NAME_CLEAN'. Skipping domain join."
+else
+  while true; do
     if [ "$ASSUME_YES" = true ]; then
-      msg_warn "Auto-continuing in Offline mode due to -y flag..."
-      break
+      DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
+    else
+      echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER_CLEAN}@${DOMAIN_NAME_CLEAN}': "
+      read -sp "" DOMAIN_PASS_EXEC < /dev/tty
+      echo ""
     fi
 
-    if ask_yes_no "Would you like to retry Domain Join?" "N"; then
-      msg_info "Retrying domain authentication..."
-      continue
+    if echo "$DOMAIN_PASS_EXEC" | realm join --user="${DOMAIN_USER_CLEAN}" "${DOMAIN_NAME_CLEAN}" --verbose; then
+      msg_ok "Joined Active Directory realm successfully."
+      break
     else
-      if ask_yes_no "Continue setup in Offline mode?" "Y"; then
-        msg_warn "Proceeding with local policy setup..."
+      msg_warn "Could not join domain."
+      
+      if [ "$ASSUME_YES" = true ]; then
+        msg_warn "Auto-continuing in Offline mode due to -y flag..."
         break
+      fi
+
+      if ask_yes_no "Would you like to retry Domain Join?" "N"; then
+        msg_info "Retrying domain authentication..."
+        continue
       else
-        msg_err "Aborting installation."
-        exit 1
+        if ask_yes_no "Continue setup in Offline mode?" "Y"; then
+          msg_warn "Proceeding with local policy setup..."
+          break
+        else
+          msg_err "Aborting installation."
+          exit 1
+        fi
       fi
     fi
-  fi
-done
+  done
+fi
 
 # --- STEP 7: LAB ACCESS CONTROL RULES ---
 step_header "7" "Configuring Lab Access Control Rules"
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
-  # Strip Windows CRLF endings if present
   sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
   LAB_ENTRIES=()
   while IFS= read -r line || [ -n "$line" ]; do
@@ -483,7 +533,6 @@ systemctl enable --now oddjobd 2>/dev/null || true
 # --- STEP 10: DMS & KITTY CONF SETUP ---
 step_header "10" "Deploying Theme & Mandatory Kitty Terminal Configuration"
 
-# Generate Compulsory Kitty QOL Config
 msg_info "Creating compulsory Kitty configuration..."
 mkdir -p /etc/skel/.config/kitty
 
@@ -509,7 +558,6 @@ chmod -R 755 /etc/skel/.config/kitty
 msg_ok "Compulsory Kitty config populated in /etc/skel/.config/kitty/kitty.conf"
 
 shopt -s nullglob
-# Sync Kitty Config to Existing Users
 for user_home in /home/*; do
   if [ -d "$user_home" ]; then
     owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
@@ -524,7 +572,6 @@ for user_home in /home/*; do
   fi
 done
 
-# Deploy Theme Profile Archives
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
