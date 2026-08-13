@@ -227,7 +227,6 @@ if is_live_session && [ "$SKIP_STEP0" = false ]; then
       STEP0_LAB_NAMES[$idx]="$lab_name"
       STEP0_LAB_IDS[$idx]="$lab_id"
 
-      # Displays ONLY the lab name
       echo -e "    ${CYAN}[$idx]${NC} ${lab_name}"
       ((idx++))
     done
@@ -338,11 +337,15 @@ EOF
   # Set Hostname
   echo "$NEW_HOSTNAME" > "${TARGET_MOUNT}/etc/hostname"
 
-  msg_info "Configuring GRUB and preparing chroot..."
+  msg_info "Configuring virtual mounts & chroot environment..."
   for dir in dev dev/pts proc sys run; do
     mkdir -p "${TARGET_MOUNT}/$dir"
     mount --bind "/$dir" "${TARGET_MOUNT}/$dir"
   done
+  if [ -d /sys/firmware/efi/efivars ]; then
+    mkdir -p "${TARGET_MOUNT}/sys/firmware/efi/efivars"
+    mount --bind /sys/firmware/efi/efivars "${TARGET_MOUNT}/sys/firmware/efi/efivars" 2>/dev/null || true
+  fi
 
   # Copy installer repo into target system
   mkdir -p "${TARGET_MOUNT}/tmp/installer"
@@ -367,9 +370,35 @@ EOF
     # Ensure SELinux auto-relabels on first boot
     touch /.autorelabel
 
-    # Reconfigure Bootloader
+    # --- REBUILD BOOTLOADER & PURGE STALE LIVE ISO BLS ENTRIES ---
+    rm -rf /boot/loader/entries/*
+
+    # Ensure machine-id exists for kernel-install
+    if [ ! -s /etc/machine-id ]; then
+      systemd-machine-id-setup 2>/dev/null || dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null || true
+    fi
+
+    KERNEL_VER=\$(ls /lib/modules 2>/dev/null | sort -V | tail -n1)
+
+    if [ -n \"\$KERNEL_VER\" ]; then
+      if [ ! -f \"/boot/vmlinuz-\$KERNEL_VER\" ] && [ -f \"/lib/modules/\$KERNEL_VER/vmlinuz\" ]; then
+        cp \"/lib/modules/\$KERNEL_VER/vmlinuz\" \"/boot/vmlinuz-\$KERNEL_VER\"
+      fi
+
+      # Generate fresh initramfs for installed hard drive
+      dracut --force --kver \"\$KERNEL_VER\" \"/boot/initramfs-\$KERNEL_VER.img\" 2>/dev/null || dracut --force --regenerate-all
+
+      # Create valid BLS entry bound to disk UUID
+      if command -v kernel-install >/dev/null 2>&1; then
+        kernel-install add \"\$KERNEL_VER\" \"/boot/vmlinuz-\$KERNEL_VER\" 2>/dev/null || true
+      fi
+    fi
+
+    # Reconfigure GRUB
     grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
-    grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
+    if [ -d /boot/efi/EFI/fedora ]; then
+      grub2-mkconfig -o /boot/efi/EFI/fedora/grub.cfg 2>/dev/null || true
+    fi
 
     cd /tmp/installer
     chmod +x setup-ad-dms-tui.sh
@@ -424,11 +453,10 @@ else
   dnf install -y --setopt=strict=0 "${MISSING_PKGS[@]}" 2>/dev/null || msg_warn "Some packages failed to fetch due to mirror errors. Proceeding with installed base."
 fi
 
-# --- STEP 4: DMS INSTALLATION (ROOT ELEVATED FIX) ---
+# --- STEP 4: DMS INSTALLATION ---
 step_header "4" "Pre-baking Dank Material Shell (DMS)"
 msg_info "Executing DMS installer directly as root..."
 
-# Force explicit root shell execution to resolve Live ISO root requirement
 if command -v sudo >/dev/null 2>&1; then
   curl -fsSL https://install.danklinux.com | sudo bash 2>/dev/null || msg_warn "DMS core script executed with warnings."
 else
@@ -531,7 +559,6 @@ if [ -f "$LAB_CONF" ]; then
         fi
       fi
       
-      # Displays ONLY the lab name
       echo -e "    ${CYAN}[$idx]${NC} ${name}"
       ((idx++))
     done
@@ -645,13 +672,11 @@ step_header "11" "Deploying Pre-configured DMS Themes"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
-  # Unpack to /etc/skel
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel
   chmod -R 755 /etc/skel/.config /etc/skel/.local
   msg_ok "DMS profile unpacked into /etc/skel."
 
-  # Unpack to existing user homes
   for user_home in /home/*; do
     if [ -d "$user_home" ]; then
       owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
