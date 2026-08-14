@@ -11,27 +11,27 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 1. Locate or Download `lab.config`
+# 1. Locate or Download `lab.conf`
 # ------------------------------------------------------------------------------
-CONFIG_FILE="/etc/lab.config"
-CONFIG_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/lab.config"
+CONFIG_FILE="/etc/lab.conf"
+CONFIG_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/lab.conf"
 
 if [ ! -f "$CONFIG_FILE" ]; then
-    if [ -f "./lab.config" ]; then
-        CONFIG_FILE="./lab.config"
+    if [ -f "./lab.conf" ]; then
+        CONFIG_FILE="./lab.conf"
     else
-        echo "📥 'lab.config' not found locally or at /etc/lab.config."
-        echo "   Fetching latest 'lab.config' from GitHub repository..."
+        echo "📥 'lab.conf' not found locally or at /etc/lab.conf."
+        echo "   Fetching latest 'lab.conf' from GitHub repository..."
         if command -v curl &>/dev/null; then
-            curl -fsSL "$CONFIG_URL" -o /etc/lab.config
+            curl -fsSL "$CONFIG_URL" -o /etc/lab.conf
         elif command -v wget &>/dev/null; then
-            wget -qO /etc/lab.config "$CONFIG_URL"
+            wget -qO /etc/lab.conf "$CONFIG_URL"
         else
-            echo "❌ Error: Neither curl nor wget is available to download lab.config." >&2
+            echo "❌ Error: Neither curl nor wget is available to download lab.conf." >&2
             exit 1
         fi
-        CONFIG_FILE="/etc/lab.config"
-        echo "✅ Saved configuration to /etc/lab.config"
+        CONFIG_FILE="/etc/lab.conf"
+        echo "✅ Saved configuration to /etc/lab.conf"
     fi
 fi
 
