@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora AD DMS Bootstrapper (install.sh)
+# Fedora AD DMS Auto-Detecting Bootstrapper (install.sh)
 # ==============================================================================
 set -euo pipefail
 
@@ -9,27 +9,33 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Point directly to the nested folder path in the repo
-REPO_BASE="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/fedora-ad-dms"
+PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
+FALLBACK_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/fedora-ad-dms"
 WORK_DIR="/tmp/fedora-ad-dms"
 
 echo "🚀 Starting AD DMS Installation Bootstrapper..."
-echo "📂 Preparing temporary workspace at ${WORK_DIR}..."
+echo "📂 Workspace: ${WORK_DIR}"
 
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-echo "📥 Downloading repository files from GitHub..."
+echo "📥 Downloading repository components..."
 
 fetch_file() {
     local file="$1"
-    echo -n "   • Fetching ${file}... "
-    if curl -fsSL "${REPO_BASE}/${file}" -o "${file}"; then
+    echo -n "   • Downloading ${file}... "
+    
+    # Try repository root first
+    if curl -fsSL "${PRIMARY_URL}/${file}" -o "${file}" 2>/dev/null; then
         echo "✅ OK"
+    # Fallback to subfolder if root returns 404
+    elif curl -fsSL "${FALLBACK_URL}/${file}" -o "${file}" 2>/dev/null; then
+        echo "✅ OK (found in subfolder)"
     else
-        echo "❌ FAILED (404 Not Found)"
-        echo "❌ Error: Could not download '${file}' from ${REPO_BASE}/${file}" >&2
+        echo "❌ FAILED"
+        echo "❌ Error: '${file}' could not be located on GitHub!" >&2
+        echo "   Please verify that '${file}' is pushed to branch 'main'." >&2
         exit 1
     fi
 }
