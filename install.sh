@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora AD DMS Auto-Detecting Bootstrapper (install.sh)
+# Fedora AD DMS Bootstrapper (install.sh)
 # ==============================================================================
 set -euo pipefail
 
@@ -9,6 +9,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Primary & Fallback repositories
 PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 FALLBACK_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/fedora-ad-dms"
 WORK_DIR="/tmp/fedora-ad-dms"
@@ -26,20 +27,19 @@ fetch_file() {
     local file="$1"
     echo -n "   • Downloading ${file}... "
     
-    # Try repository root first
     if curl -fsSL "${PRIMARY_URL}/${file}" -o "${file}" 2>/dev/null; then
         echo "✅ OK"
-    # Fallback to subfolder if root returns 404
     elif curl -fsSL "${FALLBACK_URL}/${file}" -o "${file}" 2>/dev/null; then
         echo "✅ OK (found in subfolder)"
     else
         echo "❌ FAILED"
         echo "❌ Error: '${file}' could not be located on GitHub!" >&2
-        echo "   Please verify that '${file}' is pushed to branch 'main'." >&2
+        echo "   Please verify that '${file}' is uploaded to the main branch on GitHub." >&2
         exit 1
     fi
 }
 
+# Fetch lab.conf instead of lab.config
 fetch_file "lab.conf"
 fetch_file "niri-dms-config.tar.gz"
 fetch_file "setup-ad-dms-tui.sh"
