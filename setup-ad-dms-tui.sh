@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.6)
-SCRIPT_VERSION="1.0.6"
+# Script Versioning (Incremented to 1.0.7)
+SCRIPT_VERSION="1.0.7"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -105,7 +105,7 @@ REAL_SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 REAL_SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" 2>/dev/null && pwd || echo "$PWD")"
 GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
-# Dynamic Domain Configuration Loader
+# Dynamic Unified Configuration Loader (Reads AD & pVPN settings from same config)
 load_domain_conf() {
   DOMAIN_CONF_FILE=""
 
@@ -143,19 +143,19 @@ load_domain_conf() {
 
   # Remote fetch fallback if explicit URL flags were passed
   if [ -z "$DOMAIN_CONF_FILE" ] && [ -n "${CONFIG_URL:-}" ]; then
-    msg_info "Downloading domain configuration from: ${CONFIG_URL}"
+    msg_info "Downloading configuration from: ${CONFIG_URL}"
     mkdir -p /etc/fedora-ad-dms
     if curl -fsSL "$CONFIG_URL" -o /etc/fedora-ad-dms/domain.conf 2>/dev/null; then
       DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
-      msg_ok "Downloaded domain configuration successfully."
+      msg_ok "Downloaded configuration successfully."
     fi
   elif [ -z "$DOMAIN_CONF_FILE" ] && [ -n "${REPO_BASE_URL:-}" ]; then
     remote_target="${REPO_BASE_URL%/}/domain.conf"
-    msg_info "Fetching domain configuration from repository: ${remote_target}"
+    msg_info "Fetching configuration from repository: ${remote_target}"
     mkdir -p /etc/fedora-ad-dms
     if curl -fsSL "$remote_target" -o /etc/fedora-ad-dms/domain.conf 2>/dev/null; then
       DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
-      msg_ok "Downloaded domain configuration successfully."
+      msg_ok "Downloaded configuration successfully."
     fi
   fi
 
@@ -165,13 +165,14 @@ load_domain_conf() {
     source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
   fi
 
-  # Variable formatting without hardcoded fallbacks
+  # AD Domain Settings
+  JOIN_AD="${JOIN_AD:-${JOIN_DOMAIN:-ask}}"
   DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-}}" | tr '[:upper:]' '[:lower:]')
   REALM_NAME=$(echo "${REALM_NAME:-${REALM:-$DOMAIN_NAME}}" | tr '[:lower:]' '[:upper:]')
   DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-}}}"
   AD_DNS_IP="${AD_DNS_IP:-}"
 
-  # pVPN Variable defaults (No hardcoded credentials)
+  # ProtonVPN Settings (From same domain.conf)
   PVPN_ENABLE="${PVPN_ENABLE:-ask}"
   PVPN_ID="${PVPN_ID:-}"
   PVPN_PASS="${PVPN_PASS:-}"
@@ -190,21 +191,21 @@ setup_pvpn() {
   if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
     msg_ok "Config File Source : ${DOMAIN_CONF_FILE}"
   else
-    msg_warn "Config File Source : NOT FOUND (Will prompt if pVPN is enabled)"
+    msg_warn "Config File Source : NOT FOUND (Will prompt interactively if pVPN enabled)"
   fi
 
   msg_info "pVPN Enable Mode   : '${PVPN_ENABLE}'"
   if [ -n "$PVPN_ID" ]; then
     msg_info "pVPN Username / ID : '${PVPN_ID}'"
   else
-    msg_warn "pVPN Username / ID : NOT SPECIFIED"
+    msg_warn "pVPN Username / ID : NOT SPECIFIED (Failsafe prompt will trigger)"
   fi
 
   if [ -n "$PVPN_PASS" ]; then
     MASKED_PASS=$(echo "$PVPN_PASS" | sed 's/./*/g')
     msg_info "pVPN Password      : '${MASKED_PASS}' (${#PVPN_PASS} characters)"
   else
-    msg_warn "pVPN Password      : NOT SPECIFIED"
+    msg_warn "pVPN Password      : NOT SPECIFIED (Failsafe prompt will trigger)"
   fi
   printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 
@@ -212,8 +213,8 @@ setup_pvpn() {
   PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-ask}" | tr '[:upper:]' '[:lower:]')
   
   case "$PVPN_ENABLE_LOWER" in
-    "yes") run_pvpn=true ;;
-    "no")
+    "yes"|"true"|"1") run_pvpn=true ;;
+    "no"|"false"|"0")
       msg_info "pVPN disabled in configuration. Skipping installation & connection."
       return 0
       ;;
@@ -228,7 +229,7 @@ setup_pvpn() {
   esac
 
   if [ "$run_pvpn" = true ]; then
-    # Prompt for credentials if missing
+    # Interactive Failsafe: Prompt for credentials if missing from domain.conf
     if [ -z "$PVPN_ID" ]; then
       printf "  %b[INPUT]%b Enter ProtonVPN Username/ID: " "$YELLOW" "$NC"
       read -r PVPN_ID < /dev/tty || PVPN_ID=""
@@ -240,7 +241,7 @@ setup_pvpn() {
     fi
 
     if [ -z "$PVPN_ID" ] || [ -z "$PVPN_PASS" ]; then
-      msg_err "ProtonVPN credentials are missing. Cannot connect."
+      msg_err "ProtonVPN credentials missing. Cannot proceed with VPN connection."
       exit 1
     fi
 
@@ -386,130 +387,156 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-# Reload domain config in case it was created/synced in prior steps
 load_domain_conf
 
-# Pre-execution Inspection Box
-printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
-printf "  %b%b|              DOMAIN CONFIGURATION DETECTION SUMMARY                 |%b\n" "$BOLD" "$CYAN" "$NC"
-printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+# Check if AD Join is disabled in config
+JOIN_AD_LOWER=$(echo "${JOIN_AD:-ask}" | tr '[:upper:]' '[:lower:]')
+case "$JOIN_AD_LOWER" in
+  "no"|"false"|"0"|"skip")
+    msg_info "Active Directory domain join disabled in config (JOIN_AD=${JOIN_AD}). Skipping Step 6."
+    ;;
+  *)
+    # Pre-execution Inspection Box
+    printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+    printf "  %b%b|              DOMAIN CONFIGURATION DETECTION SUMMARY                 |%b\n" "$BOLD" "$CYAN" "$NC"
+    printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
 
-if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
-  msg_ok "Config File Status  : FOUND (${DOMAIN_CONF_FILE})"
-else
-  msg_warn "Config File Status  : NOT FOUND"
-fi
+    if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
+      msg_ok "Config File Status  : FOUND (${DOMAIN_CONF_FILE})"
+    else
+      msg_warn "Config File Status  : NOT FOUND"
+    fi
 
-if [ -n "$DOMAIN_NAME" ]; then
-  msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
-  msg_info "Realm Name (KRB)    : '${REALM_NAME}'"
-else
-  msg_warn "Domain Name (DNS)   : NOT SPECIFIED (Will prompt interactively)"
-fi
+    if [ -n "$DOMAIN_NAME" ]; then
+      msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
+      msg_info "Realm Name (KRB)    : '${REALM_NAME}'"
+    else
+      msg_warn "Domain Name (DNS)   : NOT SPECIFIED (Will prompt interactively)"
+    fi
 
-if [ -n "$DOMAIN_USER" ]; then
-  msg_info "Domain Admin User   : '${DOMAIN_USER}'"
-else
-  msg_warn "Domain Admin User   : NOT SPECIFIED (Defaulting to 'Administrator')"
-fi
+    if [ -n "$DOMAIN_USER" ]; then
+      msg_info "Domain Admin User   : '${DOMAIN_USER}'"
+    else
+      msg_warn "Domain Admin User   : NOT SPECIFIED (Defaulting to 'Administrator')"
+    fi
 
-if [ -n "${AD_DNS_IP:-}" ]; then
-  msg_ok "AD DNS Server IP    : '${AD_DNS_IP}'"
-else
-  msg_warn "AD DNS Server IP    : NOT SPECIFIED (Relying on existing network DNS)"
-fi
+    if [ -n "${AD_DNS_IP:-}" ]; then
+      msg_ok "AD DNS Server IP    : '${AD_DNS_IP}'"
+    else
+      msg_warn "AD DNS Server IP    : NOT SPECIFIED (Relying on local network DNS)"
+    fi
 
-printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
+    printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 
-# Prompt interactively if DOMAIN_NAME is missing
-if [ -z "$DOMAIN_NAME" ]; then
-  printf "  %b[INPUT]%b Enter Active Directory Domain Name (e.g. ad.example.com): " "$YELLOW" "$NC"
-  read -r DOMAIN_NAME < /dev/tty || DOMAIN_NAME=""
-  DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr '[:upper:]' '[:lower:]')
-  REALM_NAME=$(echo "$DOMAIN_NAME" | tr '[:lower:]' '[:upper:]')
-fi
+    # Failsafe interactive prompt if DOMAIN_NAME is missing
+    if [ -z "$DOMAIN_NAME" ]; then
+      printf "  %b[INPUT]%b Enter Active Directory Domain Name: " "$YELLOW" "$NC"
+      read -r DOMAIN_NAME < /dev/tty || DOMAIN_NAME=""
+      DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr '[:upper:]' '[:lower:]')
+      REALM_NAME=$(echo "$DOMAIN_NAME" | tr '[:lower:]' '[:upper:]')
+    fi
 
-if [ -z "$DOMAIN_NAME" ]; then
-  msg_err "Domain Name is required to proceed with AD setup."
-  exit 1
-fi
+    if [ -z "$DOMAIN_NAME" ]; then
+      msg_err "Domain Name is required to proceed with AD setup."
+      exit 1
+    fi
 
-if [ -z "$DOMAIN_USER" ]; then
-  printf "  %b[INPUT]%b Enter Domain Admin User [default: Administrator]: " "$YELLOW" "$NC"
-  read -r DOMAIN_USER < /dev/tty || DOMAIN_USER="Administrator"
-  [ -z "$DOMAIN_USER" ] && DOMAIN_USER="Administrator"
-fi
+    if [ -z "$DOMAIN_USER" ]; then
+      printf "  %b[INPUT]%b Enter Domain Admin User [default: Administrator]: " "$YELLOW" "$NC"
+      read -r DOMAIN_USER < /dev/tty || DOMAIN_USER="Administrator"
+      [ -z "$DOMAIN_USER" ] && DOMAIN_USER="Administrator"
+    fi
 
-# Apply Persistent NetworkManager DNS & Search Domain
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
-TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+    # Configure NetworkManager & DNS (Fixes systemd-resolved overriding AD DNS)
+    ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
+    TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
-if [ -n "${AD_DNS_IP:-}" ]; then
-  msg_info "Applying AD DNS (${AD_DNS_IP}) & Search Domain (${DOMAIN_NAME}) to '${TARGET_CONN}'..."
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes 2>/dev/null || true
-  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
-  systemctl restart NetworkManager 2>/dev/null || true
+    if [ -n "${AD_DNS_IP:-}" ]; then
+      msg_info "Configuring DNS (${AD_DNS_IP}) & Search Domain (${DOMAIN_NAME}) on '${TARGET_CONN}'..."
+      nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes 2>/dev/null || true
+      nmcli connection up "$TARGET_CONN" 2>/dev/null || true
 
-  # Direct write to /etc/resolv.conf for immediate resolution fallback
-  cat <<EOF > /etc/resolv.conf
+      # Break symlink safely if resolv.conf is managed by systemd-resolved stub
+      if [ -L /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
+      fi
+
+      cat <<EOF > /etc/resolv.conf
 nameserver ${AD_DNS_IP}
 search ${DOMAIN_NAME}
 EOF
-  msg_ok "NetworkManager DNS and Search Domain configured."
-fi
-
-# Time Synchronization (Mandatory for Active Directory Kerberos)
-msg_info "Synchronizing system clock with network time..."
-systemctl enable --now chronyd 2>/dev/null || true
-chronyc makestep > /dev/null 2>&1 || true
-
-# Check if machine is already joined to domain
-if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME"; then
-  msg_ok "System is already joined to realm '$DOMAIN_NAME'. Skipping domain join."
-else
-  while true; do
-    if [ "$ASSUME_YES" = true ]; then
-      DOMAIN_PASS_EXEC="${DOMAIN_PASS:-}"
-    else
-      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$REALM_NAME"
-      read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
-      printf "\n"
+      msg_ok "Configured /etc/resolv.conf and NetworkManager DNS."
+      msg_info "Waiting 3 seconds for DNS changes to settle..."
+      sleep 3
     fi
 
-    msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
-    if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$REALM_NAME" --verbose; then
-      msg_ok "Successfully joined Active Directory realm '${REALM_NAME}'!"
-      
-      # Auto-tune SSSD for short username logins & home directories
-      if [ -f /etc/sssd/sssd.conf ]; then
-        sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' /etc/sssd/sssd.conf 2>/dev/null || true
-        sed -i 's/fallback_homedir = .*/fallback_homedir = \/home\/%u@%d/' /etc/sssd/sssd.conf 2>/dev/null || true
-        chmod 600 /etc/sssd/sssd.conf
-      fi
-      break
-    else
-      msg_warn "Could not join Active Directory domain."
-      
-      if [ "$ASSUME_YES" = true ]; then
-        msg_warn "Auto-continuing in Offline mode due to -y flag..."
-        break
-      fi
+    # Time Synchronization (Mandatory for Active Directory Kerberos auth)
+    msg_info "Synchronizing system clock with Network Time Protocol..."
+    systemctl enable --now chronyd 2>/dev/null || true
+    chronyc makestep > /dev/null 2>&1 || true
 
-      if ask_yes_no "Would you like to retry Domain Join?" "N"; then
-        msg_info "Retrying domain authentication..."
-        continue
-      else
-        if ask_yes_no "Continue setup in Offline mode?" "Y"; then
-          msg_warn "Proceeding with local policy setup..."
+    # Pre-flight realm SRV resolution test
+    msg_info "Testing Active Directory realm discovery for '${DOMAIN_NAME}'..."
+    if realm discover "$DOMAIN_NAME" >/dev/null 2>&1; then
+      msg_ok "Realm discovery successful for '${DOMAIN_NAME}'."
+    else
+      msg_warn "Standard realm discovery failed. Verifying SRV resolution..."
+      if ! host -t SRV "_ldap._tcp.dc._msdcs.${DOMAIN_NAME}" >/dev/null 2>&1; then
+        msg_warn "Could not resolve DNS SRV records for '_ldap._tcp.dc._msdcs.${DOMAIN_NAME}'."
+      fi
+    fi
+
+    # Check if machine is already joined to domain
+    if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME"; then
+      msg_ok "System is already joined to realm '$DOMAIN_NAME'. Skipping domain join."
+    else
+      while true; do
+        if [ "$ASSUME_YES" = true ] && [ -n "${DOMAIN_PASS:-}" ]; then
+          DOMAIN_PASS_EXEC="${DOMAIN_PASS}"
+        else
+          printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$REALM_NAME"
+          read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
+          printf "\n"
+        fi
+
+        msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
+        
+        # Pass lower-case domain name to realm join for standard DNS SRV lookup
+        if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose; then
+          msg_ok "Successfully joined Active Directory realm '${REALM_NAME}'!"
+          
+          # Auto-tune SSSD for short username logins & home directories
+          if [ -f /etc/sssd/sssd.conf ]; then
+            sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' /etc/sssd/sssd.conf 2>/dev/null || true
+            sed -i 's/fallback_homedir = .*/fallback_homedir = \/home\/%u@%d/' /etc/sssd/sssd.conf 2>/dev/null || true
+            chmod 600 /etc/sssd/sssd.conf
+          fi
           break
         else
-          msg_err "Aborting installation."
-          exit 1
+          msg_warn "Could not join Active Directory domain."
+          
+          if [ "$ASSUME_YES" = true ]; then
+            msg_warn "Auto-continuing in Offline mode due to -y flag..."
+            break
+          fi
+
+          if ask_yes_no "Would you like to retry Domain Join?" "N"; then
+            msg_info "Retrying domain authentication..."
+            continue
+          else
+            if ask_yes_no "Continue setup in Offline mode?" "Y"; then
+              msg_warn "Proceeding with local policy setup..."
+              break
+            else
+              msg_err "Aborting installation."
+              exit 1
+            fi
+          fi
         fi
-      fi
+      done
     fi
-  done
-fi
+    ;;
+esac
 
 # --- STEP 7: LAB ACCESS CONTROL RULES ---
 step_header "7" "Configuring Lab Access Control Rules"
@@ -812,5 +839,5 @@ rm -f /var/lib/sss/db/* 2>/dev/null || true
 systemctl restart sssd oddjobd greetd 2>/dev/null || true
 
 printf "%b+--------------------------------------------------------------------+%b\n" "$GREEN" "$NC"
-printf "%b|%b %bSetup complete! Pre-baked DMS, Kitty & pVPN deployment ready.     %b %b|%b\n" "$GREEN" "$NC" "$BOLD" "$NC" "$GREEN" "$NC"
+printf "%b|%b %bSetup complete! Dynamic AD & ProtonVPN deployment ready.         %b %b|%b\n" "$GREEN" "$NC" "$BOLD" "$NC" "$GREEN" "$NC"
 printf "%b+--------------------------------------------------------------------+%b\n\n" "$GREEN" "$NC"
