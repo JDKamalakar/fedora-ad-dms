@@ -13,7 +13,7 @@ set -euo pipefail
 GITHUB_USER="JDKamalakar"
 GITHUB_REPO="fedora-ad-dms"
 BRANCH="main"
-CONFIG_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/lab.config"
+CONFIG_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${BRANCH}/lab.config"
 
 # File Locations
 LOCAL_CONFIG="/etc/lab.config"
