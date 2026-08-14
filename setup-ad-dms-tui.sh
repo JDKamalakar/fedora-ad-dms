@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Active Directory & Niri DMS Interactive TUI (setup-ad-dms-tui.sh)
+# Fedora AD DMS Full Setup & Enforcement Engine (setup-ad-dms.sh)
 # ==============================================================================
 set -euo pipefail
 
-# 📌 Script Version (Bump this whenever you modify the script!)
-VERSION="1.1.0"
-
-# 🔑 Force terminal stdin connection for piped executions
-exec </dev/tty
+VERSION="2.0.0"
 
 if [ "$EUID" -ne 0 ]; then
     echo "❌ Error: This script must be run as root or with sudo." >&2
@@ -16,12 +12,9 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_DIR="/etc/ad-dms"
 LOCAL_CONFIG="${SCRIPT_DIR}/lab.conf"
 LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
-
-if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.conf" ]; then
-    LOCAL_CONFIG="/etc/lab.conf"
-fi
 
 # Terminal ANSI Colors
 BOLD='\033[1m'
@@ -31,82 +24,89 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-draw_header() {
-    clear
-    echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${BOLD}       🖥️  GSFCU LAB SSSD & NIRI DMS MANAGEMENT TUI (v${VERSION})      ${NC}"
-    echo -e "${CYAN}======================================================================${NC}"
-    echo
-}
+echo -e "${CYAN}======================================================================${NC}"
+echo -e "${BOLD}       🖥️  GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP (v${VERSION})     ${NC}"
+echo -e "${CYAN}======================================================================${NC}"
+echo
 
-ensure_files() {
-    if [ ! -f "$LOCAL_CONFIG" ]; then
-        echo -e "${RED}❌ Error: 'lab.conf' missing in ${SCRIPT_DIR}${NC}" >&2
-        exit 1
-    fi
+# ------------------------------------------------------------------------------
+# Step 1: Directory Setup & Configuration Copy
+# ------------------------------------------------------------------------------
+echo -e "${YELLOW}📁 Preparing configuration directories at ${CONF_DIR}...${NC}"
+mkdir -p "$CONF_DIR"
+
+if [ -f "$LOCAL_CONFIG" ]; then
     cp "$LOCAL_CONFIG" /etc/lab.conf
-}
+    cp "$LOCAL_CONFIG" "$CONF_DIR/lab.conf"
+fi
 
-deploy_niri_config() {
-    if [ ! -f "$LOCAL_TAR" ]; then
-        echo -e "${RED}❌ Error: 'niri-dms-config.tar.gz' missing in ${SCRIPT_DIR}${NC}"
-        return 1
+for app_conf in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf; do
+    if [ -f "${SCRIPT_DIR}/${app_conf}" ]; then
+        cp "${SCRIPT_DIR}/${app_conf}" "${CONF_DIR}/${app_conf}"
+        echo -e "   • Installed ${CYAN}${app_conf}${NC}"
+    else
+        touch "${CONF_DIR}/${app_conf}"
+        echo -e "   • Created empty template for ${CYAN}${app_conf}${NC}"
     fi
+done
 
-    echo -e "${YELLOW}📦 Extracting 'niri-dms-config.tar.gz'...${NC}"
-    TMP_DIR="/tmp/niri-dms-config-extracted"
-    rm -rf "$TMP_DIR"
-    mkdir -p "$TMP_DIR"
-    tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
+# ------------------------------------------------------------------------------
+# Step 2: SSSD Active Directory Group Filtering
+# ------------------------------------------------------------------------------
+RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
+MATCHED_LAB=""
+MATCHED_GROUP=""
 
-    echo -e "${YELLOW}📂 Deploying to /etc/skel (for future logins)...${NC}"
-    cp -r "$TMP_DIR"/. /etc/skel/ 2>/dev/null || cp -r "$TMP_DIR"/* /etc/skel/ 2>/dev/null || true
+if [ -f "/etc/lab.conf" ]; then
+    while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
+        lab_name=$(echo "${lab_name:-}" | xargs)
+        ad_group=$(echo "${ad_group:-}" | xargs)
+        pattern=$(echo "${pattern:-}" | xargs | tr '[:lower:]' '[:upper:]')
+        [[ -z "$pattern" || "$lab_name" =~ ^# ]] && continue
 
-    echo -e "${YELLOW}📂 Syncing config to existing user homes in /home/...${NC}"
-    for user_dir in /home/*; do
-        if [ -d "$user_dir" ]; then
-            u_name=$(basename "$user_dir")
-            u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
-            cp -r "$TMP_DIR"/. "$user_dir/" 2>/dev/null || cp -r "$TMP_DIR"/* "$user_dir/" 2>/dev/null || true
-            chown -R "$u_name:$u_group" "$user_dir" 2>/dev/null || true
-            echo -e "   • Applied to ${CYAN}$user_dir${NC}"
+        if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
+            MATCHED_LAB="$lab_name"
+            MATCHED_GROUP="$ad_group"
+            break
         fi
-    done
-    rm -rf "$TMP_DIR"
-    echo -e "${GREEN}✅ Niri DMS configuration applied system-wide!${NC}"
-}
+    done < /etc/lab.conf
+fi
 
-apply_sssd_deny_rules() {
-    local target_ad_group="$1"
-    ensure_files
+echo -e "\n📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
+if [ -n "$MATCHED_GROUP" ]; then
+    echo -e "📌 ${BOLD}Detected Lab:${NC} $MATCHED_LAB (Allowed AD Group: $MATCHED_GROUP)"
+else
+    echo -e "${YELLOW}⚠️ No match found for hostname pattern in lab.conf. Allowing all AD logins.${NC}"
+fi
 
-    ALL_GROUPS=()
+ALL_GROUPS=()
+if [ -f "/etc/lab.conf" ]; then
     while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
         ad_group=$(echo "${ad_group:-}" | xargs)
         [[ -z "$ad_group" || "$lab_name" =~ ^# ]] && continue
         ALL_GROUPS+=("$ad_group")
-    done < "$LOCAL_CONFIG"
+    done < /etc/lab.conf
+fi
 
+if [ -n "$MATCHED_GROUP" ]; then
     DENY_GROUPS=()
-    if [ -n "$target_ad_group" ]; then
-        for g in "${ALL_GROUPS[@]}"; do
-            if [ "$g" != "$target_ad_group" ]; then
-                DENY_GROUPS+=("$g")
-            fi
-        done
-        DENY_GROUPS_STR=$(IFS=,; echo "${DENY_GROUPS[*]}")
-        ACCESS_BLOCK="access_provider = simple
+    for g in "${ALL_GROUPS[@]}"; do
+        if [ "$g" != "$MATCHED_GROUP" ]; then
+            DENY_GROUPS+=("$g")
+        fi
+    done
+    DENY_GROUPS_STR=$(IFS=,; echo "${DENY_GROUPS[*]}")
+    ACCESS_BLOCK="access_provider = simple
 simple_deny_groups = ${DENY_GROUPS_STR}"
-    else
-        ACCESS_BLOCK="access_provider = permit"
-    fi
+else
+    ACCESS_BLOCK="access_provider = permit"
+fi
 
-    echo -e "${YELLOW}⏹️ Stopping SSSD service...${NC}"
-    systemctl stop sssd || true
-    systemctl reset-failed sssd || true
+echo -e "${YELLOW}⏹️ Restarting SSSD with updated access controls...${NC}"
+systemctl stop sssd || true
+systemctl reset-failed sssd || true
 
-    echo -e "${YELLOW}📝 Writing /etc/sssd/sssd.conf...${NC}"
-    cat <<EOF > /etc/sssd/sssd.conf
+cat <<EOF > /etc/sssd/sssd.conf
 [sssd]
 services = nss, pam
 domains = gsfcu.local
@@ -123,134 +123,128 @@ default_shell = /bin/bash
 cache_credentials = True
 EOF
 
-    sed -i 's/\r$//' /etc/sssd/sssd.conf
-    chown root:root /etc/sssd/sssd.conf
-    chmod 600 /etc/sssd/sssd.conf
-    restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
+sed -i 's/\r$//' /etc/sssd/sssd.conf
+chown root:root /etc/sssd/sssd.conf
+chmod 600 /etc/sssd/sssd.conf
+restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
+rm -rf /var/lib/sss/db/*
+systemctl start sssd
+echo -e "${GREEN}✅ SSSD access control applied!${NC}"
 
-    echo -e "${YELLOW}🧹 Flushing SSSD database cache...${NC}"
-    rm -rf /var/lib/sss/db/*
-    systemctl start sssd
+# ------------------------------------------------------------------------------
+# Step 3: Deploy Niri DMS Desktop Configuration
+# ------------------------------------------------------------------------------
+if [ -f "$LOCAL_TAR" ]; then
+    echo -e "\n${YELLOW}📦 Extracting and deploying Niri DMS configurations...${NC}"
+    TMP_DIR="/tmp/niri-dms-config-extracted"
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+    tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
 
-    echo -e "${GREEN}✅ SSSD configured and running!${NC}"
-}
+    cp -r "$TMP_DIR"/. /etc/skel/ 2>/dev/null || cp -r "$TMP_DIR"/* /etc/skel/ 2>/dev/null || true
 
-# --- Menu Actions ---
-
-auto_setup() {
-    draw_header
-    ensure_files
-    RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
-    MATCHED_LAB=""
-    MATCHED_GROUP=""
-
-    while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
-        lab_name=$(echo "${lab_name:-}" | xargs)
-        ad_group=$(echo "${ad_group:-}" | xargs)
-        pattern=$(echo "${pattern:-}" | xargs | tr '[:lower:]' '[:upper:]')
-        [[ -z "$pattern" || "$lab_name" =~ ^# ]] && continue
-
-        if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
-            MATCHED_LAB="$lab_name"
-            MATCHED_GROUP="$ad_group"
-            break
+    for user_dir in /home/*; do
+        if [ -d "$user_dir" ]; then
+            u_name=$(basename "$user_dir")
+            u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
+            cp -r "$TMP_DIR"/. "$user_dir/" 2>/dev/null || cp -r "$TMP_DIR"/* "$user_dir/" 2>/dev/null || true
+            chown -R "$u_name:$u_group" "$user_dir" 2>/dev/null || true
+            echo -e "   • Applied config to ${CYAN}$user_dir${NC}"
         fi
-    done < "$LOCAL_CONFIG"
-
-    echo -e "📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
-    if [ -n "$MATCHED_GROUP" ]; then
-        echo -e "📌 ${BOLD}Detected Lab:${NC} $MATCHED_LAB"
-        echo -e "📌 ${BOLD}Allowed Group:${NC} $MATCHED_GROUP"
-    else
-        echo -e "${YELLOW}⚠️ No match found for this hostname pattern in lab.conf.${NC}"
-    fi
-    echo
-
-    read -rp "Run full deployment (SSSD Access + Niri Config)? [Y/n]: " confirm || true
-    confirm=${confirm:-Y}
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        apply_sssd_deny_rules "$MATCHED_GROUP"
-        deploy_niri_config
-    fi
-    read -rp "Press [Enter] to return to menu..." || true
-}
-
-manual_lab_select() {
-    draw_header
-    ensure_files
-
-    echo -e "${BOLD}Select a Lab to ALLOW on this machine:${NC}\n"
-    LAB_NAMES=()
-    AD_GROUPS=()
-
-    while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
-        lab_name=$(echo "${lab_name:-}" | xargs)
-        ad_group=$(echo "${ad_group:-}" | xargs)
-        [[ -z "$ad_group" || "$lab_name" =~ ^# ]] && continue
-        LAB_NAMES+=("$lab_name")
-        AD_GROUPS+=("$ad_group")
-    done < "$LOCAL_CONFIG"
-
-    for i in "${!LAB_NAMES[@]}"; do
-        printf "  ${CYAN}[%2d]${NC} %-30s (Group: %s)\n" $((i+1)) "${LAB_NAMES[$i]}" "${AD_GROUPS[$i]}"
     done
-    echo -e "  ${CYAN}[ 0]${NC} Cancel"
-    echo
+    rm -rf "$TMP_DIR"
+    echo -e "${GREEN}✅ Niri DMS configs deployed system-wide!${NC}"
+fi
 
-    read -rp "Enter choice [0-${#LAB_NAMES[@]}]: " choice || true
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le "${#LAB_NAMES[@]}" ]; then
-        idx=$((choice-1))
-        echo -e "\nApplying rules for ${GREEN}${LAB_NAMES[$idx]}${NC} (${AD_GROUPS[$idx]})..."
-        apply_sssd_deny_rules "${AD_GROUPS[$idx]}"
-        deploy_niri_config
-    fi
-    read -rp "Press [Enter] to return to menu..." || true
-}
+# ------------------------------------------------------------------------------
+# Step 4: Create App Management Policy Engine Script
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}⚙️ Building Application Enforcement Engine (/usr/local/bin/ad-dms-app-enforcer)...${NC}"
 
-diagnostics() {
-    draw_header
-    echo -e "${BOLD}🔍 Running Diagnostics...${NC}\n"
-    
-    echo -n "• SSSD Service: "
-    if systemctl is-active --quiet sssd; then
-        echo -e "${GREEN}RUNNING${NC}"
-    else
-        echo -e "${RED}STOPPED/FAILED${NC}"
-    fi
+cat <<'EOF' > /usr/local/bin/ad-dms-app-enforcer
+#!/usr/bin/env bash
+# AD DMS Application Policy Enforcer
+set -euo pipefail
 
-    echo -n "• AD User Lookup (oslab): "
-    if id oslab &>/dev/null; then
-        echo -e "${GREEN}SUCCESSFUL${NC}"
-        id oslab
-    else
-        echo -e "${RED}FAILED${NC}"
-    fi
+CONF_DIR="/etc/ad-dms"
 
-    echo -e "\n• Current SSSD Rules:"
-    grep -E "access_provider|simple_deny_groups" /etc/sssd/sssd.conf || echo "None set"
+# 1. Enforce Compulsory Apps (Install if missing)
+if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
+    while IFS= read -r app || [ -n "$app" ]; do
+        app=$(echo "$app" | xargs)
+        [[ -z "$app" || "$app" =~ ^# ]] && continue
+        if ! rpm -q "$app" &>/dev/null; then
+            echo "📦 Installing compulsory app: $app"
+            dnf install -y "$app" || true
+        fi
+    done < "$CONF_DIR/compulsory-apps.conf"
+fi
 
-    echo
-    read -rp "Press [Enter] to return to menu..." || true
-}
+# 2. Enforce Blocked Apps (Kill running instances)
+if [ -f "$CONF_DIR/blocked-apps.conf" ]; then
+    while IFS= read -r app || [ -n "$app" ]; do
+        app=$(echo "$app" | xargs)
+        [[ -z "$app" || "$app" =~ ^# ]] && continue
+        if pgrep -x "$app" &>/dev/null; then
+            echo "🚫 Terminating blocked application: $app"
+            pkill -9 -x "$app" || true
+        fi
+    done < "$CONF_DIR/blocked-apps.conf"
+fi
 
-# --- Main Loop ---
-while true; do
-    draw_header
-    echo -e "Please select an option:\n"
-    echo -e "  ${CYAN}[1]${NC} 🚀 Auto Setup (SSSD Rules + Niri Config via Host Match)"
-    echo -e "  ${CYAN}[2]${NC} ⚙️  Manual Lab Selection Override"
-    echo -e "  ${CYAN}[3]${NC} 📦 Sync Niri DMS Config Only (/etc/skel & /home/*)"
-    echo -e "  ${CYAN}[4]${NC} 🧪 Test AD User Lookup & SSSD Status"
-    echo -e "  ${CYAN}[5]${NC} 🚪 Exit"
-    echo
-    read -rp "Select an option [1-5]: " opt || true
+EOF
 
-    case "$opt" in
-        1) auto_setup ;;
-        2) manual_lab_select ;;
-        3) draw_header; deploy_niri_config; read -rp "Press [Enter] to return..." || true ;;
-        4) diagnostics ;;
-        5) clear; echo "👋 Exiting."; exit 0 ;;
-        *) echo -e "${RED}Invalid selection!${NC}"; sleep 1 ;;
-    esac
-done
+chmod +x /usr/local/bin/ad-dms-app-enforcer
+
+# ------------------------------------------------------------------------------
+# Step 5: Systemd Timer (Refresh every 10 minutes)
+# ------------------------------------------------------------------------------
+echo -e "${YELLOW}⏰ Creating 10-Minute Periodic Systemd Timer...${NC}"
+
+cat <<EOF > /etc/systemd/system/ad-dms-refresh.service
+[Unit]
+Description=AD DMS Application Policy Enforcer Service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ad-dms-app-enforcer
+EOF
+
+cat <<EOF > /etc/systemd/system/ad-dms-refresh.timer
+[Unit]
+Description=Run AD DMS App Enforcer every 10 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now ad-dms-refresh.timer
+echo -e "${GREEN}✅ 10-minute refresh timer activated!${NC}"
+
+# ------------------------------------------------------------------------------
+# Step 6: Login Hook (Run refresh on user login)
+# ------------------------------------------------------------------------------
+echo -e "${YELLOW}🔑 Setting up User Login Execution Hook...${NC}"
+
+cat <<EOF > /etc/profile.d/ad-dms-login-refresh.sh
+# Run AD DMS App Refresh on User Login
+if [ -n "\$bash" ] || [ -n "\$zsh" ] || [ -n "\$SSH_CLIENT" ] || [ -n "\$DISPLAY" ] || [ -n "\$WAYLAND_DISPLAY" ]; then
+    sudo /usr/local/bin/ad-dms-app-enforcer &>/dev/null &
+fi
+EOF
+
+chmod +x /etc/profile.d/ad-dms-login-refresh.sh
+
+# Run enforcer immediately once
+/usr/local/bin/ad-dms-app-enforcer || true
+
+echo -e "\n${GREEN}======================================================================${NC}"
+echo -e "${BOLD}🚀 AD DMS FULL SYSTEM DEPLOYMENT COMPLETED SUCCESSFULLY! (v${VERSION})${NC}"
+echo -e "${GREEN}======================================================================${NC}"
