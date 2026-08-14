@@ -20,7 +20,7 @@ rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-echo "📥 Downloading repository components..."
+echo "📥 Downloading repository components... v1"
 
 fetch_file() {
     local file="$1"
