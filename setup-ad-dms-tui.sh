@@ -9,17 +9,14 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Locate current script directory and local files
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CONFIG="${SCRIPT_DIR}/lab.conf"
 LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
-# Fallbacks if run standalone
 if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.conf" ]; then
     LOCAL_CONFIG="/etc/lab.conf"
 fi
 
-# Terminal ANSI Colors
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -40,7 +37,6 @@ ensure_files() {
         echo -e "${RED}❌ Error: 'lab.conf' missing in ${SCRIPT_DIR}${NC}" >&2
         exit 1
     fi
-    # Also copy lab.conf to /etc/ for system reference
     cp "$LOCAL_CONFIG" /etc/lab.conf
 }
 
