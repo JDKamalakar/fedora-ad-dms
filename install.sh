@@ -24,6 +24,7 @@ echo "📥 Downloading repository components..."
 
 fetch_file() {
     local file="$1"
+    local required="${2:-true}"
     echo -n "   • Downloading ${file}... "
     
     if curl -fsSL "${PRIMARY_URL}/${file}" -o "${file}" 2>/dev/null; then
@@ -31,23 +32,29 @@ fetch_file() {
     elif curl -fsSL "${FALLBACK_URL}/${file}" -o "${file}" 2>/dev/null; then
         echo "✅ OK (found in subfolder)"
     else
-        echo "⚠️ Skipping optional or missing file: ${file}"
+        if [ "$required" = "true" ]; then
+            echo "❌ FAILED"
+            echo "❌ Critical Error: Required file '${file}' could not be located on GitHub!" >&2
+            exit 1
+        else
+            echo "⚠️ Skipping optional file: ${file}"
+        fi
     fi
 }
 
-# Core files
-fetch_file "lab.conf"
-fetch_file "niri-dms-config.tar.gz"
-fetch_file "setup-ad-dms-tui.sh..."
+# Required Core Files
+fetch_file "lab.conf" "true"
+fetch_file "niri-dms-config.tar.gz" "true"
+fetch_file "setup-ad-dms-tui.sh" "true"
 
-# App Management Policy files
-fetch_file "allowed-apps.conf"
-fetch_file "blocked-apps.conf"
-fetch_file "compulsory-apps.conf"
-fetch_file "group-apps.conf"
+# App Management Policy Files (Optional if not created on repo yet)
+fetch_file "allowed-apps.conf" "false"
+fetch_file "blocked-apps.conf" "false"
+fetch_file "compulsory-apps.conf" "false"
+fetch_file "group-apps.conf" "false"
 
-chmod +x setup-ad-dms-tui.sh...
+chmod +x setup-ad-dms-tui.sh
 
 echo "----------------------------------------------------------------------"
-echo "▶️ Launching setup-ad-dms-tui.sh......"
-exec ./setup-ad-dms-tui.sh... </dev/tty
+echo "▶️ Launching setup-ad-dms-tui.sh..."
+exec ./setup-ad-dms-tui.sh </dev/tty
