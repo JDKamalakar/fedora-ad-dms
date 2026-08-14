@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.2)
-SCRIPT_VERSION="1.0.2"
+# Script Versioning (Incremented to 1.0.3)
+SCRIPT_VERSION="1.0.3"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -40,7 +40,7 @@ done
 
 draw_banner() {
   printf "%b+--------------------------------------------------------------------+%b\n" "$CYAN" "$NC"
-  printf "%b|%b %b%b FEDORA ACTIVE DIRECTORY & DMS SETUP v%-8s%b           %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$SCRIPT_VERSION" "$NC" "$CYAN" "$NC"
+  printf "%b|%b %b%b FEDORA ACTIVE DIRECTORY & DMS SETUP v%-8s%b            %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$SCRIPT_VERSION" "$NC" "$CYAN" "$NC"
   printf "%b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 }
 
@@ -105,7 +105,7 @@ case "$SCRIPT_DIR" in
   /dev*) SCRIPT_DIR="$PWD" ;;
 esac
 
-# Load domain configuration accurately using working reference logic
+# Load domain configuration accurately
 load_domain_conf() {
   DOMAIN_CONF_FILE=""
 
@@ -130,9 +130,9 @@ load_domain_conf() {
     source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
   fi
 
-  # Variable fallbacks/mapping matching standard AD conventions
-  DOMAIN_NAME="${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}"
-  REALM_NAME="${REALM_NAME:-${REALM:-$DOMAIN_NAME}}"
+  # Variable fallbacks & strict formatting (Kerberos Realm MUST be UPPERCASE)
+  DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}" | tr '[:upper:]' '[:lower:]')
+  REALM_NAME=$(echo "${REALM_NAME:-${REALM:-$DOMAIN_NAME}}" | tr '[:lower:]' '[:upper:]')
   DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-Administrator}}}"
   AD_DNS_IP="${AD_DNS_IP:-}"
 }
@@ -312,10 +312,10 @@ step_header "6" "Active Directory Configuration & Realm Join"
 load_domain_conf
 
 msg_info "Domain Admin User: '${DOMAIN_USER}'"
-msg_info "Domain Realm Target: '${DOMAIN_NAME}'"
+msg_info "Domain Target: '${DOMAIN_NAME}' (Realm: '${REALM_NAME}')"
 
-# Apply Persistent NetworkManager DNS & Search Domain (using exact working reference logic)
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
+# Apply Persistent NetworkManager DNS & Search Domain
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
 if [ -n "${AD_DNS_IP:-}" ]; then
@@ -324,7 +324,7 @@ if [ -n "${AD_DNS_IP:-}" ]; then
   nmcli connection up "$TARGET_CONN" 2>/dev/null || true
   systemctl restart NetworkManager 2>/dev/null || true
 
-  # Direct write to /etc/resolv.conf for immediate resolution
+  # Direct write to /etc/resolv.conf for immediate resolution fallback
   cat <<EOF > /etc/resolv.conf
 nameserver ${AD_DNS_IP}
 search ${DOMAIN_NAME}
@@ -345,14 +345,21 @@ else
     if [ "$ASSUME_YES" = true ]; then
       DOMAIN_PASS_EXEC="${DOMAIN_PASS:-}"
     else
-      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$DOMAIN_NAME"
+      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$REALM_NAME"
       read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
       printf "\n"
     fi
 
-    msg_info "Enrolling system into Active Directory realm '${REALM_NAME:-$DOMAIN_NAME}'..."
-    if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose; then
-      msg_ok "Successfully joined Active Directory realm '${DOMAIN_NAME}'!"
+    msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
+    if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$REALM_NAME" --verbose; then
+      msg_ok "Successfully joined Active Directory realm '${REALM_NAME}'!"
+      
+      # Auto-tune SSSD for short username logins & home directories
+      if [ -f /etc/sssd/sssd.conf ]; then
+        sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' /etc/sssd/sssd.conf 2>/dev/null || true
+        sed -i 's/fallback_homedir = .*/fallback_homedir = \/home\/%u@%d/' /etc/sssd/sssd.conf 2>/dev/null || true
+        chmod 600 /etc/sssd/sssd.conf
+      fi
       break
     else
       msg_warn "Could not join Active Directory domain."
@@ -544,10 +551,17 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 # --- STEP 9: SYSTEM CONFIGS & PAM ---
 step_header "9" "Applying System Configurations & PAM Rules"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
-  [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
+  # Only copy static sssd.conf if domain join failed or if realmd didn't create one
+  if [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && [ ! -s /etc/sssd/sssd.conf ]; then
+    cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
+  fi
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
   [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
-  chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
+fi
+
+if [ -f /etc/sssd/sssd.conf ]; then
+  chmod 600 /etc/sssd/sssd.conf
+  chown root:root /etc/sssd/sssd.conf
 fi
 
 authselect select sssd with-mkhomedir --force
@@ -626,6 +640,8 @@ setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 
+# Safely stop SSSD before resetting database
+systemctl stop sssd 2>/dev/null || true
 sss_cache -E 2>/dev/null || true
 rm -f /var/lib/sss/db/* 2>/dev/null || true
 systemctl restart sssd oddjobd greetd 2>/dev/null || true
