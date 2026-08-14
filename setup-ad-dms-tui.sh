@@ -32,7 +32,7 @@ done
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}       FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP TUI          ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}       FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP TUI   V2.2        ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
