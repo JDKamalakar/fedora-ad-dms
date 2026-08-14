@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Script Versioning (Increment by 0.0.1 on modifications)
+SCRIPT_VERSION="1.0.1"
+
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -37,7 +40,7 @@ done
 
 draw_banner() {
   printf "%b+--------------------------------------------------------------------+%b\n" "$CYAN" "$NC"
-  printf "%b|%b %b%b        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               %b %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$NC" "$CYAN" "$NC"
+  printf "%b|%b %b%b FEDORA ACTIVE DIRECTORY & DMS SETUP v%-8s%b           %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$SCRIPT_VERSION" "$NC" "$CYAN" "$NC"
   printf "%b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 }
 
@@ -102,32 +105,48 @@ case "$SCRIPT_DIR" in
   /dev*) SCRIPT_DIR="$PWD" ;;
 esac
 
-# Robust configuration loader & fallback extractor
+# Robust configuration loader supporting dominos.config & domain.conf
 load_domain_conf() {
-  conf_file="${SCRIPT_DIR}/domain.conf"
-  if [ ! -f "$conf_file" ] && [ -f "./domain.conf" ]; then
-    conf_file="./domain.conf"
-  fi
-  if [ ! -f "$conf_file" ] && [ -f "/etc/fedora-ad-dms/domain.conf" ]; then
-    conf_file="/etc/fedora-ad-dms/domain.conf"
-  fi
+  local candidates=(
+    "${SCRIPT_DIR}/dominos.config" "${SCRIPT_DIR}/dominos.conf"
+    "${SCRIPT_DIR}/domain.conf" "${SCRIPT_DIR}/domain.config"
+    "./dominos.config" "./dominos.conf" "./domain.conf" "./domain.config"
+    "/etc/fedora-ad-dms/dominos.config" "/etc/fedora-ad-dms/domain.conf"
+  )
 
-  if [ -f "$conf_file" ]; then
+  local conf_file=""
+  for file in "${candidates[@]}"; do
+    if [ -f "$file" ]; then
+      conf_file="$file"
+      break
+    fi
+  done
+
+  if [ -n "$conf_file" ] && [ -f "$conf_file" ]; then
     sed -i 's/\r$//' "$conf_file" 2>/dev/null || true
     . "$conf_file" 2>/dev/null || true
 
-    # Support variable aliases (DOMAIN_USER, DOMAIN_ADMIN, ADMIN_USER)
-    DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-${DOMAIN_ADMIN_USER:-}}}}"
+    get_conf_val() {
+      local keys="$1"
+      grep -i -E "^\s*(${keys})\s*=" "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true
+    }
 
-    # Direct regex fallback if variables are missing or have spaces around '='
+    # Extract Domain Admin / User
+    DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-${DOMAIN_ADMIN_USER:-${ADMIN_NAME:-${ADMIN:-}}}}}}"
     if [ -z "${DOMAIN_USER:-}" ]; then
-      DOMAIN_USER=$(grep -E '^\s*(DOMAIN_USER|DOMAIN_ADMIN|ADMIN_USER|DOMAIN_ADMIN_USER)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      DOMAIN_USER=$(get_conf_val "DOMAIN_USER|DOMAIN_ADMIN|ADMIN_USER|DOMAIN_ADMIN_USER|ADMIN_NAME|ADMIN")
     fi
+
+    # Extract Domain / Realm Name
+    DOMAIN_NAME="${DOMAIN_NAME:-${REALM:-${DOMAIN:-${AD_DOMAIN:-}}}}"
     if [ -z "${DOMAIN_NAME:-}" ]; then
-      DOMAIN_NAME=$(grep -E '^\s*(DOMAIN_NAME|REALM)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      DOMAIN_NAME=$(get_conf_val "DOMAIN_NAME|DOMAIN|REALM|AD_DOMAIN")
     fi
+
+    # Extract AD DNS IP
+    AD_DNS_IP="${AD_DNS_IP:-${DNS_IP:-${AD_DNS:-${DNS:-${DNS_SERVER:-${NAMESERVER:-}}}}}}"
     if [ -z "${AD_DNS_IP:-}" ]; then
-      AD_DNS_IP=$(grep -E '^\s*(AD_DNS_IP|DNS_IP|DNS)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      AD_DNS_IP=$(get_conf_val "AD_DNS_IP|AD_DNS|DNS_IP|DNS|DNS_SERVER|NAMESERVER")
     fi
   fi
 }
@@ -306,38 +325,48 @@ step_header "6" "Active Directory Configuration & Realm Join"
 
 load_domain_conf
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-${DOMAIN_ADMIN:-Administrator}}" | tr -d " \"\r'" | xargs || true)
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d " \"\r'" | xargs || true)
 DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d " \"\r'" | xargs || true)
 DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
 AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d " \"\r'" | xargs || true)
 
-# --- APPLY DNS TO PHYSICAL ETH / WIRED CONNECTION 1 PRIOR TO ANY REALM LOOKUPS ---
+# --- APPLY AD DNS PRIOR TO DOMAIN USER & PASSWORD PROMPTS ---
 if [ -n "$AD_DNS_IP_CLEAN" ]; then
-  msg_info "Applying Active Directory DNS ($AD_DNS_IP_CLEAN) prior to domain operations..."
-  
-  # Find physical ethernet connection explicitly (excluding VPN / tun / tap interfaces)
-  TARGET_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep -vE 'pvpn|vpn|tun|tap' | head -n1 | cut -d: -f1 || true)
+  msg_info "Applying AD DNS ($AD_DNS_IP_CLEAN) to Wired Connection & system resolver..."
 
-  if [ -z "$TARGET_CONN" ]; then
-    TARGET_CONN=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
-  fi
-
-  TARGET_CONN="${TARGET_CONN:-Wired connection 1}"
-  msg_info "Modifying NetworkManager connection profile: '$TARGET_CONN'"
-
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
-  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
-
-  # Explicit fallback force on "Wired connection 1" if profile name differs
-  if [ "$TARGET_CONN" != "Wired connection 1" ] && nmcli connection show "Wired connection 1" >/dev/null 2>&1; then
+  # Explicitly modify "Wired connection 1" profile if present
+  if nmcli connection show "Wired connection 1" >/dev/null 2>&1; then
     nmcli connection modify "Wired connection 1" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
     nmcli connection up "Wired connection 1" 2>/dev/null || true
+    msg_ok "Configured NetworkManager profile 'Wired connection 1' with DNS: $AD_DNS_IP_CLEAN"
   fi
 
+  # Modify any active Ethernet interfaces
+  mapfile -t ACTIVE_ETH < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep -vE 'pvpn|vpn|tun|tap' | cut -d: -f1 || true)
+  for conn in "${ACTIVE_ETH[@]}"; do
+    if [ -n "$conn" ] && [ "$conn" != "Wired connection 1" ]; then
+      nmcli connection modify "$conn" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
+      nmcli connection up "$conn" 2>/dev/null || true
+      msg_ok "Configured NetworkManager profile '$conn' with DNS: $AD_DNS_IP_CLEAN"
+    fi
+  done
+
+  # Force immediate resolver update in /etc/resolv.conf for current process execution
+  RESOLV_TMP=$(mktemp)
+  {
+    printf "nameserver %s\nsearch %s\n" "$AD_DNS_IP_CLEAN" "$DOMAIN_NAME_CLEAN"
+    grep -v -E "^\s*nameserver\s+${AD_DNS_IP_CLEAN}|^\s*search\s+${DOMAIN_NAME_CLEAN}" /etc/resolv.conf 2>/dev/null || true
+  } > "$RESOLV_TMP"
+  cat "$RESOLV_TMP" > /etc/resolv.conf 2>/dev/null || true
+  rm -f "$RESOLV_TMP"
+
   systemctl restart NetworkManager 2>/dev/null || true
-  systemctl restart systemd-resolved 2>/dev/null || true
+  if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    resolvectl flush-caches 2>/dev/null || true
+    systemctl restart systemd-resolved 2>/dev/null || true
+  fi
   sleep 2
-  msg_ok "Active Directory DNS successfully set."
+  msg_ok "AD DNS applied successfully prior to domain join."
 fi
 
 msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
@@ -498,7 +527,7 @@ fi
 # --- STEP 8: SYNC CONFIGS & TIMER SERVICE ---
 step_header "8" "Syncing App Configs & Setting Up Policy Service"
 mkdir -p /etc/fedora-ad-dms
-for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf lab.conf; do
+for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf dominos.config lab.conf; do
   if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
     cp "${SCRIPT_DIR}/${conf_file}" /etc/fedora-ad-dms/
     msg_ok "Copied ${conf_file} -> /etc/fedora-ad-dms/"
@@ -506,8 +535,10 @@ for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-
 done
 
 if [ -f /etc/fedora-ad-dms/domain.conf ]; then
-  chmod 600 /etc/fedora-ad-dms/domain.conf
-  msg_ok "Secured /etc/fedora-ad-dms/domain.conf permissions (600)."
+  chmod 600 /etc/fedora-ad-dms/domain.conf 2>/dev/null || true
+fi
+if [ -f /etc/fedora-ad-dms/dominos.config ]; then
+  chmod 600 /etc/fedora-ad-dms/dominos.config 2>/dev/null || true
 fi
 
 if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
