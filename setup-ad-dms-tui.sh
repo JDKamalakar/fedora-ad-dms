@@ -4,11 +4,14 @@
 # ==============================================================================
 set -euo pipefail
 
-# 🔑 FIX: Force terminal stdin connection for piped executions
+# 📌 Script Version (Bump this whenever you modify the script!)
+VERSION="1.1.0"
+
+# 🔑 Force terminal stdin connection for piped executions
 exec </dev/tty
 
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ Error: This script must be run as root or with sudo.">&2
+    echo "❌ Error: This script must be run as root or with sudo." >&2
     exit 1
 fi
 
@@ -20,6 +23,7 @@ if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.conf" ]; then
     LOCAL_CONFIG="/etc/lab.conf"
 fi
 
+# Terminal ANSI Colors
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -30,7 +34,7 @@ NC='\033[0m'
 draw_header() {
     clear
     echo -e "${CYAN}======================================================================${NC}"
-    echo -e "${BOLD}          🖥️  GSFCU LAB SSSD & NIRI DMS MANAGEMENT TUI          ${NC}"
+    echo -e "${BOLD}       🖥️  GSFCU LAB SSSD & NIRI DMS MANAGEMENT TUI (v${VERSION})      ${NC}"
     echo -e "${CYAN}======================================================================${NC}"
     echo
 }
@@ -102,7 +106,7 @@ simple_deny_groups = ${DENY_GROUPS_STR}"
     systemctl reset-failed sssd || true
 
     echo -e "${YELLOW}📝 Writing /etc/sssd/sssd.conf...${NC}"
-    cat <<EOF> /etc/sssd/sssd.conf
+    cat <<EOF > /etc/sssd/sssd.conf
 [sssd]
 services = nss, pam
 domains = gsfcu.local
