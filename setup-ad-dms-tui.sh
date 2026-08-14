@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-# Script Versioning (Incremented to 1.0.3)
-SCRIPT_VERSION="1.0.3"
-
-# Auto-re-execute with Bash if launched via 'sh' or another shell
-if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@"
-fi
-
-set -eu
-
-# ANSI Colors
+# ANSI Color & Formatting Toolkit
 BOLD="\033[1m"
 CYAN="\033[1;36m"
 GREEN="\033[1;32m"
@@ -20,70 +11,48 @@ BLUE="\033[1;34m"
 MAGENTA="\033[1;35m"
 NC="\033[0m"
 
+# Parse Command Line Flags (-y / --yes)
 ASSUME_YES=false
-SELECTED_LAB_INDEX=""
-UPDATE_SYSTEM="" # Empty = prompt, true = force update, false = force skip
-
-# --- CONFIGURATION DEFAULTS ---
-PVPN_ENABLE="${PVPN_ENABLE:-yes}"
-PVPN_ID="${PVPN_ID:-gsfcu@proton.me}"
-PVPN_PASS="${PVPN_PASS:-Test@1199}"
-
 for arg in "$@"; do
   case "$arg" in
-    -y|--yes) ASSUME_YES=true ;;
-    --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
-    --update|--update-system) UPDATE_SYSTEM=true ;;
-    --no-update|--skip-update) UPDATE_SYSTEM=false ;;
+    -y|--yes)
+      ASSUME_YES=true
+      shift
+      ;;
   esac
 done
 
 draw_banner() {
-  printf "%b+--------------------------------------------------------------------+%b\n" "$CYAN" "$NC"
-  printf "%b|%b %b%b FEDORA ACTIVE DIRECTORY & DMS SETUP v%-8s%b            %b|%b\n" "$CYAN" "$NC" "$BOLD" "$MAGENTA" "$SCRIPT_VERSION" "$NC" "$CYAN" "$NC"
-  printf "%b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
+  clear
+  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}       FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP TUI          ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
 step_header() {
-  step_num="${1:-1}"
-  step_title="${2:-}"
-  printf "\n%b%b[STEP %s/11]%b %b%s%b\n" "$BOLD" "$BLUE" "$step_num" "$NC" "$BOLD" "$step_title" "$NC"
-  printf "%b======================================================================%b\n" "$BLUE" "$NC"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
+  echo -e "${BLUE}======================================================================${NC}"
 }
 
-msg_info()  { printf "  %b[INFO]%b %s\n" "$CYAN" "$NC" "$1"; }
-msg_ok()    { printf "  %b[OK]%b %s\n" "$GREEN" "$NC" "$1"; }
-msg_warn()  { printf "  %b[WARN]%b %s\n" "$YELLOW" "$NC" "$1"; }
-msg_err()   { printf "  %b[ERROR]%b %s\n" "$RED" "$NC" "$1"; }
+msg_info()  { echo -e "  ${CYAN}[INFO]${NC} $1"; }
+msg_ok()    { echo -e "  ${GREEN}[OK]${NC} $1"; }
+msg_warn()  { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
+msg_err()   { echo -e "  ${RED}[ERROR]${NC} $1"; }
 
 ask_yes_no() {
-  prompt="$1"
-  default="${2:-Y}"
-  hint="[Y/n]"
-
-  case "$default" in
-    [Nn]*) hint="[y/N]" ;;
-  esac
+  local prompt="$1"
+  local default="${2:-Y}"
+  local resp
 
   if [ "$ASSUME_YES" = true ]; then
-    case "$default" in
-      [Nn]*)
-        msg_info "${prompt} -> Auto-skipped (-y flag default N)"
-        return 1
-        ;;
-      *)
-        msg_info "${prompt} -> Auto-approved (-y flag)"
-        return 0
-        ;;
-    esac
+    msg_info "${prompt} -> Auto-approved (-y flag detected)"
+    return 0
   fi
 
   while true; do
-    printf "  %b[PROMPT]%b %s %s: " "$YELLOW" "$NC" "$prompt" "$hint"
-    read -r resp < /dev/tty || resp=""
-    if [ -z "$resp" ]; then
-      resp="$default"
-    fi
+    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
+    read -r resp < /dev/tty
+    resp="${resp:-$default}"
     case "$resp" in
       [Yy]*) return 0 ;;
       [Nn]*) return 1 ;;
@@ -92,239 +61,141 @@ ask_yes_no() {
   done
 }
 
-EUID_VAL=$(id -u 2>/dev/null || echo 0)
-if [ "$EUID_VAL" -ne 0 ]; then
+if [ "$EUID" -ne 0 ]; then
   draw_banner
-  msg_err "This script requires administrative privileges. Run with 'sudo'."
+  msg_err "This script requires administrative privileges. Please run with 'sudo'."
   exit 1
 fi
 
 draw_banner
-SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "$PWD")"
-case "$SCRIPT_DIR" in
-  /dev*) SCRIPT_DIR="$PWD" ;;
-esac
+msg_info "Welcome to the Fedora AD & DMS Setup Wizard."
+if [ "$ASSUME_YES" = true ]; then
+  msg_info "Unattended mode enabled (-y flag active)."
+fi
 
-# Load domain configuration accurately
-load_domain_conf() {
-  DOMAIN_CONF_FILE=""
+if ! ask_yes_no "Do you want to proceed with setup on this machine?" "Y"; then
+  msg_warn "Setup cancelled by user."
+  exit 0
+fi
 
-  if [ -f "${SCRIPT_DIR}/dominos.config" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/dominos.config"
-  elif [ -f "${SCRIPT_DIR}/domain.conf" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/domain.conf"
-  elif [ -f "${SCRIPT_DIR}/configs/domain.conf" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/configs/domain.conf"
-  elif [ -f "./dominos.config" ]; then
-    DOMAIN_CONF_FILE="./dominos.config"
-  elif [ -f "./domain.conf" ]; then
-    DOMAIN_CONF_FILE="./domain.conf"
-  elif [ -f "/etc/fedora-ad-dms/domain.conf" ]; then
-    DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
-  fi
-
-  if [ -n "$DOMAIN_CONF_FILE" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
-    msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
-    sed -i 's/\r$//' "$DOMAIN_CONF_FILE" 2>/dev/null || true
-    # shellcheck disable=SC1090
-    source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
-  fi
-
-  # Variable fallbacks & strict formatting (Kerberos Realm MUST be UPPERCASE)
-  DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}" | tr '[:upper:]' '[:lower:]')
-  REALM_NAME=$(echo "${REALM_NAME:-${REALM:-$DOMAIN_NAME}}" | tr '[:lower:]' '[:upper:]')
-  DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-Administrator}}}"
-  AD_DNS_IP="${AD_DNS_IP:-}"
-}
-
-load_domain_conf
-
-# --- STEP 1: PROTON VPN SETUP ---
-setup_pvpn() {
-  step_header "1" "ProtonVPN (pVPN) Integration"
+# Step 1: Remove LibreOffice and Install ONLYOFFICE via DNF
+step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
+if ask_yes_no "Do you want to remove LibreOffice and install ONLYOFFICE via DNF?" "Y"; then
+  msg_info "Removing all libreoffice* packages..."
+  dnf remove -y "libreoffice*" || msg_warn "LibreOffice packages not found or already removed."
   
-  run_pvpn=false
-  PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-yes}" | tr '[:upper:]' '[:lower:]')
+  msg_info "Installing ONLYOFFICE Desktop Editors via DNF..."
+  dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+  if dnf install -y onlyoffice-desktopeditors; then
+    msg_ok "ONLYOFFICE successfully installed via DNF."
+  else
+    msg_warn "DNF repo install failed, attempting direct RPM installation..."
+    dnf install -y https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors.x86_64.rpm || msg_warn "Failed to install ONLYOFFICE RPM."
+  fi
+else
+  msg_info "Skipping LibreOffice removal and ONLYOFFICE installation."
+fi
+
+# Step 2: System Package Update
+step_header "2" "Updating System Packages"
+if ask_yes_no "Do you want to run a full system update ('dnf update')?" "Y"; then
+  msg_info "Running system update..."
+  dnf update -y
+  msg_ok "System packages updated."
+else
+  msg_info "Skipping system package update."
+fi
+
+# Step 3: Install Active Directory Dependencies
+step_header "3" "Installing Active Directory Dependencies"
+if ask_yes_no "Do you want to install AD dependencies (realmd, sssd, krb5, NetworkManager-ad)?" "Y"; then
+  msg_info "Installing realmd, sssd, adcli, krb5-workstation, oddjob, chrony, NetworkManager..."
+  dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager
+  msg_ok "Active Directory prerequisite packages installed."
+else
+  msg_info "Skipping AD package installation."
+fi
+
+# Step 4: Install Dank Material Shell (DMS)
+step_header "4" "Installing Dank Material Shell (DMS)"
+if ask_yes_no "Do you want to run the Dank Material Shell (DMS) installer?" "Y"; then
+  msg_info "Downloading DMS setup script..."
+  curl -fsSL https://install.danklinux.com -o /tmp/dms-install.sh
+  chmod 777 /tmp/dms-install.sh
+
+  REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
+
+  if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+    msg_info "Executing DMS installer as user '${REAL_USER}' (non-root)..."
+    sudo -u "$REAL_USER" bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  else
+    msg_warn "SUDO_USER not detected. Running DMS installer directly..."
+    bash /tmp/dms-install.sh < /dev/tty || msg_warn "DMS installer finished with non-zero status. Continuing..."
+  fi
+
+  rm -f /tmp/dms-install.sh
+  msg_ok "DMS setup phase complete."
+else
+  msg_info "Skipping DMS installation."
+fi
+
+# Step 5: Read or Prompt Domain Details
+step_header "5" "Active Directory Configuration & Domain Details"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOMAIN_CONF_FILE=""
+
+if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  DOMAIN_CONF_FILE="${SCRIPT_DIR}/domain.conf"
+elif [ -f "${SCRIPT_DIR}/configs/domain.conf" ]; then
+  DOMAIN_CONF_FILE="${SCRIPT_DIR}/configs/domain.conf"
+fi
+
+if [ -n "$DOMAIN_CONF_FILE" ]; then
+  msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
+  # Read config without risk of executing EOF strings
+  # shellcheck disable=SC1090
+  source "$DOMAIN_CONF_FILE"
+else
+  msg_warn "No 'domain.conf' found. Requesting domain parameters:"
   
-  case "$PVPN_ENABLE_LOWER" in
-    "yes") run_pvpn=true ;;
-    "no")
-      msg_info "pVPN disabled in domain.conf. Skipping installation & connection entirely."
-      return 0
-      ;;
-    "ask")
-      if ask_yes_no "Do you want to install and connect ProtonVPN (pVPN)?" "Y"; then
-        run_pvpn=true
-      else
-        msg_info "pVPN installation denied by user. Skipping entirely."
-        return 0
-      fi
-      ;;
-    *)
-      msg_warn "Unknown PVPN_ENABLE setting '${PVPN_ENABLE}'. Skipping pVPN."
-      return 0
-      ;;
-  esac
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Name (default: gsfcu.local): "
+  read -r DOMAIN_NAME < /dev/tty
+  DOMAIN_NAME="${DOMAIN_NAME:-gsfcu.local}"
 
-  if [ "$run_pvpn" = true ]; then
-    if command -v pvpnctl >/dev/null 2>&1; then
-      msg_ok "pVPN CLI (pvpnctl) is already installed. Skipping installation."
-    else
-      msg_info "Installing system-wide pVPN CLI..."
-      curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Realm Name (default: GSFCU.LOCAL): "
+  read -r REALM_NAME < /dev/tty
+  REALM_NAME="${REALM_NAME:-GSFCU.LOCAL}"
 
-      if ! command -v pvpnctl >/dev/null 2>&1; then
-        msg_err "pvpnctl binary not found. Installation failed."
-        exit 1
-      fi
-    fi
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter AD DNS Server IP address: "
+  read -r AD_DNS_IP < /dev/tty
 
-    msg_info "Checking current pVPN connection status..."
-    if pvpnctl status 2>/dev/null | grep -iq "connected"; then
-      msg_ok "pVPN is already connected! Skipping login and connection steps."
-      return 0
-    fi
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Username (default: Administrator): "
+  read -r DOMAIN_USER < /dev/tty
+  DOMAIN_USER="${DOMAIN_USER:-Administrator}"
 
-    msg_info "Logging into pVPN..."
-    pvpnctl login "$PVPN_ID" "$PVPN_PASS"
+  # Write clean domain.conf file without EOF commands
+  {
+    echo "DOMAIN_NAME=\"${DOMAIN_NAME}\""
+    echo "REALM_NAME=\"${REALM_NAME}\""
+    echo "AD_DNS_IP=\"${AD_DNS_IP}\""
+    echo "DOMAIN_USER=\"${DOMAIN_USER}\""
+  } > "${SCRIPT_DIR}/domain.conf"
 
-    msg_info "Connecting pVPN..."
-    pvpnctl connect
-
-    msg_info "Verifying pVPN connection status..."
-    attempts=0
-    max_attempts=10
-    is_connected=false
-
-    while [ "$attempts" -lt "$max_attempts" ]; do
-      if pvpnctl status 2>/dev/null | grep -iq "connected"; then
-        is_connected=true
-        break
-      fi
-      attempts=$((attempts + 1))
-      msg_info "Waiting for active pVPN connection... ($attempts/$max_attempts)"
-      sleep 3
-    done
-
-    if [ "$is_connected" = true ]; then
-      msg_ok "pVPN is connected! Proceeding with setup..."
-    else
-      msg_err "pVPN failed to connect after multiple checks. Cannot proceed."
-      exit 1
-    fi
-  fi
-}
-
-setup_pvpn
-
-# --- STEP 2: SOFTWARE SWAPPING ---
-step_header "2" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-if rpm -q libreoffice-core >/dev/null 2>&1; then
-  msg_info "Removing LibreOffice..."
-  dnf remove -y "libreoffice*"
+  msg_ok "Saved configuration to '${SCRIPT_DIR}/domain.conf'."
 fi
-
-msg_info "Installing ONLYOFFICE Desktop Editors..."
-dnf install -y --setopt=strict=0 https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-dnf install -y --setopt=strict=0 onlyoffice-desktopeditors || msg_warn "ONLYOFFICE installation encountered a repository warning."
-msg_ok "Software swapping step finished."
-
-# --- STEP 3: SYSTEM UPDATE ---
-step_header "3" "Updating System Packages"
-run_update=false
-
-msg_info "Checking for available system updates..."
-CHECK_UPD_EXIT=0
-dnf check-update --quiet >/dev/null 2>&1 || CHECK_UPD_EXIT=$?
-
-if [ "$CHECK_UPD_EXIT" -eq 100 ]; then
-  msg_info "System updates are available."
-  if [ "$UPDATE_SYSTEM" = true ]; then
-    run_update=true
-    msg_info "System update explicitly requested via CLI flag."
-  elif [ "$UPDATE_SYSTEM" = false ]; then
-    run_update=false
-    msg_info "System update explicitly skipped via CLI flag."
-  else
-    if ask_yes_no "Updates are available. Do you want to run a full system update ('dnf update')?" "N"; then
-      run_update=true
-    fi
-  fi
-else
-  msg_ok "No updates available. System is already up to date."
-  run_update=false
-fi
-
-if [ "$run_update" = true ]; then
-  msg_info "Running full system update..."
-  dnf update -y --setopt=strict=0 || msg_warn "System update completed with mirror warnings."
-else
-  msg_info "Skipping system update."
-fi
-
-# --- STEP 4: AD DEPENDENCIES ---
-step_header "4" "Installing AD & Security Dependencies"
-REQUIRED_PKGS="realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit kitty dnf-plugins-core"
-MISSING_PKGS=""
-
-for pkg in $REQUIRED_PKGS; do
-  if ! rpm -q "$pkg" >/dev/null 2>&1; then
-    MISSING_PKGS="$MISSING_PKGS $pkg"
-  fi
-done
-
-MISSING_CLEAN=$(echo "$MISSING_PKGS" | xargs || true)
-if [ -z "$MISSING_CLEAN" ]; then
-  msg_ok "All required AD & security packages are already installed!"
-else
-  msg_info "Installing missing packages: $MISSING_CLEAN"
-  dnf install -y --setopt=strict=0 $MISSING_CLEAN || msg_warn "Some packages encountered download warnings."
-fi
-
-# --- STEP 5: DMS INSTALLATION ---
-step_header "5" "Installing Dank Material Shell (DMS)"
-
-DMS_USER="${SUDO_USER:-}"
-if [ -z "$DMS_USER" ] || [ "$DMS_USER" = "root" ]; then
-  DMS_USER=$(awk -F: '$3 >= 1000 && $3 < 60000 {print $1; exit}' /etc/passwd || true)
-fi
-
-if [ -n "$DMS_USER" ] && id "$DMS_USER" >/dev/null 2>&1; then
-  if command -v dms >/dev/null 2>&1 || rpm -q dms >/dev/null 2>&1 || [ -f "/usr/bin/dms" ] || [ -f "/usr/local/bin/dms" ] || [ -f "/home/${DMS_USER}/.local/bin/dms" ]; then
-    msg_ok "Dank Material Shell (DMS) is already installed. Skipping installer script."
-  else
-    msg_info "Executing DMS installer script as non-root user '$DMS_USER'..."
-    if sudo -u "$DMS_USER" -H sh -c "curl -fsSL https://install.danklinux.com | sh"; then
-      msg_ok "DMS installer script executed successfully."
-    else
-      msg_err "DMS installer script failed."
-      exit 1
-    fi
-  fi
-else
-  msg_err "No non-root user found to execute the DMS installer script. Exiting."
-  exit 1
-fi
-
-# --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
-step_header "6" "Active Directory Configuration & Realm Join"
-
-load_domain_conf
-
-msg_info "Domain Admin User: '${DOMAIN_USER}'"
-msg_info "Domain Target: '${DOMAIN_NAME}' (Realm: '${REALM_NAME}')"
 
 # Apply Persistent NetworkManager DNS & Search Domain
-ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
 if [ -n "${AD_DNS_IP:-}" ]; then
   msg_info "Applying AD DNS (${AD_DNS_IP}) & Search Domain (${DOMAIN_NAME}) to '${TARGET_CONN}'..."
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes 2>/dev/null || true
-  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
-  systemctl restart NetworkManager 2>/dev/null || true
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes || true
+  nmcli connection up "$TARGET_CONN" || true
+  systemctl restart NetworkManager || true
 
-  # Direct write to /etc/resolv.conf for immediate resolution fallback
+  # Direct backup write to /etc/resolv.conf
   cat <<EOF > /etc/resolv.conf
 nameserver ${AD_DNS_IP}
 search ${DOMAIN_NAME}
@@ -334,318 +205,159 @@ fi
 
 # Time Synchronization (Mandatory for Active Directory Kerberos)
 msg_info "Synchronizing system clock with network time..."
-systemctl enable --now chronyd 2>/dev/null || true
+systemctl enable --now chronyd || true
 chronyc makestep > /dev/null 2>&1 || true
 
-# Check if machine is already joined to domain
-if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME"; then
-  msg_ok "System is already joined to realm '$DOMAIN_NAME'. Skipping domain join."
+# Request Password
+echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER}@${DOMAIN_NAME}': "
+read -sp "" DOMAIN_PASS < /dev/tty
+echo ""
+
+# Step 6: Mandatory Active Directory Realm Join
+step_header "6" "Joining Active Directory Realm (Mandatory)"
+msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
+
+if echo "$DOMAIN_PASS" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose; then
+  msg_ok "Successfully joined Active Directory domain '${DOMAIN_NAME}'!"
 else
-  while true; do
-    if [ "$ASSUME_YES" = true ]; then
-      DOMAIN_PASS_EXEC="${DOMAIN_PASS:-}"
-    else
-      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$REALM_NAME"
-      read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
-      printf "\n"
-    fi
-
-    msg_info "Enrolling system into Active Directory realm '${REALM_NAME}'..."
-    if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$REALM_NAME" --verbose; then
-      msg_ok "Successfully joined Active Directory realm '${REALM_NAME}'!"
-      
-      # Auto-tune SSSD for short username logins & home directories
-      if [ -f /etc/sssd/sssd.conf ]; then
-        sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' /etc/sssd/sssd.conf 2>/dev/null || true
-        sed -i 's/fallback_homedir = .*/fallback_homedir = \/home\/%u@%d/' /etc/sssd/sssd.conf 2>/dev/null || true
-        chmod 600 /etc/sssd/sssd.conf
-      fi
-      break
-    else
-      msg_warn "Could not join Active Directory domain."
-      
-      if [ "$ASSUME_YES" = true ]; then
-        msg_warn "Auto-continuing in Offline mode due to -y flag..."
-        break
-      fi
-
-      if ask_yes_no "Would you like to retry Domain Join?" "N"; then
-        msg_info "Retrying domain authentication..."
-        continue
-      else
-        if ask_yes_no "Continue setup in Offline mode?" "Y"; then
-          msg_warn "Proceeding with local policy setup..."
-          break
-        else
-          msg_err "Aborting installation."
-          exit 1
-        fi
-      fi
-    fi
-  done
+  msg_err "CRITICAL ERROR: Failed to join Active Directory domain!"
+  msg_err "Please verify:"
+  msg_err " 1. The AD DNS IP (${AD_DNS_IP:-N/A}) can reach your Domain Controller."
+  msg_err " 2. Password and Domain Admin username (${DOMAIN_USER}) are correct."
+  msg_err " 3. The system clock matches your Active Directory server time."
+  exit 1
 fi
 
-# --- STEP 7: LAB ACCESS CONTROL RULES ---
-step_header "7" "Configuring Lab Access Control Rules"
-LAB_CONF="${SCRIPT_DIR}/lab.conf"
-if [ -f "$LAB_CONF" ]; then
-  sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
-  CLEAN_LABS=$(grep -v -E '^\s*#|^\s*$' "$LAB_CONF" 2>/dev/null | xargs -L1 || true)
-  
-  if [ -n "$CLEAN_LABS" ]; then
-    SYS_HOSTNAME=$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]' || echo "")
-    AUTO_DETECTED_INDEX=""
-    
-    idx=1
-    printf "  %bAvailable Lab Configurations:%b\n\n" "$BOLD" "$NC"
-    
-    printf "%s\n" "$CLEAN_LABS" | while IFS= read -r line; do
-      if [ -z "$line" ]; then continue; fi
-      
-      case "$line" in
-        *:*)
-          lab_name_raw="${line%%:*}"
-          lab_id_raw="${line#*:}"
-          ;;
-        *)
-          lab_name_raw="$line"
-          lab_id_raw="$line"
-          ;;
-      esac
+# Function to handle system config files
+handle_config_file() {
+  local target_path="$1"
+  local file_desc="$2"
+  local copy_source_dir="$3"
 
-      name=$(echo "$lab_name_raw" | xargs || true)
-      id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
+  local filename
+  filename=$(basename "$target_path")
+  local source_file="${copy_source_dir}/${filename}"
 
-      CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
-      CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
-      
-      if [ -n "$SYS_HOSTNAME" ]; then
-        case "$SYS_HOSTNAME" in
-          *"$CLEAN_NAME"*|*"$CLEAN_ID"*)
-            AUTO_DETECTED_INDEX="$idx"
-            ;;
-        esac
-      fi
-      
-      formatted_idx=$(printf "%02d" "$idx")
-      printf "    %b[%s]%b %s\n" "$CYAN" "$formatted_idx" "$NC" "$name"
-      idx=$((idx + 1))
-    done
-
-    total_labs=$(printf "%s\n" "$CLEAN_LABS" | grep -c . || echo 1)
-    CHOICE="$SELECTED_LAB_INDEX"
-    
-    if [ -z "$CHOICE" ] && [ -n "$AUTO_DETECTED_INDEX" ]; then
-      DETECTED_LINE=$(printf "%s\n" "$CLEAN_LABS" | sed -n "${AUTO_DETECTED_INDEX}p")
-      DETECTED_NAME=$(echo "${DETECTED_LINE%%:*}" | xargs || true)
-      msg_ok "Auto-detected Lab from Hostname ('${SYS_HOSTNAME}'): ${DETECTED_NAME}"
-      if ask_yes_no "Use auto-detected lab selection [${DETECTED_NAME}]?" "Y"; then
-        CHOICE="$AUTO_DETECTED_INDEX"
-      fi
-    fi
-
-    if [ -z "$CHOICE" ]; then
-      if [ "$ASSUME_YES" = true ]; then
-        CHOICE=1
-      else
-        while true; do
-          printf "\n  %b[INPUT]%b Select Lab number [1-%s]: " "$YELLOW" "$NC" "$total_labs"
-          read -r RAW_CHOICE < /dev/tty || RAW_CHOICE=""
-          CHOICE=$(echo "$RAW_CHOICE" | tr -cd '0-9' | sed 's/^0*//')
-          CHOICE="${CHOICE:-0}"
-
-          if [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -le "$total_labs" ]; then
-            break
-          fi
-          msg_err "Invalid choice. Please enter a valid number."
-        done
-      fi
-    fi
-
-    curr_idx=1
-    printf "%s\n" "$CLEAN_LABS" | while IFS= read -r line; do
-      if [ -z "$line" ]; then continue; fi
-      
-      case "$line" in
-        *:*)
-          lab_name_raw="${line%%:*}"
-          lab_id_raw="${line#*:}"
-          ;;
-        *)
-          lab_name_raw="$line"
-          lab_id_raw="$line"
-          ;;
-      esac
-      
-      name=$(echo "$lab_name_raw" | xargs || true)
-      id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
-
-      if [ "$curr_idx" -eq "$CHOICE" ]; then
-        msg_ok "Selected Lab: ${name} (${id})"
-        realm permit -g "$id" 2>/dev/null || msg_warn "Skipped 'realm permit'."
-      else
-        realm deny -g "$id" 2>/dev/null || true
-        msg_warn "Recorded block rule for Lab ID: ${id}"
-      fi
-      curr_idx=$((curr_idx + 1))
-    done
-    
-    msg_ok "Unlisted domain IDs remain allowed."
+  if [ -n "$copy_source_dir" ] && [ -f "$source_file" ]; then
+    cp "$source_file" "$target_path"
+    [ "$filename" = "sssd.conf" ] && chmod 600 "$target_path" && chown root:root "$target_path"
+    msg_ok "Applied custom '${filename}' -> '${target_path}'."
+    return 0
   fi
-fi
 
-# --- STEP 8: SYNC CONFIGS & TIMER SERVICE ---
-step_header "8" "Syncing App Configs & Setting Up Policy Service"
-mkdir -p /etc/fedora-ad-dms
-for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf dominos.config lab.conf; do
-  if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
-    cp "${SCRIPT_DIR}/${conf_file}" /etc/fedora-ad-dms/
-    msg_ok "Copied ${conf_file} -> /etc/fedora-ad-dms/"
-  fi
-done
+  case "$filename" in
+    "sssd.conf")
+      cat <<EOF > /etc/sssd/sssd.conf
+[sssd]
+domains = ${DOMAIN_NAME}
+config_file_version = 2
+services = nss, pam
+default_domain_suffix = ${DOMAIN_NAME}
 
-if [ -f /etc/fedora-ad-dms/domain.conf ]; then
-  chmod 600 /etc/fedora-ad-dms/domain.conf 2>/dev/null || true
-fi
-if [ -f /etc/fedora-ad-dms/dominos.config ]; then
-  chmod 600 /etc/fedora-ad-dms/dominos.config 2>/dev/null || true
-fi
-
-if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
-  cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
-  chmod 755 /usr/local/bin/refresh-app-policies
-fi
-
-cat <<'EOF' > /usr/local/bin/refresh
-#!/usr/bin/env bash
-sudo /usr/local/bin/refresh-app-policies
+[domain/${DOMAIN_NAME}]
+id_provider = ad
+auth_provider = ad
+access_provider = permit
+ad_gpo_access_control = permissive
+krb5_realm = ${REALM_NAME}
+default_domain_suffix = ${DOMAIN_NAME}
+use_fully_qualified_names = False
+default_shell = /bin/bash
+override_homedir = /home/%u
 EOF
-chmod 755 /usr/local/bin/refresh
-
-cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
-[Unit]
-Description=Sync software allow/block lists & install compulsory apps
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/refresh-app-policies
+      chmod 600 /etc/sssd/sssd.conf
+      chown root:root /etc/sssd/sssd.conf
+      msg_ok "Generated default '/etc/sssd/sssd.conf'."
+      ;;
+    "krb5.conf")
+      cat <<EOF > /etc/krb5.conf
+[libdefaults]
+    default_realm = ${REALM_NAME}
+    dns_lookup_realm = true
+    dns_lookup_kdc = true
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+    rdns = false
+    pkinit_anchors = FILE:/etc/pki/tls/certs/ca-bundle.crt
+    spake_preauth_groups = edwards25519
+    dns_canonicalize_hostname = fallback
+    qualify_shortname = ""
+    default_ccache_name = KEYRING:persistent:%{uid}
+    udp_preference_limit = 0
 EOF
-
-cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
-[Unit]
-Description=Run app-policy-sync every 10 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=10min
-
-[Install]
-WantedBy=timers.target
+      msg_ok "Generated default '/etc/krb5.conf'."
+      ;;
+    "greetd")
+      cat <<EOF > /etc/pam.d/greetd
+#%PAM-1.0
+auth       substack     system-auth
+auth       include      postlogin
+account    include      system-auth
+password   include      system-auth
+session    include      system-auth
+session    optional     pam_mkhomedir.so umask=0077 skel=/etc/skel
+session    include      postlogin
 EOF
+      msg_ok "Generated default '/etc/pam.d/greetd'."
+      ;;
+  esac
+}
 
-systemctl daemon-reload
-systemctl enable --now app-policy-sync.timer 2>/dev/null || true
-/usr/local/bin/refresh-app-policies 2>/dev/null || true
+# Step 7: System Configurations
+step_header "7" "Applying System Configurations"
+SOURCE_CONFIG_DIR=""
 
-# --- STEP 9: SYSTEM CONFIGS & PAM ---
-step_header "9" "Applying System Configurations & PAM Rules"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
-  # Only copy static sssd.conf if domain join failed or if realmd didn't create one
-  if [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && [ ! -s /etc/sssd/sssd.conf ]; then
-    cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
-  fi
-  [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
-  [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
+  msg_ok "Auto-detected local configs directory '${SCRIPT_DIR}/configs'."
+  SOURCE_CONFIG_DIR="${SCRIPT_DIR}/configs"
 fi
 
-if [ -f /etc/sssd/sssd.conf ]; then
-  chmod 600 /etc/sssd/sssd.conf
-  chown root:root /etc/sssd/sssd.conf
-fi
+handle_config_file "/etc/sssd/sssd.conf" "SSSD Configuration" "$SOURCE_CONFIG_DIR"
+handle_config_file "/etc/krb5.conf" "Kerberos Configuration" "$SOURCE_CONFIG_DIR"
 
+# Step 8: PAM Integration
+step_header "8" "Configuring PAM & Greeter Authentication"
 authselect select sssd with-mkhomedir --force
-systemctl enable --now oddjobd 2>/dev/null || true
+handle_config_file "/etc/pam.d/greetd" "GreetD PAM Policy" "$SOURCE_CONFIG_DIR"
 
-# --- STEP 10: DMS & KITTY CONF SETUP ---
-step_header "10" "Deploying Theme & Mandatory Kitty Terminal Configuration"
-
-msg_info "Creating compulsory Kitty configuration..."
-mkdir -p /etc/skel/.config/kitty
-
-cat <<'EOF' > /etc/skel/.config/kitty/kitty.conf
-# ==============================================================================
-# MANDATORY KITTY TERMINAL QOL CONFIGURATION
-# ==============================================================================
-font_size 11.0
-scrollback_lines 10000
-mouse_hide_wait 3.0
-copy_on_select yes
-enable_audio_bell no
-remember_window_size yes
-confirm_os_window_close 0
-
-# Copy & Paste Shortcuts
-map ctrl+shift+c copy_to_clipboard
-map ctrl+shift+v paste_from_clipboard
-map ctrl+c copy_or_interrupt
-map ctrl+v paste_from_clipboard
-EOF
-chmod -R 755 /etc/skel/.config/kitty
-msg_ok "Compulsory Kitty config populated in /etc/skel/.config/kitty/kitty.conf"
-
-for user_home in /home/*; do
-  if [ -d "$user_home" ]; then
-    owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
-    group=$(stat -c '%G' "$user_home" 2>/dev/null || true)
-    
-    if [ -n "$owner" ] && [ "$owner" != "root" ] && [ "$owner" != "UNKNOWN" ] && id "$owner" >/dev/null 2>&1; then
-      mkdir -p "$user_home/.config/kitty"
-      cp /etc/skel/.config/kitty/kitty.conf "$user_home/.config/kitty/kitty.conf"
-      chown -R "$owner:$group" "$user_home/.config/kitty"
-      msg_ok "Synced Kitty QOL config to user home: $user_home"
-    fi
-  fi
-done
-
+# Step 9: Apply Default Niri & DMS Settings for New Users (/etc/skel)
+step_header "9" "Configuring Default Niri & DMS Themes for New Users"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
+  msg_ok "Auto-detected theme archive '${THEME_ARCHIVE}'."
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel
   chmod -R 755 /etc/skel/.config /etc/skel/.local
-  msg_ok "DMS profile unpacked into /etc/skel."
-
-  for user_home in /home/*; do
-    if [ -d "$user_home" ]; then
-      owner=$(stat -c '%U' "$user_home" 2>/dev/null || true)
-      group=$(stat -c '%G' "$user_home" 2>/dev/null || true)
-      
-      if [ -n "$owner" ] && [ "$owner" != "root" ] && [ "$owner" != "UNKNOWN" ] && id "$owner" >/dev/null 2>&1; then
-        msg_info "Deploying pre-configured DMS theme to: $user_home ($owner)"
-        mkdir -p "$user_home/.config" "$user_home/.local/share"
-        tar -xzf "$THEME_ARCHIVE" -C "$user_home" || true
-        chown -R "$owner:$group" "$user_home/.config" "$user_home/.local" || true
-      fi
-    fi
-  done
-  msg_ok "Pre-configured DMS theme profiles applied."
+  msg_ok "Unpacked desktop configurations to '/etc/skel'! Every new AD user will receive this layout on first login."
+else
+  msg_warn "No theme archive found at '${THEME_ARCHIVE}'. Skipping /etc/skel population."
 fi
 
-# --- STEP 11: FINALIZE SERVICES ---
-step_header "11" "Finalizing Installation"
+# Step 10: Permissions & SELinux
+step_header "10" "Setting Permissions & SELinux Policies"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
-setsebool -P allow_polyinstantiation 1 2>/dev/null || true
-setsebool -P nis_enabled 1 2>/dev/null || true
-setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
+chmod -R 777 /var/cache/dms-greeter/ 2>/dev/null || true
 
-# Safely stop SSSD before resetting database
-systemctl stop sssd 2>/dev/null || true
-sss_cache -E 2>/dev/null || true
-rm -f /var/lib/sss/db/* 2>/dev/null || true
-systemctl restart sssd oddjobd greetd 2>/dev/null || true
+setsebool -P allow_polyinstantiation 1 || true
+setsebool -P nis_enabled 1 || true
+setsebool -P use_nfs_home_dirs 1 || true
+msg_ok "Cache permissions and SELinux booleans applied."
 
-printf "%b+--------------------------------------------------------------------+%b\n" "$GREEN" "$NC"
-printf "%b|%b %bSetup complete! Pre-baked DMS, Kitty & pVPN deployment ready.     %b %b|%b\n" "$GREEN" "$NC" "$BOLD" "$NC" "$GREEN" "$NC"
-printf "%b+--------------------------------------------------------------------+%b\n\n" "$GREEN" "$NC"
+# Step 11: Clear Caches & Restart Services
+step_header "11" "Flushing Caches & Restarting Services"
+sss_cache -E || true
+rm -f /var/lib/sss/db/* || true
+
+systemctl restart sssd
+systemctl restart oddjobd || true
+systemctl restart greetd || true
+msg_ok "All services restarted successfully."
+
+# Step 12: Done
+step_header "12" "Setup Complete"
+echo -e "${GREEN}+--------------------------------------------------------------------+${NC}"
+echo -e "${GREEN}|${NC} ${BOLD}Installation successful! System joined to AD with DMS enabled.     ${NC} ${GREEN}|${NC}"
+echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
