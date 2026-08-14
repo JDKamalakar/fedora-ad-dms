@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.5)
-SCRIPT_VERSION="1.0.5"
-
+# Script Versioning (Incremented to 1.0.6)
+SCRIPT_VERSION="1.0.6"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -24,6 +23,8 @@ NC="\033[0m"
 ASSUME_YES=false
 SELECTED_LAB_INDEX=""
 UPDATE_SYSTEM="" # Empty = prompt, true = force update, false = force skip
+CONFIG_URL=""
+REPO_BASE_URL=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -31,6 +32,8 @@ for arg in "$@"; do
     --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
     --update|--update-system) UPDATE_SYSTEM=true ;;
     --no-update|--skip-update) UPDATE_SYSTEM=false ;;
+    --config-url=*) CONFIG_URL="${arg#*=}" ;;
+    --repo-url=*|--repo-base=*) REPO_BASE_URL="${arg#*=}" ;;
   esac
 done
 
@@ -96,21 +99,32 @@ if [ "$EUID_VAL" -ne 0 ]; then
 fi
 
 draw_banner
-SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "$PWD")"
-case "$SCRIPT_DIR" in
-  /dev*) SCRIPT_DIR="$PWD" ;;
-esac
 
-# Comprehensive domain & pVPN config search & load
+# Deep path resolution (Resolves Git root, script dir, symlinks, and PWD)
+REAL_SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+REAL_SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" 2>/dev/null && pwd || echo "$PWD")"
+GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+# Dynamic Domain Configuration Loader
 load_domain_conf() {
   DOMAIN_CONF_FILE=""
 
-  SEARCH_PATHS=(
-    "${SCRIPT_DIR}/domain.conf"
-    "${SCRIPT_DIR}/domain.config"
-    "${SCRIPT_DIR}/dominos.config"
-    "${SCRIPT_DIR}/dominos.conf"
-    "${SCRIPT_DIR}/configs/domain.conf"
+  SEARCH_PATHS=()
+  if [ -n "$GIT_ROOT" ]; then
+    SEARCH_PATHS+=(
+      "${GIT_ROOT}/domain.conf"
+      "${GIT_ROOT}/domain.config"
+      "${GIT_ROOT}/dominos.config"
+      "${GIT_ROOT}/dominos.conf"
+    )
+  fi
+
+  SEARCH_PATHS+=(
+    "${REAL_SCRIPT_DIR}/domain.conf"
+    "${REAL_SCRIPT_DIR}/domain.config"
+    "${REAL_SCRIPT_DIR}/dominos.config"
+    "${REAL_SCRIPT_DIR}/dominos.conf"
+    "${REAL_SCRIPT_DIR}/configs/domain.conf"
     "${PWD}/domain.conf"
     "${PWD}/domain.config"
     "${PWD}/dominos.config"
@@ -121,11 +135,29 @@ load_domain_conf() {
   )
 
   for candidate in "${SEARCH_PATHS[@]}"; do
-    if [ -f "$candidate" ]; then
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
       DOMAIN_CONF_FILE="$candidate"
       break
     fi
   done
+
+  # Remote fetch fallback if explicit URL flags were passed
+  if [ -z "$DOMAIN_CONF_FILE" ] && [ -n "${CONFIG_URL:-}" ]; then
+    msg_info "Downloading domain configuration from: ${CONFIG_URL}"
+    mkdir -p /etc/fedora-ad-dms
+    if curl -fsSL "$CONFIG_URL" -o /etc/fedora-ad-dms/domain.conf 2>/dev/null; then
+      DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
+      msg_ok "Downloaded domain configuration successfully."
+    fi
+  elif [ -z "$DOMAIN_CONF_FILE" ] && [ -n "${REPO_BASE_URL:-}" ]; then
+    remote_target="${REPO_BASE_URL%/}/domain.conf"
+    msg_info "Fetching domain configuration from repository: ${remote_target}"
+    mkdir -p /etc/fedora-ad-dms
+    if curl -fsSL "$remote_target" -o /etc/fedora-ad-dms/domain.conf 2>/dev/null; then
+      DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
+      msg_ok "Downloaded domain configuration successfully."
+    fi
+  fi
 
   if [ -n "$DOMAIN_CONF_FILE" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
     sed -i 's/\r$//' "$DOMAIN_CONF_FILE" 2>/dev/null || true
@@ -133,16 +165,16 @@ load_domain_conf() {
     source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
   fi
 
-  # Fallbacks & strict formatting for Domain & Kerberos
-  DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}" | tr '[:upper:]' '[:lower:]')
+  # Variable formatting without hardcoded fallbacks
+  DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-}}" | tr '[:upper:]' '[:lower:]')
   REALM_NAME=$(echo "${REALM_NAME:-${REALM:-$DOMAIN_NAME}}" | tr '[:lower:]' '[:upper:]')
-  DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-Administrator}}}"
+  DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-}}}"
   AD_DNS_IP="${AD_DNS_IP:-}"
 
-  # Fallbacks for pVPN Configuration
-  PVPN_ENABLE="${PVPN_ENABLE:-yes}"
-  PVPN_ID="${PVPN_ID:-gsfcu@proton.me}"
-  PVPN_PASS="${PVPN_PASS:-Test@1199}"
+  # pVPN Variable defaults (No hardcoded credentials)
+  PVPN_ENABLE="${PVPN_ENABLE:-ask}"
+  PVPN_ID="${PVPN_ID:-}"
+  PVPN_PASS="${PVPN_PASS:-}"
 }
 
 load_domain_conf
@@ -151,7 +183,6 @@ load_domain_conf
 setup_pvpn() {
   step_header "1" "ProtonVPN (pVPN) Integration"
   
-  # Display pVPN Configuration Inspection Summary
   printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
   printf "  %b%b|                  pVPN CONFIGURATION DETECTION SUMMARY              |%b\n" "$BOLD" "$CYAN" "$NC"
   printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
@@ -159,42 +190,62 @@ setup_pvpn() {
   if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
     msg_ok "Config File Source : ${DOMAIN_CONF_FILE}"
   else
-    msg_warn "Config File Source : NOT FOUND (Using default pVPN settings)"
+    msg_warn "Config File Source : NOT FOUND (Will prompt if pVPN is enabled)"
   fi
 
   msg_info "pVPN Enable Mode   : '${PVPN_ENABLE}'"
-  msg_info "pVPN Username / ID : '${PVPN_ID}'"
-  
-  MASKED_PASS=$(echo "$PVPN_PASS" | sed 's/./*/g')
-  msg_info "pVPN Password      : '${MASKED_PASS}' (${#PVPN_PASS} characters)"
+  if [ -n "$PVPN_ID" ]; then
+    msg_info "pVPN Username / ID : '${PVPN_ID}'"
+  else
+    msg_warn "pVPN Username / ID : NOT SPECIFIED"
+  fi
+
+  if [ -n "$PVPN_PASS" ]; then
+    MASKED_PASS=$(echo "$PVPN_PASS" | sed 's/./*/g')
+    msg_info "pVPN Password      : '${MASKED_PASS}' (${#PVPN_PASS} characters)"
+  else
+    msg_warn "pVPN Password      : NOT SPECIFIED"
+  fi
   printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 
   run_pvpn=false
-  PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-yes}" | tr '[:upper:]' '[:lower:]')
+  PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-ask}" | tr '[:upper:]' '[:lower:]')
   
   case "$PVPN_ENABLE_LOWER" in
     "yes") run_pvpn=true ;;
     "no")
-      msg_info "pVPN disabled in configuration. Skipping installation & connection entirely."
+      msg_info "pVPN disabled in configuration. Skipping installation & connection."
       return 0
       ;;
-    "ask")
-      if ask_yes_no "Do you want to install and connect ProtonVPN (pVPN)?" "Y"; then
+    "ask"|*)
+      if ask_yes_no "Do you want to install and connect ProtonVPN (pVPN)?" "N"; then
         run_pvpn=true
       else
         msg_info "pVPN installation skipped by user."
         return 0
       fi
       ;;
-    *)
-      msg_warn "Unknown PVPN_ENABLE setting '${PVPN_ENABLE}'. Skipping pVPN."
-      return 0
-      ;;
   esac
 
   if [ "$run_pvpn" = true ]; then
+    # Prompt for credentials if missing
+    if [ -z "$PVPN_ID" ]; then
+      printf "  %b[INPUT]%b Enter ProtonVPN Username/ID: " "$YELLOW" "$NC"
+      read -r PVPN_ID < /dev/tty || PVPN_ID=""
+    fi
+    if [ -z "$PVPN_PASS" ]; then
+      printf "  %b[INPUT]%b Enter ProtonVPN Password: " "$YELLOW" "$NC"
+      read -s -r PVPN_PASS < /dev/tty || PVPN_PASS=""
+      printf "\n"
+    fi
+
+    if [ -z "$PVPN_ID" ] || [ -z "$PVPN_PASS" ]; then
+      msg_err "ProtonVPN credentials are missing. Cannot connect."
+      exit 1
+    fi
+
     if command -v pvpnctl >/dev/null 2>&1; then
-      msg_ok "pVPN CLI (pvpnctl) is already installed. Skipping installation."
+      msg_ok "pVPN CLI (pvpnctl) is already installed."
     else
       msg_info "Installing system-wide pVPN CLI..."
       curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash
@@ -207,7 +258,7 @@ setup_pvpn() {
 
     msg_info "Checking current pVPN connection status..."
     if pvpnctl status 2>/dev/null | grep -iq "connected"; then
-      msg_ok "pVPN is already connected! Skipping login and connection steps."
+      msg_ok "pVPN is already connected! Skipping connection steps."
       return 0
     fi
 
@@ -335,10 +386,10 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-# Refresh domain config load to catch any file created in earlier steps
+# Reload domain config in case it was created/synced in prior steps
 load_domain_conf
 
-# Pre-execution Domain Inspection Display
+# Pre-execution Inspection Box
 printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
 printf "  %b%b|              DOMAIN CONFIGURATION DETECTION SUMMARY                 |%b\n" "$BOLD" "$CYAN" "$NC"
 printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
@@ -346,13 +397,21 @@ printf "  %b%b+-----------------------------------------------------------------
 if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
   msg_ok "Config File Status  : FOUND (${DOMAIN_CONF_FILE})"
 else
-  msg_warn "Config File Status  : NOT FOUND (Using built-in defaults)"
-  msg_info "Searched Locations  : ${SCRIPT_DIR}/, ${PWD}/, /etc/fedora-ad-dms/"
+  msg_warn "Config File Status  : NOT FOUND"
 fi
 
-msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
-msg_info "Realm Name (KRB)    : '${REALM_NAME}'"
-msg_info "Domain Admin User   : '${DOMAIN_USER}'"
+if [ -n "$DOMAIN_NAME" ]; then
+  msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
+  msg_info "Realm Name (KRB)    : '${REALM_NAME}'"
+else
+  msg_warn "Domain Name (DNS)   : NOT SPECIFIED (Will prompt interactively)"
+fi
+
+if [ -n "$DOMAIN_USER" ]; then
+  msg_info "Domain Admin User   : '${DOMAIN_USER}'"
+else
+  msg_warn "Domain Admin User   : NOT SPECIFIED (Defaulting to 'Administrator')"
+fi
 
 if [ -n "${AD_DNS_IP:-}" ]; then
   msg_ok "AD DNS Server IP    : '${AD_DNS_IP}'"
@@ -361,6 +420,25 @@ else
 fi
 
 printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
+
+# Prompt interactively if DOMAIN_NAME is missing
+if [ -z "$DOMAIN_NAME" ]; then
+  printf "  %b[INPUT]%b Enter Active Directory Domain Name (e.g. ad.example.com): " "$YELLOW" "$NC"
+  read -r DOMAIN_NAME < /dev/tty || DOMAIN_NAME=""
+  DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr '[:upper:]' '[:lower:]')
+  REALM_NAME=$(echo "$DOMAIN_NAME" | tr '[:lower:]' '[:upper:]')
+fi
+
+if [ -z "$DOMAIN_NAME" ]; then
+  msg_err "Domain Name is required to proceed with AD setup."
+  exit 1
+fi
+
+if [ -z "$DOMAIN_USER" ]; then
+  printf "  %b[INPUT]%b Enter Domain Admin User [default: Administrator]: " "$YELLOW" "$NC"
+  read -r DOMAIN_USER < /dev/tty || DOMAIN_USER="Administrator"
+  [ -z "$DOMAIN_USER" ] && DOMAIN_USER="Administrator"
+fi
 
 # Apply Persistent NetworkManager DNS & Search Domain
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
@@ -435,8 +513,16 @@ fi
 
 # --- STEP 7: LAB ACCESS CONTROL RULES ---
 step_header "7" "Configuring Lab Access Control Rules"
-LAB_CONF="${SCRIPT_DIR}/lab.conf"
-if [ -f "$LAB_CONF" ]; then
+
+LAB_CONF=""
+for lab_path in "${GIT_ROOT}/lab.conf" "${REAL_SCRIPT_DIR}/lab.conf" "${PWD}/lab.conf" "/etc/fedora-ad-dms/lab.conf"; do
+  if [ -n "$lab_path" ] && [ -f "$lab_path" ]; then
+    LAB_CONF="$lab_path"
+    break
+  fi
+done
+
+if [ -n "$LAB_CONF" ] && [ -f "$LAB_CONF" ]; then
   sed -i 's/\r$//' "$LAB_CONF" 2>/dev/null || true
   CLEAN_LABS=$(grep -v -E '^\s*#|^\s*$' "$LAB_CONF" 2>/dev/null | xargs -L1 || true)
   
@@ -545,22 +631,39 @@ fi
 # --- STEP 8: SYNC CONFIGS & TIMER SERVICE ---
 step_header "8" "Syncing App Configs & Setting Up Policy Service"
 mkdir -p /etc/fedora-ad-dms
-for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf domain.config dominos.config lab.conf; do
-  if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
-    cp "${SCRIPT_DIR}/${conf_file}" /etc/fedora-ad-dms/
+
+# Explicitly copy loaded domain configuration to system path
+if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
+  cp "$DOMAIN_CONF_FILE" /etc/fedora-ad-dms/domain.conf
+  chmod 600 /etc/fedora-ad-dms/domain.conf
+  msg_ok "Copied ${DOMAIN_CONF_FILE} -> /etc/fedora-ad-dms/domain.conf"
+fi
+
+for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf lab.conf; do
+  found_conf=""
+  for search_dir in "$GIT_ROOT" "$REAL_SCRIPT_DIR" "$PWD"; do
+    if [ -n "$search_dir" ] && [ -f "${search_dir}/${conf_file}" ]; then
+      found_conf="${search_dir}/${conf_file}"
+      break
+    fi
+  done
+
+  if [ -n "$found_conf" ]; then
+    cp "$found_conf" /etc/fedora-ad-dms/
     msg_ok "Copied ${conf_file} -> /etc/fedora-ad-dms/"
   fi
 done
 
-if [ -f /etc/fedora-ad-dms/domain.conf ]; then
-  chmod 600 /etc/fedora-ad-dms/domain.conf 2>/dev/null || true
-fi
-if [ -f /etc/fedora-ad-dms/dominos.config ]; then
-  chmod 600 /etc/fedora-ad-dms/dominos.config 2>/dev/null || true
-fi
+REFRESH_SCRIPT=""
+for search_dir in "$GIT_ROOT" "$REAL_SCRIPT_DIR" "$PWD"; do
+  if [ -n "$search_dir" ] && [ -f "${search_dir}/refresh-app-policies.sh" ]; then
+    REFRESH_SCRIPT="${search_dir}/refresh-app-policies.sh"
+    break
+  fi
+done
 
-if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
-  cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
+if [ -n "$REFRESH_SCRIPT" ]; then
+  cp "$REFRESH_SCRIPT" /usr/local/bin/refresh-app-policies
   chmod 755 /usr/local/bin/refresh-app-policies
 fi
 
@@ -598,12 +701,21 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 
 # --- STEP 9: SYSTEM CONFIGS & PAM ---
 step_header "9" "Applying System Configurations & PAM Rules"
-if [ -d "${SCRIPT_DIR}/configs" ]; then
-  if [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && [ ! -s /etc/sssd/sssd.conf ]; then
-    cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
+
+CONFIGS_DIR=""
+for search_dir in "$GIT_ROOT" "$REAL_SCRIPT_DIR" "$PWD"; do
+  if [ -n "$search_dir" ] && [ -d "${search_dir}/configs" ]; then
+    CONFIGS_DIR="${search_dir}/configs"
+    break
   fi
-  [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
-  [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
+done
+
+if [ -n "$CONFIGS_DIR" ]; then
+  if [ -f "${CONFIGS_DIR}/sssd.conf" ] && [ ! -s /etc/sssd/sssd.conf ]; then
+    cp "${CONFIGS_DIR}/sssd.conf" /etc/sssd/sssd.conf
+  fi
+  [ -f "${CONFIGS_DIR}/krb5.conf" ] && cp "${CONFIGS_DIR}/krb5.conf" /etc/krb5.conf
+  [ -f "${CONFIGS_DIR}/greetd" ] && cp "${CONFIGS_DIR}/greetd" /etc/pam.d/greetd
 fi
 
 if [ -f /etc/sssd/sssd.conf ]; then
@@ -655,9 +767,15 @@ for user_home in /home/*; do
   fi
 done
 
-THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
+THEME_ARCHIVE=""
+for search_dir in "$GIT_ROOT" "$REAL_SCRIPT_DIR" "$PWD"; do
+  if [ -n "$search_dir" ] && [ -f "${search_dir}/niri-dms-config.tar.gz" ]; then
+    THEME_ARCHIVE="${search_dir}/niri-dms-config.tar.gz"
+    break
+  fi
+done
 
-if [ -f "$THEME_ARCHIVE" ]; then
+if [ -n "$THEME_ARCHIVE" ] && [ -f "$THEME_ARCHIVE" ]; then
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel
   chmod -R 755 /etc/skel/.config /etc/skel/.local
