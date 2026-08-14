@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.7)
-SCRIPT_VERSION="1.0.7"
+# Script Versioning (Incremented to 1.0.8)
+SCRIPT_VERSION="1.0.8"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -261,36 +261,13 @@ setup_pvpn() {
 
     msg_info "Checking current pVPN connection status..."
     if pvpnctl status 2>/dev/null | grep -iq "connected"; then
-      msg_ok "pVPN is already connected! Skipping connection steps."
-      return 0
-    fi
-
-    msg_info "Logging into pVPN..."
-    pvpnctl login "$PVPN_ID" "$PVPN_PASS"
-
-    msg_info "Connecting pVPN..."
-    pvpnctl connect
-
-    msg_info "Verifying pVPN connection status..."
-    attempts=0
-    max_attempts=10
-    is_connected=false
-
-    while [ "$attempts" -lt "$max_attempts" ]; do
-      if pvpnctl status 2>/dev/null | grep -iq "connected"; then
-        is_connected=true
-        break
-      fi
-      attempts=$((attempts + 1))
-      msg_info "Waiting for active pVPN connection... ($attempts/$max_attempts)"
-      sleep 3
-    done
-
-    if [ "$is_connected" = true ]; then
-      msg_ok "pVPN is connected! Proceeding with setup..."
+      msg_ok "pVPN is already connected! Pre-fetching package updates..."
     else
-      msg_err "pVPN failed to connect after multiple checks. Cannot proceed."
-      exit 1
+      msg_info "Logging into pVPN..."
+      pvpnctl login "$PVPN_ID" "$PVPN_PASS"
+
+      msg_info "Connecting pVPN..."
+      pvpnctl connect
     fi
   fi
 }
@@ -389,7 +366,16 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-# Reload domain config in case it was modified in previous steps
+# 🛑 CRITICAL FIX: Disconnect pVPN to prevent VPN DNS hijacking of local AD queries
+if command -v pvpnctl >/dev/null 2>&1; then
+  if pvpnctl status 2>/dev/null | grep -iq "connected"; then
+    msg_warn "pVPN is currently active. Disconnecting pVPN to allow direct local Active Directory DNS queries..."
+    pvpnctl disconnect 2>/dev/null || true
+    sleep 2
+  fi
+fi
+
+# Reload domain config
 load_domain_conf
 
 # Inspection Display Box
@@ -428,7 +414,7 @@ printf "  %b+-------------------------------------------------------------------
 
 # Prompt interactively if DOMAIN_NAME is missing
 if [ -z "$DOMAIN_NAME" ]; then
-  printf "  %b[INPUT]%b Enter Active Directory Domain Name (e.g. ad.example.com): " "$YELLOW" "$NC"
+  printf "  %b[INPUT]%b Enter Active Directory Domain Name (e.g. gsfcu.local): " "$YELLOW" "$NC"
   read -r DOMAIN_NAME < /dev/tty || DOMAIN_NAME=""
   DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr '[:upper:]' '[:lower:]')
   REALM_NAME=$(echo "$DOMAIN_NAME" | tr '[:lower:]' '[:upper:]')
@@ -445,7 +431,7 @@ if [ -z "$DOMAIN_USER" ]; then
   [ -z "$DOMAIN_USER" ] && DOMAIN_USER="Administrator"
 fi
 
-# Apply Persistent NetworkManager DNS & Search Domain
+# Apply Persistent NetworkManager DNS & Search Domain directly to LAN
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
@@ -454,14 +440,14 @@ if [ -n "${AD_DNS_IP:-}" ]; then
   nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes 2>/dev/null || true
   nmcli connection up "$TARGET_CONN" 2>/dev/null || true
   
-  # Write directly to /etc/resolv.conf for instant glibc resolution
+  # Override /etc/resolv.conf for instant glibc local resolution
   cat <<EOF > /etc/resolv.conf
 nameserver ${AD_DNS_IP}
 search ${DOMAIN_NAME}
 EOF
 fi
 
-# Flush DNS resolution caches to ensure realmd sees the DC
+# Flush DNS resolution caches
 systemctl restart NetworkManager 2>/dev/null || true
 command -v resolvectl >/dev/null 2>&1 && resolvectl flush-caches 2>/dev/null || true
 sleep 2
@@ -515,7 +501,9 @@ else
           sed -i 's/use_fully_qualified_names = True/use_fully_qualified_names = False/' /etc/sssd/sssd.conf 2>/dev/null || true
           sed -i 's/fallback_homedir = .*/fallback_homedir = \/home\/%u/' /etc/sssd/sssd.conf 2>/dev/null || true
           
-          if ! grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
+          if grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
+            sed -i "s/default_domain_suffix = .*/default_domain_suffix = ${DOMAIN_NAME}/" /etc/sssd/sssd.conf 2>/dev/null || true
+          else
             sed -i "/\[sssd\]/a default_domain_suffix = ${DOMAIN_NAME}" /etc/sssd/sssd.conf 2>/dev/null || true
           fi
         else
