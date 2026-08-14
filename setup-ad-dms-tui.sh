@@ -11,11 +11,28 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 1. Locate and Parse `lab.config`
+# 1. Locate or Download `lab.config`
 # ------------------------------------------------------------------------------
 CONFIG_FILE="/etc/lab.config"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "./lab.config" ]; then
-    CONFIG_FILE="./lab.config"
+CONFIG_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/lab.config"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    if [ -f "./lab.config" ]; then
+        CONFIG_FILE="./lab.config"
+    else
+        echo "📥 'lab.config' not found locally or at /etc/lab.config."
+        echo "   Fetching latest 'lab.config' from GitHub repository..."
+        if command -v curl &>/dev/null; then
+            curl -fsSL "$CONFIG_URL" -o /etc/lab.config
+        elif command -v wget &>/dev/null; then
+            wget -qO /etc/lab.config "$CONFIG_URL"
+        else
+            echo "❌ Error: Neither curl nor wget is available to download lab.config." >&2
+            exit 1
+        fi
+        CONFIG_FILE="/etc/lab.config"
+        echo "✅ Saved configuration to /etc/lab.config"
+    fi
 fi
 
 RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
@@ -41,14 +58,14 @@ if [ -f "$CONFIG_FILE" ]; then
         ALL_NAMES+=("$lab_name")
         ALL_PATTERNS+=("$pattern")
 
-        # Hostname pattern prefix match (e.g., GSFCURDLAB002 matches GSFCURDLAB)
+        # Hostname pattern prefix match (e.g., GSFCUOSLAB172 matches GSFCUOSLAB)
         if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
             MATCHED_LAB_NAME="$lab_name"
             MATCHED_AD_GROUP="$ad_group"
         fi
     done < "$CONFIG_FILE"
 else
-    echo "❌ Error: Configuration file 'lab.config' not found at /etc/lab.config or locally!" >&2
+    echo "❌ Error: Could not load configuration file!" >&2
     exit 1
 fi
 
