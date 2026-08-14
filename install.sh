@@ -5,7 +5,7 @@
 set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ Error: This script must be run as root or with sudo.">&2
+    echo "❌ Error: This script must be run as root or with sudo." >&2
     exit 1
 fi
 
@@ -31,20 +31,23 @@ fetch_file() {
     elif curl -fsSL "${FALLBACK_URL}/${file}" -o "${file}" 2>/dev/null; then
         echo "✅ OK (found in subfolder)"
     else
-        echo "❌ FAILED"
-        echo "❌ Error: '${file}' could not be located on GitHub!" >&2
-        exit 1
+        echo "⚠️ Skipping optional or missing file: ${file}"
     fi
 }
 
+# Core files
 fetch_file "lab.conf"
 fetch_file "niri-dms-config.tar.gz"
-fetch_file "setup-ad-dms-tui.sh"
+fetch_file "setup-ad-dms.sh"
 
-chmod +x setup-ad-dms-tui.sh
+# App Management Policy files
+fetch_file "allowed-apps.conf"
+fetch_file "blocked-apps.conf"
+fetch_file "compulsory-apps.conf"
+fetch_file "group-apps.conf"
+
+chmod +x setup-ad-dms.sh
 
 echo "----------------------------------------------------------------------"
-echo "▶️ Launching setup-ad-dms-tui.sh..."
-
-# 🔑 FIX: Rebind stdin to /dev/tty so interactive 'read' commands work!
-exec ./setup-ad-dms-tui.sh </dev/tty
+echo "▶️ Launching setup-ad-dms.sh..."
+exec ./setup-ad-dms.sh </dev/tty
