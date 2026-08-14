@@ -4,8 +4,11 @@
 # ==============================================================================
 set -euo pipefail
 
+# 🔑 FIX: Force terminal stdin connection for piped executions
+exec </dev/tty
+
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ Error: This script must be run as root or with sudo." >&2
+    echo "❌ Error: This script must be run as root or with sudo.">&2
     exit 1
 fi
 
@@ -99,7 +102,7 @@ simple_deny_groups = ${DENY_GROUPS_STR}"
     systemctl reset-failed sssd || true
 
     echo -e "${YELLOW}📝 Writing /etc/sssd/sssd.conf...${NC}"
-    cat <<EOF > /etc/sssd/sssd.conf
+    cat <<EOF> /etc/sssd/sssd.conf
 [sssd]
 services = nss, pam
 domains = gsfcu.local
@@ -159,13 +162,13 @@ auto_setup() {
     fi
     echo
 
-    read -rp "Run full deployment (SSSD Access + Niri Config)? [Y/n]: " confirm
+    read -rp "Run full deployment (SSSD Access + Niri Config)? [Y/n]: " confirm || true
     confirm=${confirm:-Y}
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         apply_sssd_deny_rules "$MATCHED_GROUP"
         deploy_niri_config
     fi
-    read -rp "Press [Enter] to return to menu..."
+    read -rp "Press [Enter] to return to menu..." || true
 }
 
 manual_lab_select() {
@@ -190,14 +193,14 @@ manual_lab_select() {
     echo -e "  ${CYAN}[ 0]${NC} Cancel"
     echo
 
-    read -rp "Enter choice [0-${#LAB_NAMES[@]}]: " choice
+    read -rp "Enter choice [0-${#LAB_NAMES[@]}]: " choice || true
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le "${#LAB_NAMES[@]}" ]; then
         idx=$((choice-1))
         echo -e "\nApplying rules for ${GREEN}${LAB_NAMES[$idx]}${NC} (${AD_GROUPS[$idx]})..."
         apply_sssd_deny_rules "${AD_GROUPS[$idx]}"
         deploy_niri_config
     fi
-    read -rp "Press [Enter] to return to menu..."
+    read -rp "Press [Enter] to return to menu..." || true
 }
 
 diagnostics() {
@@ -223,7 +226,7 @@ diagnostics() {
     grep -E "access_provider|simple_deny_groups" /etc/sssd/sssd.conf || echo "None set"
 
     echo
-    read -rp "Press [Enter] to return to menu..."
+    read -rp "Press [Enter] to return to menu..." || true
 }
 
 # --- Main Loop ---
@@ -236,12 +239,12 @@ while true; do
     echo -e "  ${CYAN}[4]${NC} 🧪 Test AD User Lookup & SSSD Status"
     echo -e "  ${CYAN}[5]${NC} 🚪 Exit"
     echo
-    read -rp "Select an option [1-5]: " opt
+    read -rp "Select an option [1-5]: " opt || true
 
     case "$opt" in
         1) auto_setup ;;
         2) manual_lab_select ;;
-        3) draw_header; deploy_niri_config; read -rp "Press [Enter] to return..." ;;
+        3) draw_header; deploy_niri_config; read -rp "Press [Enter] to return..." || true ;;
         4) diagnostics ;;
         5) clear; echo "👋 Exiting."; exit 0 ;;
         *) echo -e "${RED}Invalid selection!${NC}"; sleep 1 ;;
