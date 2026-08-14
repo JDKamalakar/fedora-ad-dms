@@ -3,6 +3,7 @@
 # Script Versioning (Incremented to 1.0.5)
 SCRIPT_VERSION="1.0.5"
 
+
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
