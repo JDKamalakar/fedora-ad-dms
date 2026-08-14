@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.3)
-SCRIPT_VERSION="1.0.3"
+# Script Versioning (Incremented to 1.0.4)
+SCRIPT_VERSION="1.0.4"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -124,7 +124,6 @@ load_domain_conf() {
   fi
 
   if [ -n "$DOMAIN_CONF_FILE" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
-    msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
     sed -i 's/\r$//' "$DOMAIN_CONF_FILE" 2>/dev/null || true
     # shellcheck disable=SC1090
     source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
@@ -309,10 +308,31 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
+# Ensure domain configuration is loaded
 load_domain_conf
 
-msg_info "Domain Admin User: '${DOMAIN_USER}'"
-msg_info "Domain Target: '${DOMAIN_NAME}' (Realm: '${REALM_NAME}')"
+# Pre-execution Inspection Display
+printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+printf "  %b%b|              DOMAIN CONFIGURATION DETECTION SUMMARY                 |%b\n" "$BOLD" "$CYAN" "$NC"
+printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+
+if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
+  msg_ok "Config File Status  : FOUND (${DOMAIN_CONF_FILE})"
+else
+  msg_warn "Config File Status  : NOT FOUND (Using built-in defaults)"
+fi
+
+msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
+msg_info "Realm Name (KRB)    : '${REALM_NAME}'"
+msg_info "Domain Admin User   : '${DOMAIN_USER}'"
+
+if [ -n "${AD_DNS_IP:-}" ]; then
+  msg_ok "AD DNS Server IP    : '${AD_DNS_IP}'"
+else
+  msg_warn "AD DNS Server IP    : NOT SPECIFIED (Relying on existing network DNS)"
+fi
+
+printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
 
 # Apply Persistent NetworkManager DNS & Search Domain
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -E 'ethernet|802-3-ethernet|wireless|lan' | head -n1 | cut -d: -f1 || true)
