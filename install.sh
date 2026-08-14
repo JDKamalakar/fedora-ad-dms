@@ -9,6 +9,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+
 PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 FALLBACK_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/fedora-ad-dms"
 WORK_DIR="/tmp/fedora-ad-dms"
