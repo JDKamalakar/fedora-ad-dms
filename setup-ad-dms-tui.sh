@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Increment by 0.0.1 on modifications)
-SCRIPT_VERSION="1.0.1"
+# Script Versioning (Incremented to 1.0.2)
+SCRIPT_VERSION="1.0.2"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -105,50 +105,36 @@ case "$SCRIPT_DIR" in
   /dev*) SCRIPT_DIR="$PWD" ;;
 esac
 
-# Robust configuration loader supporting dominos.config & domain.conf
+# Load domain configuration accurately using working reference logic
 load_domain_conf() {
-  local candidates=(
-    "${SCRIPT_DIR}/dominos.config" "${SCRIPT_DIR}/dominos.conf"
-    "${SCRIPT_DIR}/domain.conf" "${SCRIPT_DIR}/domain.config"
-    "./dominos.config" "./dominos.conf" "./domain.conf" "./domain.config"
-    "/etc/fedora-ad-dms/dominos.config" "/etc/fedora-ad-dms/domain.conf"
-  )
+  DOMAIN_CONF_FILE=""
 
-  local conf_file=""
-  for file in "${candidates[@]}"; do
-    if [ -f "$file" ]; then
-      conf_file="$file"
-      break
-    fi
-  done
-
-  if [ -n "$conf_file" ] && [ -f "$conf_file" ]; then
-    sed -i 's/\r$//' "$conf_file" 2>/dev/null || true
-    . "$conf_file" 2>/dev/null || true
-
-    get_conf_val() {
-      local keys="$1"
-      grep -i -E "^\s*(${keys})\s*=" "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true
-    }
-
-    # Extract Domain Admin / User
-    DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-${DOMAIN_ADMIN_USER:-${ADMIN_NAME:-${ADMIN:-}}}}}}"
-    if [ -z "${DOMAIN_USER:-}" ]; then
-      DOMAIN_USER=$(get_conf_val "DOMAIN_USER|DOMAIN_ADMIN|ADMIN_USER|DOMAIN_ADMIN_USER|ADMIN_NAME|ADMIN")
-    fi
-
-    # Extract Domain / Realm Name
-    DOMAIN_NAME="${DOMAIN_NAME:-${REALM:-${DOMAIN:-${AD_DOMAIN:-}}}}"
-    if [ -z "${DOMAIN_NAME:-}" ]; then
-      DOMAIN_NAME=$(get_conf_val "DOMAIN_NAME|DOMAIN|REALM|AD_DOMAIN")
-    fi
-
-    # Extract AD DNS IP
-    AD_DNS_IP="${AD_DNS_IP:-${DNS_IP:-${AD_DNS:-${DNS:-${DNS_SERVER:-${NAMESERVER:-}}}}}}"
-    if [ -z "${AD_DNS_IP:-}" ]; then
-      AD_DNS_IP=$(get_conf_val "AD_DNS_IP|AD_DNS|DNS_IP|DNS|DNS_SERVER|NAMESERVER")
-    fi
+  if [ -f "${SCRIPT_DIR}/dominos.config" ]; then
+    DOMAIN_CONF_FILE="${SCRIPT_DIR}/dominos.config"
+  elif [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+    DOMAIN_CONF_FILE="${SCRIPT_DIR}/domain.conf"
+  elif [ -f "${SCRIPT_DIR}/configs/domain.conf" ]; then
+    DOMAIN_CONF_FILE="${SCRIPT_DIR}/configs/domain.conf"
+  elif [ -f "./dominos.config" ]; then
+    DOMAIN_CONF_FILE="./dominos.config"
+  elif [ -f "./domain.conf" ]; then
+    DOMAIN_CONF_FILE="./domain.conf"
+  elif [ -f "/etc/fedora-ad-dms/domain.conf" ]; then
+    DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
   fi
+
+  if [ -n "$DOMAIN_CONF_FILE" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
+    msg_ok "Found domain configuration file at '${DOMAIN_CONF_FILE}'."
+    sed -i 's/\r$//' "$DOMAIN_CONF_FILE" 2>/dev/null || true
+    # shellcheck disable=SC1090
+    source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
+  fi
+
+  # Variable fallbacks/mapping matching standard AD conventions
+  DOMAIN_NAME="${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}"
+  REALM_NAME="${REALM_NAME:-${REALM:-$DOMAIN_NAME}}"
+  DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-Administrator}}}"
+  AD_DNS_IP="${AD_DNS_IP:-}"
 }
 
 load_domain_conf
@@ -325,74 +311,51 @@ step_header "6" "Active Directory Configuration & Realm Join"
 
 load_domain_conf
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d " \"\r'" | xargs || true)
-DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d " \"\r'" | xargs || true)
-DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
-AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d " \"\r'" | xargs || true)
+msg_info "Domain Admin User: '${DOMAIN_USER}'"
+msg_info "Domain Realm Target: '${DOMAIN_NAME}'"
 
-# --- APPLY AD DNS PRIOR TO DOMAIN USER & PASSWORD PROMPTS ---
-if [ -n "$AD_DNS_IP_CLEAN" ]; then
-  msg_info "Applying AD DNS ($AD_DNS_IP_CLEAN) to Wired Connection & system resolver..."
+# Apply Persistent NetworkManager DNS & Search Domain (using exact working reference logic)
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
+TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
-  # Explicitly modify "Wired connection 1" profile if present
-  if nmcli connection show "Wired connection 1" >/dev/null 2>&1; then
-    nmcli connection modify "Wired connection 1" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
-    nmcli connection up "Wired connection 1" 2>/dev/null || true
-    msg_ok "Configured NetworkManager profile 'Wired connection 1' with DNS: $AD_DNS_IP_CLEAN"
-  fi
-
-  # Modify any active Ethernet interfaces
-  mapfile -t ACTIVE_ETH < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep -vE 'pvpn|vpn|tun|tap' | cut -d: -f1 || true)
-  for conn in "${ACTIVE_ETH[@]}"; do
-    if [ -n "$conn" ] && [ "$conn" != "Wired connection 1" ]; then
-      nmcli connection modify "$conn" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
-      nmcli connection up "$conn" 2>/dev/null || true
-      msg_ok "Configured NetworkManager profile '$conn' with DNS: $AD_DNS_IP_CLEAN"
-    fi
-  done
-
-  # Force immediate resolver update in /etc/resolv.conf for current process execution
-  RESOLV_TMP=$(mktemp)
-  {
-    printf "nameserver %s\nsearch %s\n" "$AD_DNS_IP_CLEAN" "$DOMAIN_NAME_CLEAN"
-    grep -v -E "^\s*nameserver\s+${AD_DNS_IP_CLEAN}|^\s*search\s+${DOMAIN_NAME_CLEAN}" /etc/resolv.conf 2>/dev/null || true
-  } > "$RESOLV_TMP"
-  cat "$RESOLV_TMP" > /etc/resolv.conf 2>/dev/null || true
-  rm -f "$RESOLV_TMP"
-
+if [ -n "${AD_DNS_IP:-}" ]; then
+  msg_info "Applying AD DNS (${AD_DNS_IP}) & Search Domain (${DOMAIN_NAME}) to '${TARGET_CONN}'..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$DOMAIN_NAME" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
   systemctl restart NetworkManager 2>/dev/null || true
-  if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    resolvectl flush-caches 2>/dev/null || true
-    systemctl restart systemd-resolved 2>/dev/null || true
-  fi
-  sleep 2
-  msg_ok "AD DNS applied successfully prior to domain join."
+
+  # Direct write to /etc/resolv.conf for immediate resolution
+  cat <<EOF > /etc/resolv.conf
+nameserver ${AD_DNS_IP}
+search ${DOMAIN_NAME}
+EOF
+  msg_ok "NetworkManager DNS and Search Domain configured."
 fi
 
-msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
-msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
-
+# Time Synchronization (Mandatory for Active Directory Kerberos)
+msg_info "Synchronizing system clock with network time..."
 systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 
 # Check if machine is already joined to domain
-if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME_CLEAN"; then
-  msg_ok "System is already joined to realm '$DOMAIN_NAME_CLEAN'. Skipping domain join."
+if realm list 2>/dev/null | grep -iq "$DOMAIN_NAME"; then
+  msg_ok "System is already joined to realm '$DOMAIN_NAME'. Skipping domain join."
 else
   while true; do
     if [ "$ASSUME_YES" = true ]; then
-      DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
+      DOMAIN_PASS_EXEC="${DOMAIN_PASS:-}"
     else
-      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER_CLEAN" "$DOMAIN_NAME_CLEAN"
+      printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER" "$DOMAIN_NAME"
       read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
       printf "\n"
     fi
 
-    if echo "$DOMAIN_PASS_EXEC" | realm join --user="${DOMAIN_USER_CLEAN}" "${DOMAIN_NAME_CLEAN}" --verbose; then
-      msg_ok "Joined Active Directory realm successfully."
+    msg_info "Enrolling system into Active Directory realm '${REALM_NAME:-$DOMAIN_NAME}'..."
+    if echo "$DOMAIN_PASS_EXEC" | realm join --user="$DOMAIN_USER" "$DOMAIN_NAME" --verbose; then
+      msg_ok "Successfully joined Active Directory realm '${DOMAIN_NAME}'!"
       break
     else
-      msg_warn "Could not join domain."
+      msg_warn "Could not join Active Directory domain."
       
       if [ "$ASSUME_YES" = true ]; then
         msg_warn "Auto-continuing in Offline mode due to -y flag..."
