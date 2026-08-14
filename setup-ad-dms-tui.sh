@@ -11,12 +11,12 @@ fi
 
 # Locate current script directory and local files
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_CONFIG="${SCRIPT_DIR}/lab.config"
+LOCAL_CONFIG="${SCRIPT_DIR}/lab.conf"
 LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 # Fallbacks if run standalone
-if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.config" ]; then
-    LOCAL_CONFIG="/etc/lab.config"
+if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.conf" ]; then
+    LOCAL_CONFIG="/etc/lab.conf"
 fi
 
 # Terminal ANSI Colors
@@ -37,11 +37,11 @@ draw_header() {
 
 ensure_files() {
     if [ ! -f "$LOCAL_CONFIG" ]; then
-        echo -e "${RED}❌ Error: 'lab.config' missing in ${SCRIPT_DIR}${NC}" >&2
+        echo -e "${RED}❌ Error: 'lab.conf' missing in ${SCRIPT_DIR}${NC}" >&2
         exit 1
     fi
-    # Also copy lab.config to /etc/ for system reference
-    cp "$LOCAL_CONFIG" /etc/lab.config
+    # Also copy lab.conf to /etc/ for system reference
+    cp "$LOCAL_CONFIG" /etc/lab.conf
 }
 
 deploy_niri_config() {
@@ -159,7 +159,7 @@ auto_setup() {
         echo -e "📌 ${BOLD}Detected Lab:${NC} $MATCHED_LAB"
         echo -e "📌 ${BOLD}Allowed Group:${NC} $MATCHED_GROUP"
     else
-        echo -e "${YELLOW}⚠️ No match found for this hostname pattern in lab.config.${NC}"
+        echo -e "${YELLOW}⚠️ No match found for this hostname pattern in lab.conf.${NC}"
     fi
     echo
 
