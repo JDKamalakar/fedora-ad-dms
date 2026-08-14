@@ -9,7 +9,8 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-REPO_BASE="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
+# Point directly to the nested folder path in the repo
+REPO_BASE="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/fedora-ad-dms"
 WORK_DIR="/tmp/fedora-ad-dms"
 
 echo "🚀 Starting AD DMS Installation Bootstrapper..."
@@ -20,14 +21,25 @@ mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
 echo "📥 Downloading repository files from GitHub..."
-curl -fsSL "${REPO_BASE}/lab.config" -o lab.config
-curl -fsSL "${REPO_BASE}/niri-dms-config.tar.gz" -o niri-dms-config.tar.gz
-curl -fsSL "${REPO_BASE}/setup-ad-dms-tui.sh" -o setup-ad-dms-tui.sh
+
+fetch_file() {
+    local file="$1"
+    echo -n "   • Fetching ${file}... "
+    if curl -fsSL "${REPO_BASE}/${file}" -o "${file}"; then
+        echo "✅ OK"
+    else
+        echo "❌ FAILED (404 Not Found)"
+        echo "❌ Error: Could not download '${file}' from ${REPO_BASE}/${file}" >&2
+        exit 1
+    fi
+}
+
+fetch_file "lab.config"
+fetch_file "niri-dms-config.tar.gz"
+fetch_file "setup-ad-dms-tui.sh"
 
 chmod +x setup-ad-dms-tui.sh
 
-echo "✅ Download complete!"
-echo "▶️ Launching setup-ad-dms-tui.sh..."
 echo "----------------------------------------------------------------------"
-
+echo "▶️ Launching setup-ad-dms-tui.sh..."
 exec ./setup-ad-dms-tui.sh
