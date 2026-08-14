@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Fedora AD DMS Automated Setup & Access Enforcer (setup-ad-dms-tui.sh)
-# Version: 2.3.0 (Safe Shell Hook + Sudoers Integration)
+# Version: 3.0.0 (Bulletproof Daemon Architecture - Zero Shell Hooks)
 # ==============================================================================
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="3.0.0"
 
 if [ "$EUID" -ne 0 ]; then
     echo "❌ Error: This script must be run as root or with sudo." >&2
@@ -30,9 +30,14 @@ echo -e "${CYAN}================================================================
 echo
 
 # ------------------------------------------------------------------------------
+# Cleanup Legacy/Unsafe Profile Hooks (Safety Measure)
+# ------------------------------------------------------------------------------
+rm -f /etc/profile.d/ad-dms-login-refresh.sh /etc/sudoers.d/ad-dms
+
+# ------------------------------------------------------------------------------
 # Step 1: Configure Fedora PAM via authselect
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}🔒 Configuring Fedora Authselect...${NC}"
+echo -e "${YELLOW}🔒 Setting up Authselect (SSSD + Auto Home Directory Creation)...${NC}"
 if command -v authselect &>/dev/null; then
     authselect select sssd with-mkhomedir --force || true
     systemctl enable --now oddjobd.service 2>/dev/null || true
@@ -40,7 +45,7 @@ if command -v authselect &>/dev/null; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 2: Directory Setup & Configuration Copy
+# Step 2: Directory Setup & Policy File Copy
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}📁 Preparing configuration directories at ${CONF_DIR}...${NC}"
 mkdir -p "$CONF_DIR"
@@ -56,12 +61,12 @@ for app_conf in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-a
         echo -e "   • Installed ${CYAN}${app_conf}${NC}"
     else
         touch "${CONF_DIR}/${app_conf}"
-        echo -e "   • Created template for ${CYAN}${app_conf}${NC}"
+        echo -e "   • Created empty template for ${CYAN}${app_conf}${NC}"
     fi
 done
 
 # ------------------------------------------------------------------------------
-# Step 3: SSSD Active Directory Blacklisting Rules
+# Step 3: SSSD Active Directory Access Rules (Blacklist Strategy)
 # ------------------------------------------------------------------------------
 RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
 MATCHED_LAB=""
@@ -106,9 +111,9 @@ simple_deny_users = ${DENY_USERS_STR}"
 fi
 
 echo -e "\n📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
-echo -e "📌 ${BOLD}Current Lab:${NC} ${MATCHED_LAB:-General Machine}"
+echo -e "📌 ${BOLD}Current Machine Lab:${NC} ${MATCHED_LAB:-General Machine}"
 
-echo -e "${YELLOW}⏹️ Reconfiguring SSSD access rules...${NC}"
+echo -e "${YELLOW}⏹️ Writing SSSD configuration and flushing cache...${NC}"
 systemctl stop sssd || true
 systemctl reset-failed sssd || true
 
@@ -137,13 +142,13 @@ restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
 
 rm -rf /var/lib/sss/db/*
 systemctl start sssd
-echo -e "${GREEN}✅ SSSD access rules applied!${NC}"
+echo -e "${GREEN}✅ SSSD rules applied cleanly!${NC}"
 
 # ------------------------------------------------------------------------------
-# Step 4: Deploy Niri DMS Desktop Configuration
+# Step 4: Deploy Niri DMS Configs to /etc/skel & Existing Homes
 # ------------------------------------------------------------------------------
 if [ -f "$LOCAL_TAR" ]; then
-    echo -e "\n${YELLOW}📦 Deploying Niri DMS configurations...${NC}"
+    echo -e "\n${YELLOW}📦 Deploying Niri DMS configs to /etc/skel...${NC}"
     TMP_DIR="/tmp/niri-dms-config-extracted"
     rm -rf "$TMP_DIR"
     mkdir -p "$TMP_DIR"
@@ -168,7 +173,7 @@ fi
 # ------------------------------------------------------------------------------
 # Step 5: Application Enforcement Engine Script
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}⚙️ Building Application Enforcement Engine...${NC}"
+echo -e "\n${YELLOW}⚙️ Installing Application Enforcement Engine...${NC}"
 
 cat <<'EOF' > /usr/local/bin/ad-dms-app-enforcer
 #!/usr/bin/env bash
@@ -176,6 +181,7 @@ set -euo pipefail
 
 CONF_DIR="/etc/ad-dms"
 
+# Install compulsory applications
 if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
@@ -187,6 +193,7 @@ if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
     done < "$CONF_DIR/compulsory-apps.conf"
 fi
 
+# Kill blocked applications
 if [ -f "$CONF_DIR/blocked-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
@@ -202,19 +209,9 @@ EOF
 chmod +x /usr/local/bin/ad-dms-app-enforcer
 
 # ------------------------------------------------------------------------------
-# Step 6: Configure Passwordless Sudoers Entry for the Enforcer
+# Step 6: Pure Systemd Refresh Service & Timer (Runs as Root Background Service)
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}🔑 Creating Sudoers Policy (/etc/sudoers.d/ad-dms)...${NC}"
-cat <<EOF > /etc/sudoers.d/ad-dms
-# Allow all users to invoke the app enforcer silently
-ALL ALL=(ALL) NOPASSWD: /usr/local/bin/ad-dms-app-enforcer
-EOF
-chmod 0440 /etc/sudoers.d/ad-dms
-
-# ------------------------------------------------------------------------------
-# Step 7: 10-Minute Systemd Refresh Timer
-# ------------------------------------------------------------------------------
-echo -e "${YELLOW}⏰ Creating 10-Minute Systemd Timer...${NC}"
+echo -e "${YELLOW}⏰ Creating Background Systemd Timer Daemon...${NC}"
 
 cat <<EOF > /etc/systemd/system/ad-dms-refresh.service
 [Unit]
@@ -228,10 +225,10 @@ EOF
 
 cat <<EOF > /etc/systemd/system/ad-dms-refresh.timer
 [Unit]
-Description=Run AD DMS App Enforcer every 10 minutes
+Description=Run AD DMS App Enforcer at Boot and Every 10 Minutes
 
 [Timer]
-OnBootSec=1min
+OnBootSec=10s
 OnUnitActiveSec=10min
 Persistent=true
 
@@ -241,23 +238,9 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now ad-dms-refresh.timer
+echo -e "${GREEN}✅ Systemd timer activated (Runs on boot + every 10 mins)!${NC}"
 
-# ------------------------------------------------------------------------------
-# Step 8: Safe Login Hook (Never Prompt Password & Never Crash Shell)
-# ------------------------------------------------------------------------------
-echo -e "${YELLOW}🛡️ Setting up Non-Blocking Terminal Login Hook...${NC}"
-
-cat <<'EOF' > /etc/profile.d/ad-dms-login-refresh.sh
-# AD DMS Silent Login Refresh Hook
-if [ -f /usr/local/bin/ad-dms-app-enforcer ]; then
-    # Run silently in background with -n (non-interactive, no password prompt)
-    (sudo -n /usr/local/bin/ad-dms-app-enforcer &>/dev/null &) 2>/dev/null || true
-fi
-EOF
-
-chmod +x /etc/profile.d/ad-dms-login-refresh.sh
-
-# Run enforcer once immediately
+# Execute once now to apply immediately
 /usr/local/bin/ad-dms-app-enforcer || true
 
 echo -e "\n${GREEN}======================================================================${NC}"
