@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora AD DMS Full Setup & Enforcement Engine (setup-ad-dms.sh)
+# Fedora AD DMS Full Setup & Enforcement Engine (setup-ad-dms-tui.sh)
 # ==============================================================================
 set -euo pipefail
 
@@ -30,7 +30,7 @@ echo -e "${CYAN}================================================================
 echo
 
 # ------------------------------------------------------------------------------
-# Step 1: Directory Setup & Configuration Copy
+# Step 1: Directory Setup & Configuration Deployment
 # ------------------------------------------------------------------------------
 echo -e "${YELLOW}📁 Preparing configuration directories at ${CONF_DIR}...${NC}"
 mkdir -p "$CONF_DIR"
