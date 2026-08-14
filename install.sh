@@ -40,7 +40,7 @@ fetch_file() {
     fi
 }
 
-fetch_file "lab.config"
+fetch_file "lab.conf"
 fetch_file "niri-dms-config.tar.gz"
 fetch_file "setup-ad-dms-tui.sh"
 
