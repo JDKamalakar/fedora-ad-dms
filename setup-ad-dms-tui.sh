@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Interactive Pure Shell TUI for AD & Niri DMS Management (setup-ad-dms-tui.sh)
+# Active Directory & Niri DMS Interactive TUI (setup-ad-dms-tui.sh)
 # ==============================================================================
 set -euo pipefail
 
@@ -9,9 +9,17 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-REPO_BASE="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
-CONFIG_FILE="/etc/lab.config"
+# Locate current script directory and local files
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_CONFIG="${SCRIPT_DIR}/lab.config"
+LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
+# Fallbacks if run standalone
+if [ ! -f "$LOCAL_CONFIG" ] && [ -f "/etc/lab.config" ]; then
+    LOCAL_CONFIG="/etc/lab.config"
+fi
+
+# Terminal ANSI Colors
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -27,53 +35,54 @@ draw_header() {
     echo
 }
 
-ensure_config() {
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo -e "${YELLOW}📥 Fetching lab.config from GitHub...${NC}"
-        curl -fsSL "${REPO_BASE}/lab.config" -o /etc/lab.config
+ensure_files() {
+    if [ ! -f "$LOCAL_CONFIG" ]; then
+        echo -e "${RED}❌ Error: 'lab.config' missing in ${SCRIPT_DIR}${NC}" >&2
+        exit 1
     fi
+    # Also copy lab.config to /etc/ for system reference
+    cp "$LOCAL_CONFIG" /etc/lab.config
 }
 
 deploy_niri_config() {
-    echo -e "${YELLOW}📦 Fetching 'niri-dms-config.tar.gz' from GitHub...${NC}"
-    TMP_TAR="/tmp/niri-dms-config.tar.gz"
-    TMP_DIR="/tmp/niri-dms-config-extracted"
-
-    if curl -fsSL "${REPO_BASE}/niri-dms-config.tar.gz" -o "$TMP_TAR"; then
-        rm -rf "$TMP_DIR"
-        mkdir -p "$TMP_DIR"
-        tar -xzf "$TMP_TAR" -C "$TMP_DIR"
-
-        echo -e "${YELLOW}📂 Deploying to /etc/skel (for future user logins)...${NC}"
-        cp -r "$TMP_DIR"/. /etc/skel/ 2>/dev/null || cp -r "$TMP_DIR"/* /etc/skel/ 2>/dev/null || true
-
-        echo -e "${YELLOW}📂 Syncing config to all existing user homes in /home/...${NC}"
-        for user_dir in /home/*; do
-            if [ -d "$user_dir" ]; then
-                u_name=$(basename "$user_dir")
-                u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
-                cp -r "$TMP_DIR"/. "$user_dir/" 2>/dev/null || cp -r "$TMP_DIR"/* "$user_dir/" 2>/dev/null || true
-                chown -R "$u_name:$u_group" "$user_dir" 2>/dev/null || true
-                echo -e "   • Applied to ${CYAN}$user_dir${NC}"
-            fi
-        done
-        rm -rf "$TMP_TAR" "$TMP_DIR"
-        echo -e "${GREEN}✅ Niri DMS configuration applied system-wide!${NC}"
-    else
-        echo -e "${RED}❌ Failed to download 'niri-dms-config.tar.gz'.${NC}"
+    if [ ! -f "$LOCAL_TAR" ]; then
+        echo -e "${RED}❌ Error: 'niri-dms-config.tar.gz' missing in ${SCRIPT_DIR}${NC}"
+        return 1
     fi
+
+    echo -e "${YELLOW}📦 Extracting 'niri-dms-config.tar.gz'...${NC}"
+    TMP_DIR="/tmp/niri-dms-config-extracted"
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+    tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
+
+    echo -e "${YELLOW}📂 Deploying to /etc/skel (for future logins)...${NC}"
+    cp -r "$TMP_DIR"/. /etc/skel/ 2>/dev/null || cp -r "$TMP_DIR"/* /etc/skel/ 2>/dev/null || true
+
+    echo -e "${YELLOW}📂 Syncing config to existing user homes in /home/...${NC}"
+    for user_dir in /home/*; do
+        if [ -d "$user_dir" ]; then
+            u_name=$(basename "$user_dir")
+            u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
+            cp -r "$TMP_DIR"/. "$user_dir/" 2>/dev/null || cp -r "$TMP_DIR"/* "$user_dir/" 2>/dev/null || true
+            chown -R "$u_name:$u_group" "$user_dir" 2>/dev/null || true
+            echo -e "   • Applied to ${CYAN}$user_dir${NC}"
+        fi
+    done
+    rm -rf "$TMP_DIR"
+    echo -e "${GREEN}✅ Niri DMS configuration applied system-wide!${NC}"
 }
 
 apply_sssd_deny_rules() {
     local target_ad_group="$1"
-    ensure_config
+    ensure_files
 
     ALL_GROUPS=()
     while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
         ad_group=$(echo "${ad_group:-}" | xargs)
         [[ -z "$ad_group" || "$lab_name" =~ ^# ]] && continue
         ALL_GROUPS+=("$ad_group")
-    done < "$CONFIG_FILE"
+    done < "$LOCAL_CONFIG"
 
     DENY_GROUPS=()
     if [ -n "$target_ad_group" ]; then
@@ -89,10 +98,11 @@ simple_deny_groups = ${DENY_GROUPS_STR}"
         ACCESS_BLOCK="access_provider = permit"
     fi
 
-    echo -e "${YELLOW}⏹️ Stopping SSSD...${NC}"
+    echo -e "${YELLOW}⏹️ Stopping SSSD service...${NC}"
     systemctl stop sssd || true
     systemctl reset-failed sssd || true
 
+    echo -e "${YELLOW}📝 Writing /etc/sssd/sssd.conf...${NC}"
     cat <<EOF > /etc/sssd/sssd.conf
 [sssd]
 services = nss, pam
@@ -115,17 +125,18 @@ EOF
     chmod 600 /etc/sssd/sssd.conf
     restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
 
+    echo -e "${YELLOW}🧹 Flushing SSSD database cache...${NC}"
     rm -rf /var/lib/sss/db/*
     systemctl start sssd
 
-    echo -e "${GREEN}✅ SSSD active and configured!${NC}"
+    echo -e "${GREEN}✅ SSSD configured and running!${NC}"
 }
 
 # --- Menu Actions ---
 
 auto_setup() {
     draw_header
-    ensure_config
+    ensure_files
     RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
     MATCHED_LAB=""
     MATCHED_GROUP=""
@@ -141,14 +152,14 @@ auto_setup() {
             MATCHED_GROUP="$ad_group"
             break
         fi
-    done < "$CONFIG_FILE"
+    done < "$LOCAL_CONFIG"
 
     echo -e "📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
     if [ -n "$MATCHED_GROUP" ]; then
         echo -e "📌 ${BOLD}Detected Lab:${NC} $MATCHED_LAB"
         echo -e "📌 ${BOLD}Allowed Group:${NC} $MATCHED_GROUP"
     else
-        echo -e "${YELLOW}⚠️ No match found for this hostname in lab.config.${NC}"
+        echo -e "${YELLOW}⚠️ No match found for this hostname pattern in lab.config.${NC}"
     fi
     echo
 
@@ -163,7 +174,7 @@ auto_setup() {
 
 manual_lab_select() {
     draw_header
-    ensure_config
+    ensure_files
 
     echo -e "${BOLD}Select a Lab to ALLOW on this machine:${NC}\n"
     LAB_NAMES=()
@@ -175,7 +186,7 @@ manual_lab_select() {
         [[ -z "$ad_group" || "$lab_name" =~ ^# ]] && continue
         LAB_NAMES+=("$lab_name")
         AD_GROUPS+=("$ad_group")
-    done < "$CONFIG_FILE"
+    done < "$LOCAL_CONFIG"
 
     for i in "${!LAB_NAMES[@]}"; do
         printf "  ${CYAN}[%2d]${NC} %-30s (Group: %s)\n" $((i+1)) "${LAB_NAMES[$i]}" "${AD_GROUPS[$i]}"
