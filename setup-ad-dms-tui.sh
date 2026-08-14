@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Script Versioning (Incremented to 1.0.4)
-SCRIPT_VERSION="1.0.4"
+# Script Versioning (Incremented to 1.0.5)
+SCRIPT_VERSION="1.0.5"
 
 # Auto-re-execute with Bash if launched via 'sh' or another shell
 if [ -z "${BASH_VERSION:-}" ]; then
@@ -23,11 +23,6 @@ NC="\033[0m"
 ASSUME_YES=false
 SELECTED_LAB_INDEX=""
 UPDATE_SYSTEM="" # Empty = prompt, true = force update, false = force skip
-
-# --- CONFIGURATION DEFAULTS ---
-PVPN_ENABLE="${PVPN_ENABLE:-yes}"
-PVPN_ID="${PVPN_ID:-gsfcu@proton.me}"
-PVPN_PASS="${PVPN_PASS:-Test@1199}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -105,23 +100,31 @@ case "$SCRIPT_DIR" in
   /dev*) SCRIPT_DIR="$PWD" ;;
 esac
 
-# Load domain configuration accurately
+# Comprehensive domain & pVPN config search & load
 load_domain_conf() {
   DOMAIN_CONF_FILE=""
 
-  if [ -f "${SCRIPT_DIR}/dominos.config" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/dominos.config"
-  elif [ -f "${SCRIPT_DIR}/domain.conf" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/domain.conf"
-  elif [ -f "${SCRIPT_DIR}/configs/domain.conf" ]; then
-    DOMAIN_CONF_FILE="${SCRIPT_DIR}/configs/domain.conf"
-  elif [ -f "./dominos.config" ]; then
-    DOMAIN_CONF_FILE="./dominos.config"
-  elif [ -f "./domain.conf" ]; then
-    DOMAIN_CONF_FILE="./domain.conf"
-  elif [ -f "/etc/fedora-ad-dms/domain.conf" ]; then
-    DOMAIN_CONF_FILE="/etc/fedora-ad-dms/domain.conf"
-  fi
+  SEARCH_PATHS=(
+    "${SCRIPT_DIR}/domain.conf"
+    "${SCRIPT_DIR}/domain.config"
+    "${SCRIPT_DIR}/dominos.config"
+    "${SCRIPT_DIR}/dominos.conf"
+    "${SCRIPT_DIR}/configs/domain.conf"
+    "${PWD}/domain.conf"
+    "${PWD}/domain.config"
+    "${PWD}/dominos.config"
+    "${PWD}/dominos.conf"
+    "/etc/fedora-ad-dms/domain.conf"
+    "/etc/fedora-ad-dms/domain.config"
+    "/etc/fedora-ad-dms/dominos.config"
+  )
+
+  for candidate in "${SEARCH_PATHS[@]}"; do
+    if [ -f "$candidate" ]; then
+      DOMAIN_CONF_FILE="$candidate"
+      break
+    fi
+  done
 
   if [ -n "$DOMAIN_CONF_FILE" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
     sed -i 's/\r$//' "$DOMAIN_CONF_FILE" 2>/dev/null || true
@@ -129,11 +132,16 @@ load_domain_conf() {
     source "$DOMAIN_CONF_FILE" 2>/dev/null || . "$DOMAIN_CONF_FILE" 2>/dev/null || true
   fi
 
-  # Variable fallbacks & strict formatting (Kerberos Realm MUST be UPPERCASE)
+  # Fallbacks & strict formatting for Domain & Kerberos
   DOMAIN_NAME=$(echo "${DOMAIN_NAME:-${REALM_NAME:-gsfcu.local}}" | tr '[:upper:]' '[:lower:]')
   REALM_NAME=$(echo "${REALM_NAME:-${REALM:-$DOMAIN_NAME}}" | tr '[:lower:]' '[:upper:]')
   DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-Administrator}}}"
   AD_DNS_IP="${AD_DNS_IP:-}"
+
+  # Fallbacks for pVPN Configuration
+  PVPN_ENABLE="${PVPN_ENABLE:-yes}"
+  PVPN_ID="${PVPN_ID:-gsfcu@proton.me}"
+  PVPN_PASS="${PVPN_PASS:-Test@1199}"
 }
 
 load_domain_conf
@@ -142,20 +150,38 @@ load_domain_conf
 setup_pvpn() {
   step_header "1" "ProtonVPN (pVPN) Integration"
   
+  # Display pVPN Configuration Inspection Summary
+  printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+  printf "  %b%b|                  pVPN CONFIGURATION DETECTION SUMMARY              |%b\n" "$BOLD" "$CYAN" "$NC"
+  printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
+
+  if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
+    msg_ok "Config File Source : ${DOMAIN_CONF_FILE}"
+  else
+    msg_warn "Config File Source : NOT FOUND (Using default pVPN settings)"
+  fi
+
+  msg_info "pVPN Enable Mode   : '${PVPN_ENABLE}'"
+  msg_info "pVPN Username / ID : '${PVPN_ID}'"
+  
+  MASKED_PASS=$(echo "$PVPN_PASS" | sed 's/./*/g')
+  msg_info "pVPN Password      : '${MASKED_PASS}' (${#PVPN_PASS} characters)"
+  printf "  %b+--------------------------------------------------------------------+%b\n\n" "$CYAN" "$NC"
+
   run_pvpn=false
   PVPN_ENABLE_LOWER=$(echo "${PVPN_ENABLE:-yes}" | tr '[:upper:]' '[:lower:]')
   
   case "$PVPN_ENABLE_LOWER" in
     "yes") run_pvpn=true ;;
     "no")
-      msg_info "pVPN disabled in domain.conf. Skipping installation & connection entirely."
+      msg_info "pVPN disabled in configuration. Skipping installation & connection entirely."
       return 0
       ;;
     "ask")
       if ask_yes_no "Do you want to install and connect ProtonVPN (pVPN)?" "Y"; then
         run_pvpn=true
       else
-        msg_info "pVPN installation denied by user. Skipping entirely."
+        msg_info "pVPN installation skipped by user."
         return 0
       fi
       ;;
@@ -308,10 +334,10 @@ fi
 # --- STEP 6: DOMAIN SETTINGS & REALM JOIN ---
 step_header "6" "Active Directory Configuration & Realm Join"
 
-# Ensure domain configuration is loaded
+# Refresh domain config load to catch any file created in earlier steps
 load_domain_conf
 
-# Pre-execution Inspection Display
+# Pre-execution Domain Inspection Display
 printf "\n  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
 printf "  %b%b|              DOMAIN CONFIGURATION DETECTION SUMMARY                 |%b\n" "$BOLD" "$CYAN" "$NC"
 printf "  %b%b+--------------------------------------------------------------------+%b\n" "$BOLD" "$CYAN" "$NC"
@@ -320,6 +346,7 @@ if [ -n "${DOMAIN_CONF_FILE:-}" ] && [ -f "$DOMAIN_CONF_FILE" ]; then
   msg_ok "Config File Status  : FOUND (${DOMAIN_CONF_FILE})"
 else
   msg_warn "Config File Status  : NOT FOUND (Using built-in defaults)"
+  msg_info "Searched Locations  : ${SCRIPT_DIR}/, ${PWD}/, /etc/fedora-ad-dms/"
 fi
 
 msg_info "Domain Name (DNS)   : '${DOMAIN_NAME}'"
@@ -437,7 +464,7 @@ if [ -f "$LAB_CONF" ]; then
       id=$(echo "$lab_id_raw" | tr -cd 'a-zA-Z0-9_-')
 
       CLEAN_NAME=$(echo "$name" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
-      CLEAN_ID=$(echo "$id" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+      CLEAN_ID=$(echo "$id" | tr -cd 'a-zA-Z0-9_-' | tr '[:lower:]' '[:upper:]')
       
       if [ -n "$SYS_HOSTNAME" ]; then
         case "$SYS_HOSTNAME" in
@@ -517,7 +544,7 @@ fi
 # --- STEP 8: SYNC CONFIGS & TIMER SERVICE ---
 step_header "8" "Syncing App Configs & Setting Up Policy Service"
 mkdir -p /etc/fedora-ad-dms
-for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf dominos.config lab.conf; do
+for conf_file in compulsory-apps.conf group-apps.conf allowed-apps.conf blocked-apps.conf domain.conf domain.config dominos.config lab.conf; do
   if [ -f "${SCRIPT_DIR}/${conf_file}" ]; then
     cp "${SCRIPT_DIR}/${conf_file}" /etc/fedora-ad-dms/
     msg_ok "Copied ${conf_file} -> /etc/fedora-ad-dms/"
@@ -571,7 +598,6 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 # --- STEP 9: SYSTEM CONFIGS & PAM ---
 step_header "9" "Applying System Configurations & PAM Rules"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
-  # Only copy static sssd.conf if domain join failed or if realmd didn't create one
   if [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && [ ! -s /etc/sssd/sssd.conf ]; then
     cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   fi
