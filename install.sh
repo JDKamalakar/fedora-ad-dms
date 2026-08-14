@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fully Automated Host-Based SSSD Access Control
+# Fully Automated Host-Based SSSD Access Control (install.sh)
 # ==============================================================================
 set -euo pipefail
 
@@ -10,7 +10,9 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Configuration File Locations
+# ------------------------------------------------------------------------------
+# 1. Locate and Parse `lab.config`
+# ------------------------------------------------------------------------------
 CONFIG_FILE="/etc/lab.config"
 if [ ! -f "$CONFIG_FILE" ] && [ -f "./lab.config" ]; then
     CONFIG_FILE="./lab.config"
@@ -25,12 +27,9 @@ ALL_PATTERNS=()
 MATCHED_LAB_NAME=""
 MATCHED_AD_GROUP=""
 
-# ------------------------------------------------------------------------------
-# 1. Parse `lab.config`
-# ------------------------------------------------------------------------------
 if [ -f "$CONFIG_FILE" ]; then
     while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
-        # Trim leading and trailing whitespace from each field
+        # Trim leading/trailing whitespace
         lab_name=$(echo "${lab_name:-}" | xargs)
         ad_group=$(echo "${ad_group:-}" | xargs)
         pattern=$(echo "${pattern:-}" | xargs | tr '[:lower:]' '[:upper:]')
@@ -42,33 +41,33 @@ if [ -f "$CONFIG_FILE" ]; then
         ALL_NAMES+=("$lab_name")
         ALL_PATTERNS+=("$pattern")
 
-        # Prefix Match Check (e.g., GSFCURDLAB002 matches GSFCURDLAB)
+        # Match hostname prefix (e.g., GSFCURDLAB002 matching pattern GSFCURDLAB)
         if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
             MATCHED_LAB_NAME="$lab_name"
             MATCHED_AD_GROUP="$ad_group"
         fi
     done < "$CONFIG_FILE"
 else
-    echo "❌ Error: $CONFIG_FILE not found!" >&2
+    echo "❌ Error: Configuration file 'lab.config' not found at /etc/lab.config or locally!" >&2
     exit 1
 fi
 
 echo "======================================================================"
-echo "🖥️  AUTOMATIC LAB DETECTION & SSSD ACCESS CONTROL"
+echo "🖥️  AUTOMATED LAB DETECTION & SSSD ACCESS CONTROL"
 echo "======================================================================"
 echo "📌 Hostname Detected : $RAW_HOSTNAME"
 
 DENY_GROUPS=()
 
 # ------------------------------------------------------------------------------
-# 2. Build Deny Rules
+# 2. Build Deny Group Rules
 # ------------------------------------------------------------------------------
 if [ -n "$MATCHED_AD_GROUP" ]; then
     echo "✅ Matched Lab       : $MATCHED_LAB_NAME"
     echo "✅ Allowed Group     : $MATCHED_AD_GROUP (and unlisted IDs like 25bca001)"
     echo "----------------------------------------------------------------------"
     
-    # Populate DENY_GROUPS with every lab group EXCEPT the current machine's lab
+    # Populate DENY_GROUPS with every lab group EXCEPT the matched lab group
     for g in "${ALL_GROUPS[@]}"; do
         if [ "$g" != "$MATCHED_AD_GROUP" ]; then
             DENY_GROUPS+=("$g")
@@ -76,13 +75,13 @@ if [ -n "$MATCHED_AD_GROUP" ]; then
         fi
     done
 
-    # Join blocked groups with commas
+    # Format comma-separated list for simple_deny_groups
     DENY_GROUPS_STR=$(IFS=,; echo "${DENY_GROUPS[*]}")
     ACCESS_BLOCK="access_provider = simple
 simple_deny_groups = ${DENY_GROUPS_STR}"
 else
     echo "⚠️ Warning: No lab pattern matched '$RAW_HOSTNAME' in $CONFIG_FILE."
-    echo "   Defaulting to permit all domain users."
+    echo "   Defaulting to unrestricted domain access."
     ACCESS_BLOCK="access_provider = permit"
 fi
 
@@ -115,13 +114,13 @@ EOF
 # ------------------------------------------------------------------------------
 # 4. Security Enforcement & Cache Clearing
 # ------------------------------------------------------------------------------
-echo "🔒 Restricting file permissions..."
+echo "🔒 Restricting file permissions and fixing line endings..."
 sed -i 's/\r$//' /etc/sssd/sssd.conf
 chown root:root /etc/sssd/sssd.conf
 chmod 600 /etc/sssd/sssd.conf
 restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
 
-echo "🧹 Flushing cache database..."
+echo "🧹 Flushing SSSD database cache..."
 rm -rf /var/lib/sss/db/*
 
 echo "▶️ Starting SSSD Service..."
@@ -133,7 +132,7 @@ systemctl start sssd
 echo "======================================================================"
 if systemctl is-active --quiet sssd; then
     echo "✅ SSSD successfully configured and running!"
-    echo "   • ALLOWED : ${MATCHED_AD_GROUP:-All} + Unlisted domain IDs (e.g., 25bca001)"
+    echo "   • ALLOWED : ${MATCHED_AD_GROUP:-All} + General domain users (e.g. 25bca001)"
     echo "   • BLOCKED : ${DENY_GROUPS_STR:-None}"
 else
     echo "❌ SSSD failed to start. Run 'journalctl -u sssd -xe' for details."
