@@ -116,15 +116,18 @@ load_domain_conf() {
     sed -i 's/\r$//' "$conf_file" 2>/dev/null || true
     . "$conf_file" 2>/dev/null || true
 
+    # Support variable aliases (DOMAIN_USER, DOMAIN_ADMIN, ADMIN_USER)
+    DOMAIN_USER="${DOMAIN_USER:-${DOMAIN_ADMIN:-${ADMIN_USER:-${DOMAIN_ADMIN_USER:-}}}}"
+
     # Direct regex fallback if variables are missing or have spaces around '='
     if [ -z "${DOMAIN_USER:-}" ]; then
-      DOMAIN_USER=$(grep -E '^\s*DOMAIN_USER\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      DOMAIN_USER=$(grep -E '^\s*(DOMAIN_USER|DOMAIN_ADMIN|ADMIN_USER|DOMAIN_ADMIN_USER)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
     if [ -z "${DOMAIN_NAME:-}" ]; then
-      DOMAIN_NAME=$(grep -E '^\s*DOMAIN_NAME\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      DOMAIN_NAME=$(grep -E '^\s*(DOMAIN_NAME|REALM)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
     if [ -z "${AD_DNS_IP:-}" ]; then
-      AD_DNS_IP=$(grep -E '^\s*AD_DNS_IP\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
+      AD_DNS_IP=$(grep -E '^\s*(AD_DNS_IP|DNS_IP|DNS)\s*=' "$conf_file" 2>/dev/null | cut -d'=' -f2- | tr -d " \"\r'" | xargs || true)
     fi
   fi
 }
@@ -303,46 +306,42 @@ step_header "6" "Active Directory Configuration & Realm Join"
 
 load_domain_conf
 
-DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-Administrator}" | tr -d " \"\r'" | xargs || true)
+DOMAIN_USER_CLEAN=$(echo "${DOMAIN_USER:-${DOMAIN_ADMIN:-Administrator}}" | tr -d " \"\r'" | xargs || true)
 DOMAIN_NAME_CLEAN=$(echo "${DOMAIN_NAME:-gsfcu.local}" | tr -d " \"\r'" | xargs || true)
 DOMAIN_PASS_CLEAN=$(echo "${DOMAIN_PASS:-}" | tr -d '\r')
 AD_DNS_IP_CLEAN=$(echo "${AD_DNS_IP:-}" | tr -d " \"\r'" | xargs || true)
 
-msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
-msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
-
-# --- APPLY DNS FIRST BEFORE ANY REALM OR DOMAIN LOOKUPS ---
+# --- APPLY DNS TO PHYSICAL ETH / WIRED CONNECTION 1 PRIOR TO ANY REALM LOOKUPS ---
 if [ -n "$AD_DNS_IP_CLEAN" ]; then
   msg_info "Applying Active Directory DNS ($AD_DNS_IP_CLEAN) prior to domain operations..."
   
-  DEFAULT_IF=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1 || true)
-  ACTIVE_CONN=""
+  # Find physical ethernet connection explicitly (excluding VPN / tun / tap interfaces)
+  TARGET_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | grep -vE 'pvpn|vpn|tun|tap' | head -n1 | cut -d: -f1 || true)
 
-  if [ -n "$DEFAULT_IF" ]; then
-    ACTIVE_CONN=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | grep ":${DEFAULT_IF}$" | cut -d: -f1 | head -n1 || true)
+  if [ -z "$TARGET_CONN" ]; then
+    TARGET_CONN=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
   fi
 
-  if [ -z "$ACTIVE_CONN" ]; then
-    ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep -iE 'ethernet|802-3-ethernet' | head -n1 | cut -d: -f1 || true)
-  fi
-
-  TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+  TARGET_CONN="${TARGET_CONN:-Wired connection 1}"
   msg_info "Modifying NetworkManager connection profile: '$TARGET_CONN'"
 
-  if nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null; then
-    nmcli connection up "$TARGET_CONN" 2>/dev/null || true
-    systemctl restart NetworkManager 2>/dev/null || true
-    sleep 2
-    msg_ok "Active Directory DNS successfully set on '$TARGET_CONN'."
-  else
-    msg_warn "Primary profile update failed. Trying hardware device direct overwrite..."
-    if [ -n "${DEFAULT_IF:-}" ]; then
-      nmcli device modify "$DEFAULT_IF" ipv4.dns "$AD_DNS_IP_CLEAN" 2>/dev/null || true
-      systemctl restart NetworkManager 2>/dev/null || true
-      msg_ok "DNS applied directly to hardware device '$DEFAULT_IF'."
-    fi
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
+
+  # Explicit fallback force on "Wired connection 1" if profile name differs
+  if [ "$TARGET_CONN" != "Wired connection 1" ] && nmcli connection show "Wired connection 1" >/dev/null 2>&1; then
+    nmcli connection modify "Wired connection 1" ipv4.dns "$AD_DNS_IP_CLEAN" ipv4.dns-search "$DOMAIN_NAME_CLEAN" ipv4.ignore-auto-dns yes 2>/dev/null || true
+    nmcli connection up "Wired connection 1" 2>/dev/null || true
   fi
+
+  systemctl restart NetworkManager 2>/dev/null || true
+  systemctl restart systemd-resolved 2>/dev/null || true
+  sleep 2
+  msg_ok "Active Directory DNS successfully set."
 fi
+
+msg_info "Domain User configured: '${DOMAIN_USER_CLEAN}'"
+msg_info "Domain Realm configured: '${DOMAIN_NAME_CLEAN}'"
 
 systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
@@ -356,9 +355,7 @@ else
       DOMAIN_PASS_EXEC="$DOMAIN_PASS_CLEAN"
     else
       printf "  %b[INPUT]%b Enter Domain Admin Password for '%s@%s': " "$YELLOW" "$NC" "$DOMAIN_USER_CLEAN" "$DOMAIN_NAME_CLEAN"
-      stty -echo 2>/dev/null || true
-      read -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
-      stty echo 2>/dev/null || true
+      read -s -r DOMAIN_PASS_EXEC < /dev/tty || DOMAIN_PASS_EXEC=""
       printf "\n"
     fi
 
