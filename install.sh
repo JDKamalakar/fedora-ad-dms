@@ -38,7 +38,7 @@ fetch_file() {
 # Core files
 fetch_file "lab.conf"
 fetch_file "niri-dms-config.tar.gz"
-fetch_file "setup-ad-dms.sh"
+fetch_file "setup-ad-dms-tui.sh..."
 
 # App Management Policy files
 fetch_file "allowed-apps.conf"
@@ -46,8 +46,8 @@ fetch_file "blocked-apps.conf"
 fetch_file "compulsory-apps.conf"
 fetch_file "group-apps.conf"
 
-chmod +x setup-ad-dms.sh
+chmod +x setup-ad-dms-tui.sh...
 
 echo "----------------------------------------------------------------------"
-echo "▶️ Launching setup-ad-dms.sh..."
-exec ./setup-ad-dms.sh </dev/tty
+echo "▶️ Launching setup-ad-dms-tui.sh......"
+exec ./setup-ad-dms-tui.sh... </dev/tty
