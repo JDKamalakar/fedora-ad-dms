@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Fedora AD DMS Automated Setup & Access Enforcer (setup-ad-dms-tui.sh)
-# Version: 2.2.0 (Blacklist Mode)
+# Version: 2.3.0 (Safe Shell Hook + Sudoers Integration)
 # ==============================================================================
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 
 if [ "$EUID" -ne 0 ]; then
     echo "❌ Error: This script must be run as root or with sudo." >&2
@@ -25,14 +25,14 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 echo -e "${CYAN}======================================================================${NC}"
-echo -e "${BOLD}   🖥️  GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP - v${VERSION} (Blacklist) ${NC}"
+echo -e "${BOLD}   🖥️  GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP - v${VERSION}         ${NC}"
 echo -e "${CYAN}======================================================================${NC}"
 echo
 
 # ------------------------------------------------------------------------------
 # Step 1: Configure Fedora PAM via authselect
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}🔒 Configuring Fedora Authselect (SSSD Enforcer + Auto-Home Dir Creation)...${NC}"
+echo -e "${YELLOW}🔒 Configuring Fedora Authselect...${NC}"
 if command -v authselect &>/dev/null; then
     authselect select sssd with-mkhomedir --force || true
     systemctl enable --now oddjobd.service 2>/dev/null || true
@@ -61,13 +61,10 @@ for app_conf in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-a
 done
 
 # ------------------------------------------------------------------------------
-# Step 3: SSSD Active Directory Blacklisting (Deny Specific IDs / Groups)
+# Step 3: SSSD Active Directory Blacklisting Rules
 # ------------------------------------------------------------------------------
 RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
 MATCHED_LAB=""
-MATCHED_DENY_GROUP=""
-
-# 1. Parse lab.conf to find groups/labs that should NOT access this computer
 DENY_GROUPS=()
 
 if [ -f "/etc/lab.conf" ]; then
@@ -80,13 +77,11 @@ if [ -f "/etc/lab.conf" ]; then
         if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
             MATCHED_LAB="$lab_name"
         else
-            # Deny access to other lab groups on this machine
             [ -n "$ad_group" ] && DENY_GROUPS+=("$ad_group")
         fi
     done < /etc/lab.conf
 fi
 
-# 2. Collect specific blocked user IDs if blocked-users.conf exists
 DENY_USERS=()
 if [ -f "$CONF_DIR/blocked-users.conf" ]; then
     while IFS= read -r u || [ -n "$u" ]; do
@@ -96,7 +91,6 @@ if [ -f "$CONF_DIR/blocked-users.conf" ]; then
     done < "$CONF_DIR/blocked-users.conf"
 fi
 
-# Build SSSD Simple Access Provider rules
 DENY_CONFIG_BLOCK="access_provider = simple"
 
 if [ ${#DENY_GROUPS[@]} -gt 0 ]; then
@@ -112,13 +106,7 @@ simple_deny_users = ${DENY_USERS_STR}"
 fi
 
 echo -e "\n📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
-echo -e "📌 ${BOLD}Current Machine Lab:${NC} ${MATCHED_LAB:-General Machine}"
-if [ ${#DENY_GROUPS[@]} -gt 0 ]; then
-    echo -e "📌 ${BOLD}Blocked AD Groups:${NC} ${RED}${DENY_GROUPS[*]}${NC}"
-fi
-if [ ${#DENY_USERS[@]} -gt 0 ]; then
-    echo -e "📌 ${BOLD}Blocked User IDs:${NC} ${RED}${DENY_USERS[*]}${NC}"
-fi
+echo -e "📌 ${BOLD}Current Lab:${NC} ${MATCHED_LAB:-General Machine}"
 
 echo -e "${YELLOW}⏹️ Reconfiguring SSSD access rules...${NC}"
 systemctl stop sssd || true
@@ -147,26 +135,23 @@ chown root:root /etc/sssd/sssd.conf
 chmod 600 /etc/sssd/sssd.conf
 restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
 
-# Flush SSSD cache so new deny rules take effect instantly
 rm -rf /var/lib/sss/db/*
 systemctl start sssd
-echo -e "${GREEN}✅ SSSD rules applied! All 1,000+ domain users allowed EXCEPT the blacklisted groups/users.${NC}"
+echo -e "${GREEN}✅ SSSD access rules applied!${NC}"
 
 # ------------------------------------------------------------------------------
-# Step 4: Deploy Niri DMS Desktop Configuration (/etc/skel & Existing Users)
+# Step 4: Deploy Niri DMS Desktop Configuration
 # ------------------------------------------------------------------------------
 if [ -f "$LOCAL_TAR" ]; then
-    echo -e "\n${YELLOW}📦 Deploying Niri DMS configurations to /etc/skel and /home/*...${NC}"
+    echo -e "\n${YELLOW}📦 Deploying Niri DMS configurations...${NC}"
     TMP_DIR="/tmp/niri-dms-config-extracted"
     rm -rf "$TMP_DIR"
     mkdir -p "$TMP_DIR"
     tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
 
-    # Deploy to /etc/skel (Auto-copied to every new domain user on first login)
     cp -a "$TMP_DIR"/. /etc/skel/
     chmod -R a+rX /etc/skel
 
-    # Apply to existing users in /home
     for user_dir in /home/*; do
         if [ -d "$user_dir" ]; then
             u_name=$(basename "$user_dir")
@@ -191,7 +176,6 @@ set -euo pipefail
 
 CONF_DIR="/etc/ad-dms"
 
-# 1. Enforce Compulsory Apps (Install if missing)
 if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
@@ -203,7 +187,6 @@ if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
     done < "$CONF_DIR/compulsory-apps.conf"
 fi
 
-# 2. Enforce Blocked Apps (Kill running instances)
 if [ -f "$CONF_DIR/blocked-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
@@ -219,9 +202,19 @@ EOF
 chmod +x /usr/local/bin/ad-dms-app-enforcer
 
 # ------------------------------------------------------------------------------
-# Step 6: 10-Minute Systemd Refresh Timer
+# Step 6: Configure Passwordless Sudoers Entry for the Enforcer
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}⏰ Creating 10-Minute Periodic Refresh Timer...${NC}"
+echo -e "${YELLOW}🔑 Creating Sudoers Policy (/etc/sudoers.d/ad-dms)...${NC}"
+cat <<EOF > /etc/sudoers.d/ad-dms
+# Allow all users to invoke the app enforcer silently
+ALL ALL=(ALL) NOPASSWD: /usr/local/bin/ad-dms-app-enforcer
+EOF
+chmod 0440 /etc/sudoers.d/ad-dms
+
+# ------------------------------------------------------------------------------
+# Step 7: 10-Minute Systemd Refresh Timer
+# ------------------------------------------------------------------------------
+echo -e "${YELLOW}⏰ Creating 10-Minute Systemd Timer...${NC}"
 
 cat <<EOF > /etc/systemd/system/ad-dms-refresh.service
 [Unit]
@@ -250,18 +243,21 @@ systemctl daemon-reload
 systemctl enable --now ad-dms-refresh.timer
 
 # ------------------------------------------------------------------------------
-# Step 7: User Login Hook
+# Step 8: Safe Login Hook (Never Prompt Password & Never Crash Shell)
 # ------------------------------------------------------------------------------
-cat <<EOF > /etc/profile.d/ad-dms-login-refresh.sh
-# Run AD DMS App Refresh on User Login
-if [ -n "\$bash" ] || [ -n "\$zsh" ] || [ -n "\$SSH_CLIENT" ] || [ -n "\$DISPLAY" ] || [ -n "\$WAYLAND_DISPLAY" ]; then
-    sudo /usr/local/bin/ad-dms-app-enforcer &>/dev/null &
+echo -e "${YELLOW}🛡️ Setting up Non-Blocking Terminal Login Hook...${NC}"
+
+cat <<'EOF' > /etc/profile.d/ad-dms-login-refresh.sh
+# AD DMS Silent Login Refresh Hook
+if [ -f /usr/local/bin/ad-dms-app-enforcer ]; then
+    # Run silently in background with -n (non-interactive, no password prompt)
+    (sudo -n /usr/local/bin/ad-dms-app-enforcer &>/dev/null &) 2>/dev/null || true
 fi
 EOF
 
 chmod +x /etc/profile.d/ad-dms-login-refresh.sh
 
-# Run enforcer immediately once
+# Run enforcer once immediately
 /usr/local/bin/ad-dms-app-enforcer || true
 
 echo -e "\n${GREEN}======================================================================${NC}"
