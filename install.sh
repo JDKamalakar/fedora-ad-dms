@@ -20,7 +20,7 @@ rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-echo "📥 Downloading repository components... v1"
+echo "📥 Downloading repository components..."
 
 fetch_file() {
     local file="$1"
@@ -42,19 +42,20 @@ fetch_file() {
     fi
 }
 
-# Required Core Files
+# Core Files
 fetch_file "lab.conf" "true"
 fetch_file "niri-dms-config.tar.gz" "true"
 fetch_file "setup-ad-dms-tui.sh" "true"
 
-# App Management Policy Files (Optional if not created on repo yet)
+# Application Policy Files
 fetch_file "allowed-apps.conf" "false"
 fetch_file "blocked-apps.conf" "false"
 fetch_file "compulsory-apps.conf" "false"
 fetch_file "group-apps.conf" "false"
+fetch_file "blocked-users.conf" "false"
 
 chmod +x setup-ad-dms-tui.sh
 
 echo "----------------------------------------------------------------------"
 echo "▶️ Launching setup-ad-dms-tui.sh..."
-exec ./setup-ad-dms-tui.sh </dev/tty
+exec ./setup-ad-dms-tui.sh
