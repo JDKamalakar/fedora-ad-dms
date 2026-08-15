@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Fedora AD DMS Automated Setup & Access Enforcer (setup-ad-dms-tui.sh)
-# Version: 3.0.0 (Bulletproof Daemon Architecture - Zero Shell Hooks)
+# Version: 3.1.0 (Pure TUI / Systemd Engine)
 # ==============================================================================
 set -euo pipefail
 
-VERSION="3.0.0"
+VERSION="3.1.0"
+
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
 if [ "$EUID" -ne 0 ]; then
-    echo "❌ Error: This script must be run as root or with sudo." >&2
+    echo -e "${RED}[ERROR] This script must be run as root or with sudo.${NC}" >&2
     exit 1
 fi
 
@@ -17,37 +25,33 @@ CONF_DIR="/etc/ad-dms"
 LOCAL_CONFIG="${SCRIPT_DIR}/lab.conf"
 LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
-BOLD='\033[1m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-echo -e "${CYAN}======================================================================${NC}"
-echo -e "${BOLD}   🖥️  GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP - v${VERSION}         ${NC}"
-echo -e "${CYAN}======================================================================${NC}"
+echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
+echo -e "${CYAN}|${BOLD}      GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP (v${VERSION})            ${NC}${CYAN}|${NC}"
+echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
 echo
 
 # ------------------------------------------------------------------------------
-# Cleanup Legacy/Unsafe Profile Hooks (Safety Measure)
+# Cleanup Unsafe Profile Hooks
 # ------------------------------------------------------------------------------
 rm -f /etc/profile.d/ad-dms-login-refresh.sh /etc/sudoers.d/ad-dms
 
 # ------------------------------------------------------------------------------
-# Step 1: Configure Fedora PAM via authselect
+# STEP 1: PAM & Authselect Configuration
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}🔒 Setting up Authselect (SSSD + Auto Home Directory Creation)...${NC}"
+echo -e "${BLUE}::${NC} ${BOLD}[STEP 1/6] Configuring Fedora Authselect PAM Engine...${NC}"
 if command -v authselect &>/dev/null; then
-    authselect select sssd with-mkhomedir --force || true
-    systemctl enable --now oddjobd.service 2>/dev/null || true
-    echo -e "${GREEN}✅ PAM configured successfully!${NC}"
+    authselect select sssd with-mkhomedir --force >/dev/null || true
+    systemctl enable --now oddjobd.service >/dev/null 2>&1 || true
+    echo -e "${GREEN}[OK] PAM configured for SSSD authentication and auto home directory creation.${NC}"
+else
+    echo -e "${RED}[ERROR] authselect binary not found on this system!${NC}" >&2
+    exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# Step 2: Directory Setup & Policy File Copy
+# STEP 2: Directory & Policy Initialization
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}📁 Preparing configuration directories at ${CONF_DIR}...${NC}"
+echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 2/6] Preparing system policy directories at ${CONF_DIR}...${NC}"
 mkdir -p "$CONF_DIR"
 
 if [ -f "$LOCAL_CONFIG" ]; then
@@ -58,16 +62,17 @@ fi
 for app_conf in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf blocked-users.conf; do
     if [ -f "${SCRIPT_DIR}/${app_conf}" ]; then
         cp "${SCRIPT_DIR}/${app_conf}" "${CONF_DIR}/${app_conf}"
-        echo -e "   • Installed ${CYAN}${app_conf}${NC}"
+        echo -e "  -> Installed policy: ${CYAN}${app_conf}${NC}"
     else
         touch "${CONF_DIR}/${app_conf}"
-        echo -e "   • Created empty template for ${CYAN}${app_conf}${NC}"
+        echo -e "  -> Initialized blank template: ${CYAN}${app_conf}${NC}"
     fi
 done
 
 # ------------------------------------------------------------------------------
-# Step 3: SSSD Active Directory Access Rules (Blacklist Strategy)
+# STEP 3: Active Directory Access Control (SSSD Blacklist Strategy)
 # ------------------------------------------------------------------------------
+echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 3/6] Generating Active Directory Access Control Rules...${NC}"
 RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
 MATCHED_LAB=""
 DENY_GROUPS=()
@@ -110,12 +115,14 @@ if [ ${#DENY_USERS[@]} -gt 0 ]; then
 simple_deny_users = ${DENY_USERS_STR}"
 fi
 
-echo -e "\n📌 ${BOLD}Hostname:${NC} $RAW_HOSTNAME"
-echo -e "📌 ${BOLD}Current Machine Lab:${NC} ${MATCHED_LAB:-General Machine}"
+echo -e "  * Hostname       : ${BOLD}${RAW_HOSTNAME}${NC}"
+echo -e "  * Detected Lab   : ${BOLD}${MATCHED_LAB:-General Machine}${NC}"
+[ ${#DENY_GROUPS[@]} -gt 0 ] && echo -e "  * Blocked Groups : ${RED}${DENY_GROUPS[*]}${NC}"
+[ ${#DENY_USERS[@]} -gt 0 ]  && echo -e "  * Blocked Users  : ${RED}${DENY_USERS[*]}${NC}"
 
-echo -e "${YELLOW}⏹️ Writing SSSD configuration and flushing cache...${NC}"
-systemctl stop sssd || true
-systemctl reset-failed sssd || true
+echo -e "${CYAN}[INFO]${NC} Writing /etc/sssd/sssd.conf and clearing cache..."
+systemctl stop sssd >/dev/null 2>&1 || true
+systemctl reset-failed sssd >/dev/null 2>&1 || true
 
 cat <<EOF > /etc/sssd/sssd.conf
 [sssd]
@@ -138,42 +145,47 @@ EOF
 sed -i 's/\r$//' /etc/sssd/sssd.conf
 chown root:root /etc/sssd/sssd.conf
 chmod 600 /etc/sssd/sssd.conf
-restorecon -v /etc/sssd/sssd.conf 2>/dev/null || true
+restorecon -v /etc/sssd/sssd.conf >/dev/null 2>&1 || true
 
 rm -rf /var/lib/sss/db/*
 systemctl start sssd
-echo -e "${GREEN}✅ SSSD rules applied cleanly!${NC}"
+echo -e "${GREEN}[OK] SSSD service updated and active.${NC}"
 
 # ------------------------------------------------------------------------------
-# Step 4: Deploy Niri DMS Configs to /etc/skel & Existing Homes
+# STEP 4: Deploy Niri DMS Desktop Configurations
 # ------------------------------------------------------------------------------
+echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 4/6] Deploying Niri DMS environment templates...${NC}"
 if [ -f "$LOCAL_TAR" ]; then
-    echo -e "\n${YELLOW}📦 Deploying Niri DMS configs to /etc/skel...${NC}"
     TMP_DIR="/tmp/niri-dms-config-extracted"
     rm -rf "$TMP_DIR"
     mkdir -p "$TMP_DIR"
     tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
 
+    # Copy to skeleton directory for future domain users
     cp -a "$TMP_DIR"/. /etc/skel/
     chmod -R a+rX /etc/skel
+    echo -e "  -> Applied template to ${CYAN}/etc/skel${NC}"
 
+    # Sync to existing local/domain accounts in /home
     for user_dir in /home/*; do
         if [ -d "$user_dir" ]; then
             u_name=$(basename "$user_dir")
             u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
             cp -a "$TMP_DIR"/. "$user_dir/"
             chown -R "$u_name:$u_group" "$user_dir"
-            echo -e "   • Applied config to ${CYAN}$user_dir${NC}"
+            echo -e "  -> Updated configuration for ${CYAN}$user_dir${NC}"
         fi
     done
     rm -rf "$TMP_DIR"
-    echo -e "${GREEN}✅ Niri DMS configs deployed system-wide!${NC}"
+    echo -e "${GREEN}[OK] Desktop configurations deployed successfully.${NC}"
+else
+    echo -e "${YELLOW}[WARN] Config Archive (${LOCAL_TAR}) missing. Skipping desktop template sync.${NC}"
 fi
 
 # ------------------------------------------------------------------------------
-# Step 5: Application Enforcement Engine Script
+# STEP 5: Application Policy Enforcement Script
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}⚙️ Installing Application Enforcement Engine...${NC}"
+echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 5/6] Building Application Enforcement Engine...${NC}"
 
 cat <<'EOF' > /usr/local/bin/ad-dms-app-enforcer
 #!/usr/bin/env bash
@@ -181,25 +193,25 @@ set -euo pipefail
 
 CONF_DIR="/etc/ad-dms"
 
-# Install compulsory applications
+# Install mandatory applications
 if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
         [[ -z "$app" || "$app" =~ ^# ]] && continue
         if ! rpm -q "$app" &>/dev/null; then
-            echo "📦 Installing compulsory app: $app"
+            echo "[ENFORCER] Installing compulsory package: $app"
             dnf install -y "$app" || true
         fi
     done < "$CONF_DIR/compulsory-apps.conf"
 fi
 
-# Kill blocked applications
+# Terminate prohibited applications
 if [ -f "$CONF_DIR/blocked-apps.conf" ]; then
     while IFS= read -r app || [ -n "$app" ]; do
         app=$(echo "$app" | xargs)
         [[ -z "$app" || "$app" =~ ^# ]] && continue
         if pgrep -x "$app" &>/dev/null; then
-            echo "🚫 Terminating blocked application: $app"
+            echo "[ENFORCER] Terminating blacklisted process: $app"
             pkill -9 -x "$app" || true
         fi
     done < "$CONF_DIR/blocked-apps.conf"
@@ -207,11 +219,12 @@ fi
 EOF
 
 chmod +x /usr/local/bin/ad-dms-app-enforcer
+echo -e "${GREEN}[OK] Installed /usr/local/bin/ad-dms-app-enforcer${NC}"
 
 # ------------------------------------------------------------------------------
-# Step 6: Pure Systemd Refresh Service & Timer (Runs as Root Background Service)
+# STEP 6: Systemd Daemon & Periodic Refresh Timer
 # ------------------------------------------------------------------------------
-echo -e "${YELLOW}⏰ Creating Background Systemd Timer Daemon...${NC}"
+echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 6/6] Registering Background Systemd Daemon...${NC}"
 
 cat <<EOF > /etc/systemd/system/ad-dms-refresh.service
 [Unit]
@@ -236,13 +249,13 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now ad-dms-refresh.timer
-echo -e "${GREEN}✅ Systemd timer activated (Runs on boot + every 10 mins)!${NC}"
+systemctl daemon-reload >/dev/null 2>&1
+systemctl enable --now ad-dms-refresh.timer >/dev/null 2>&1
+echo -e "${GREEN}[OK] Systemd timer activated (triggers 10s post-boot & every 10 mins).${NC}"
 
-# Execute once now to apply immediately
-/usr/local/bin/ad-dms-app-enforcer || true
+# Run initial pass
+/usr/local/bin/ad-dms-app-enforcer >/dev/null 2>&1 || true
 
-echo -e "\n${GREEN}======================================================================${NC}"
-echo -e "${BOLD}🚀 AD DMS DEPLOYMENT COMPLETE! (v${VERSION})${NC}"
-echo -e "${GREEN}======================================================================${NC}"
+echo -e "\n${CYAN}+----------------------------------------------------------------------+${NC}"
+echo -e "${CYAN}|${BOLD}${GREEN}  [SUCCESS] AD DMS DEPLOYMENT COMPLETE (v${VERSION})                    ${NC}${CYAN}|${NC}"
+echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
