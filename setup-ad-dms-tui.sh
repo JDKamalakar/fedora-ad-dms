@@ -28,7 +28,7 @@ done
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP    V1           ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
@@ -74,64 +74,62 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# Pre-load configuration settings if available
+# Pre-load configuration settings
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   # shellcheck source=/dev/null
   source "${SCRIPT_DIR}/domain.conf"
-  msg_ok "Loaded environment settings from 'domain.conf'."
+  msg_ok "Loaded configuration settings from 'domain.conf'."
+else
+  msg_warn "'domain.conf' missing. Falling back to default parameters."
 fi
 
 # ------------------------------------------------------------------------------
-# Phase 0: ProtonVPN (pVPN) Installation & Provisioning
+# Phase 0: ProtonVPN (pVPN) Control Logic ("yes", "no", "ask")
 # ------------------------------------------------------------------------------
 echo -e "${BOLD}${BLUE}[PHASE 0/12]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Credentials${NC}"
 echo -e "${BLUE}======================================================================${NC}"
 
 SHOULD_INSTALL_PVPN=false
+PVPN_MODE="$(echo "${ENABLE_PVPN:-ask}" | tr '[:upper:]' '[:lower:]')"
 
-if [ -n "${ENABLE_PVPN:-}" ]; then
-  case "$(echo "$ENABLE_PVPN" | tr '[:upper:]' '[:lower:]')" in
-    yes|y|true|1)
-      SHOULD_INSTALL_PVPN=true
-      msg_info "pVPN installation explicitly enabled in domain.conf."
-      ;;
-    no|n|false|0)
-      SHOULD_INSTALL_PVPN=false
-      msg_info "pVPN installation explicitly disabled in domain.conf."
-      ;;
-    *)
-      SHOULD_INSTALL_PVPN=false
-      ;;
-  esac
-else
-  if ask_yes_no "Install and configure ProtonVPN (pVPN) on this machine?" "Y"; then
+case "$PVPN_MODE" in
+  yes|y|true|1)
     SHOULD_INSTALL_PVPN=true
-  fi
-fi
+    msg_info "pVPN installation automatically enabled (ENABLE_PVPN='yes')."
+    ;;
+  no|n|false|0)
+    SHOULD_INSTALL_PVPN=false
+    msg_info "pVPN installation explicitly disabled (ENABLE_PVPN='no')."
+    ;;
+  ask|*)
+    if ask_yes_no "Install and configure ProtonVPN (pVPN) on this machine?" "Y"; then
+      SHOULD_INSTALL_PVPN=true
+    fi
+    ;;
+esac
 
 if [ "$SHOULD_INSTALL_PVPN" = true ]; then
-  msg_info "Downloading and executing pVPN installation script..."
+  msg_info "Executing pVPN installer from repository..."
   if curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash 2>/dev/null; then
-    msg_ok "pVPN installation script completed successfully."
+    msg_ok "pVPN installation script executed."
   else
     msg_warn "pVPN installer finished with non-fatal warnings."
   fi
 
-  # Provision credentials if present in domain.conf
   if [ -n "${PVPN_USER:-}" ] && [ -n "${PVPN_PASS:-}" ]; then
-    msg_info "Applying pVPN login credentials from domain.conf..."
+    msg_info "Applying pVPN login credentials for '${PVPN_USER}'..."
     if command -v pvpn &>/dev/null; then
       (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | pvpn login 2>/dev/null || true
-      msg_ok "pVPN credentials passed to service."
+      msg_ok "Credentials submitted to pvpn CLI."
     elif command -v protonvpn-cli &>/dev/null; then
       (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | protonvpn-cli login 2>/dev/null || true
-      msg_ok "pVPN credentials passed to protonvpn-cli."
+      msg_ok "Credentials submitted to protonvpn-cli."
     else
-      msg_warn "pVPN CLI binary not found in PATH to auto-submit credentials."
+      msg_warn "pVPN binary not found in system PATH to submit credentials automatically."
     fi
   fi
 else
-  msg_info "Skipping pVPN setup."
+  msg_info "Skipping pVPN configuration phase."
 fi
 
 # ------------------------------------------------------------------------------
@@ -143,7 +141,7 @@ msg_info "Executing software swap: Removing LibreOffice and installing ONLYOFFIC
 if dnf remove -y "libreoffice*" 2>/dev/null; then
   msg_ok "LibreOffice packages removed."
 else
-  msg_warn "LibreOffice removal step finished with warnings or was not installed."
+  msg_warn "LibreOffice removal step finished with warnings or packages were not present."
 fi
 
 dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm 2>/dev/null || true
@@ -151,7 +149,7 @@ dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffic
 if dnf install -y onlyoffice-desktopeditors 2>/dev/null; then
   msg_ok "ONLYOFFICE installation complete."
 else
-  msg_warn "ONLYOFFICE package installation encountered mirror issues. Continuing..."
+  msg_warn "ONLYOFFICE package installation encountered mirror issues. Continuing setup..."
 fi
 
 # ------------------------------------------------------------------------------
@@ -163,7 +161,7 @@ if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
   if dnf update -y; then
     msg_ok "System update finished cleanly."
   else
-    msg_warn "DNF update encountered non-fatal package issues. Script execution continuing..."
+    msg_warn "DNF update completed with non-fatal package warnings. Continuing..."
   fi
 fi
 
@@ -174,7 +172,7 @@ step_header "3" "Installing AD & Security Dependencies"
 if dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
   msg_ok "All AD prerequisite packages installed."
 else
-  msg_warn "Some AD dependencies returned minor warnings. Proceeding..."
+  msg_warn "AD dependencies installed with minor package warnings. Proceeding..."
 fi
 
 # ------------------------------------------------------------------------------
@@ -185,7 +183,7 @@ msg_info "Executing native DMS installer as root..."
 if curl -fsSL https://install.danklinux.com | sh 2>/dev/null; then
   msg_ok "DMS native installation executed."
 else
-  msg_warn "DMS native script finished with non-fatal execution warnings."
+  msg_warn "DMS installer finished with non-fatal execution warnings."
 fi
 
 # ------------------------------------------------------------------------------
@@ -196,9 +194,13 @@ step_header "5" "Active Directory Configuration"
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
+TARGET_DOMAIN="${DOMAIN_NAME:-gsfcu.local}"
+TARGET_REALM="${REALM_NAME:-${TARGET_DOMAIN^^}}"
+TARGET_ADMIN="${DOMAIN_USER:-admin}"
+
 if [ -n "${AD_DNS_IP:-}" ]; then
-  msg_info "Applying AD DNS server configuration (${AD_DNS_IP})..."
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  msg_info "Configuring NetworkManager DNS (${AD_DNS_IP}) for domain ${TARGET_DOMAIN}..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$TARGET_DOMAIN" ipv4.ignore-auto-dns yes 2>/dev/null || true
   nmcli connection up "$TARGET_CONN" 2>/dev/null || true
 fi
 
@@ -207,7 +209,7 @@ chronyc makestep > /dev/null 2>&1 || true
 msg_ok "Network clock synchronized via chrony."
 
 if [ -z "${DOMAIN_PASS:-}" ]; then
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${TARGET_ADMIN}@${TARGET_REALM}': "
   read -sp "" DOMAIN_PASS < /dev/tty
   echo ""
 fi
@@ -216,10 +218,10 @@ fi
 # Step 6: Realm Join
 # ------------------------------------------------------------------------------
 step_header "6" "Joining Active Directory Realm"
-if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
-  msg_ok "Joined Active Directory realm successfully."
+if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose; then
+  msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
 else
-  msg_err "Failed to join domain. Check network connection or DNS settings."
+  msg_err "Failed to join domain '${TARGET_REALM}'. Check network connection or DNS settings."
   exit 1
 fi
 
@@ -356,18 +358,31 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 msg_ok "Background policy refresh daemon active."
 
 # ------------------------------------------------------------------------------
-# Step 9: System Configs
+# Step 9: System Configs & Short Username Enforcement
 # ------------------------------------------------------------------------------
-step_header "9" "Applying System Configurations"
+step_header "9" "Applying System Configurations & SSSD Customizations"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
   [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
+  msg_ok "Custom configuration overrides applied."
+fi
+
+# Apply Short Username setting to SSSD
+USE_FQDN="False"
+if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "no" ]; then
+  USE_FQDN="True"
+fi
+
+if [ -f /etc/sssd/sssd.conf ]; then
+  if grep -q "use_fully_qualified_names" /etc/sssd/sssd.conf; then
+    sed -i "s/use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
+  else
+    sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
+  fi
   chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
   chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
-  msg_ok "Custom configuration overrides applied."
-else
-  msg_info "No custom config directory found. Preserving system defaults."
+  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN})."
 fi
 
 # ------------------------------------------------------------------------------
