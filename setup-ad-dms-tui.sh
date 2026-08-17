@@ -10,7 +10,6 @@ systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target 
 setterm -blank 0 -powersave off -powerdown 0 &>/dev/null || true
 
 cleanup() {
-  # Restore system sleep targets upon exit
   systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target &>/dev/null || true
 }
 trap cleanup EXIT
@@ -394,15 +393,24 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 msg_ok "Background policy refresh daemon active."
 
 # ------------------------------------------------------------------------------
-# Step 10: System Configs & SSSD Domain Login Fixes
+# Step 10: System Configs, PAM & SSSD Domain Login Fixes
 # ------------------------------------------------------------------------------
 step_header "10" "Applying System Configurations & SSSD Settings"
 
 if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
-  [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
-  msg_ok "Custom configuration overrides applied."
+  msg_ok "Custom Kerberos configuration overrides applied."
 fi
+
+# Ensure Greetd PAM delegates directly to system-auth (SSSD)
+cat <<'EOF' > /etc/pam.d/greetd
+#%PAM-1.0
+auth        include     system-auth
+account     include     system-auth
+password    include     system-auth
+session     include     system-auth
+session     optional    pam_gnome_keyring.so auto_start
+EOF
 
 USE_FQDN="False"
 if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "no" ]; then
@@ -410,18 +418,20 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
 fi
 
 if [ -f /etc/sssd/sssd.conf ]; then
+  # Inject default domain suffix under [sssd] section
+  if grep -q "\[sssd\]" /etc/sssd/sssd.conf; then
+    if ! grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
+      sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
+    else
+      sed -i "s/default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
+    fi
+  fi
+
+  # Domain specific parameters
   if grep -q "use_fully_qualified_names" /etc/sssd/sssd.conf; then
     sed -i "s/use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
   else
     sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
-  fi
-
-  if [ "$USE_FQDN" = "False" ]; then
-    if grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
-      sed -i "s/default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
-    else
-      sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
-    fi
   fi
 
   if grep -q "fallback_homedir" /etc/sssd/sssd.conf; then
@@ -448,7 +458,9 @@ msg_ok "PAM configured for SSSD and automatic home directory creation."
 # ------------------------------------------------------------------------------
 step_header "12" "Deploying DMS Themes & Niri Autostart Settings"
 
-# Locate archive across subdirectories or current working path
+# Clean up duplicate XDG autostart entries that crash Wayland sessions
+rm -f /etc/xdg/autostart/dms.desktop /etc/xdg/autostart/dank-material-shell.desktop
+
 THEME_ARCHIVE=""
 for candidate in \
   "${SCRIPT_DIR}/fedora-ad-dms/niri-dms-config.tar.gz" \
@@ -464,12 +476,10 @@ done
 if [ -n "$THEME_ARCHIVE" ]; then
   msg_info "Found DMS theme archive at: ${THEME_ARCHIVE}"
   
-  # Deploy to skeleton template for new domain users
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel 2>/dev/null || true
   chmod -R 755 /etc/skel/.config /etc/skel/.local 2>/dev/null || true
 
-  # Deploy directly to running user if invoked via sudo
   if [ -n "${REAL_USER:-}" ] && [ "$REAL_USER" != "root" ]; then
     USER_HOME=$(eval echo "~${REAL_USER}")
     if [ -d "$USER_HOME" ]; then
@@ -483,39 +493,28 @@ else
   msg_warn "Theme archive 'niri-dms-config.tar.gz' not found. Skipping skeleton sync."
 fi
 
-# Ensure Niri executes DMS upon login
-configure_niri_autostart() {
-  local config_file="$1"
-  if [ -f "$config_file" ]; then
-    if ! grep -q 'spawn-at-startup "dms"' "$config_file" && ! grep -q 'spawn-at-startup "dank-material-shell"' "$config_file"; then
-      echo -e '\n# Dank Material Shell Autostart\nspawn-at-startup "dms"' >> "$config_file"
+# Ensure Niri configuration contains clean autostart directive
+apply_niri_autostart() {
+  local target_dir="$1"
+  local kdl_file="${target_dir}/.config/niri/config.kdl"
+  
+  mkdir -p "${target_dir}/.config/niri"
+  if [ -f "$kdl_file" ]; then
+    if ! grep -q 'spawn-at-startup "dms"' "$kdl_file" && ! grep -q 'spawn-at-startup "dank-material-shell"' "$kdl_file"; then
+      echo -e '\nspawn-at-startup "dms"' >> "$kdl_file"
     fi
+  else
+    echo 'spawn-at-startup "dms"' > "$kdl_file"
   fi
 }
 
-mkdir -p /etc/skel/.config/niri
-[ -f /etc/skel/.config/niri/config.kdl ] || touch /etc/skel/.config/niri/config.kdl
-configure_niri_autostart /etc/skel/.config/niri/config.kdl
+apply_niri_autostart "/etc/skel"
 
 if [ -n "${REAL_USER:-}" ] && [ "$REAL_USER" != "root" ]; then
   USER_HOME=$(eval echo "~${REAL_USER}")
-  if [ -d "${USER_HOME}/.config/niri" ]; then
-    [ -f "${USER_HOME}/.config/niri/config.kdl" ] || touch "${USER_HOME}/.config/niri/config.kdl"
-    configure_niri_autostart "${USER_HOME}/.config/niri/config.kdl"
-    chown -R "${REAL_USER}:" "${USER_HOME}/.config/niri" 2>/dev/null || true
-  fi
+  apply_niri_autostart "$USER_HOME"
+  chown -R "${REAL_USER}:" "${USER_HOME}/.config/niri" 2>/dev/null || true
 fi
-
-# Fallback XDG desktop autostart entry for DMS
-mkdir -p /etc/xdg/autostart
-cat <<'EOF' > /etc/xdg/autostart/dms.desktop
-[Desktop Entry]
-Type=Application
-Name=Dank Material Shell
-Exec=dms
-X-GNOME-Autostart-enabled=true
-EOF
-chmod 644 /etc/xdg/autostart/dms.desktop
 
 msg_ok "Configured Niri to automatically start DMS on login."
 
@@ -530,8 +529,11 @@ setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 
+# Restore SELinux contexts for PAM and home creation
+restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter 2>/dev/null || true
+
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
-echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.  v1.2  ${NC} ${GREEN}|${NC}"
+echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
 
 if ask_yes_no "Restart authentication services (SSSD, Oddjob, Greetd) now?" "Y"; then
@@ -542,7 +544,6 @@ if ask_yes_no "Restart authentication services (SSSD, Oddjob, Greetd) now?" "Y";
   done
   echo -e "\r  ${GREEN}[COUNTDOWN]${NC} Executing service restart now (0s)...                         "
 
-  # Stop SSSD cleanly before wiping cache to prevent DB corruption
   systemctl stop sssd oddjobd greetd 2>/dev/null || true
   sss_cache -E 2>/dev/null || true
   rm -f /var/lib/sss/db/* 2>/dev/null || true
