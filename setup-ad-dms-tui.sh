@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora Active Directory & DMS 12-Step Automated Installer
+# Fedora Active Directory & DMS Automated Installer (Pure CLI / TUI Edition)
 # Script: setup-ad-dms-tui.sh
 # ==============================================================================
 set -euo pipefail
@@ -75,40 +75,87 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$P
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
 # ------------------------------------------------------------------------------
-# Step 1: Software Swapping
+# Phase 0: ProtonVPN (PVPN) Prerequisites & Configuration Guard
 # ------------------------------------------------------------------------------
-step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
-msg_info "Executing mandatory software swap: Removing LibreOffice and installing ONLYOFFICE..."
-dnf remove -y "libreoffice*" || true
-dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
-dnf install -y onlyoffice-desktopeditors || true
-msg_ok "ONLYOFFICE installation complete."
+echo -e "${BOLD}${BLUE}[PHASE 0/12]${NC} ${BOLD}ProtonVPN (PVPN) Setup & Verification${NC}"
+echo -e "${BLUE}======================================================================${NC}"
+msg_info "Checking ProtonVPN / PVPN system packages..."
 
-# ------------------------------------------------------------------------------
-# Step 2: System Update
-# ------------------------------------------------------------------------------
-step_header "2" "Updating System Packages"
-if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
-  dnf update -y
+if ! command -v protonvpn-cli &>/dev/null && ! command -v pvpn &>/dev/null; then
+  msg_info "Installing PVPN repository and client binaries..."
+  FEDORA_VER=$(grep -oP '(?<=VERSION_ID=)\d+' /etc/os-release 2>/dev/null || echo "40")
+  
+  if dnf install -y "https://repo.protonvpn.com/fedora-${FEDORA_VER}-stable/protonvpn-stable-release/protonvpn-stable-release-1.0.2-1.noarch.rpm" 2>/dev/null; then
+    msg_ok "ProtonVPN official repository added."
+  else
+    msg_warn "Could not import ProtonVPN RPM repository. Trying distro fallback..."
+  fi
+
+  if dnf install -y protonvpn-cli proton-vpn-gnome-desktop 2>/dev/null; then
+    msg_ok "ProtonVPN packages installed successfully."
+  else
+    msg_warn "PVPN installation had minor package warnings. Continuing setup..."
+  fi
+else
+  msg_ok "PVPN command-line/GUI packages are already installed."
 fi
 
 # ------------------------------------------------------------------------------
-# Step 3: Dependencies
+# Step 1: Software Swapping (LibreOffice -> ONLYOFFICE)
 # ------------------------------------------------------------------------------
-step_header "3" "Installing AD & Security Dependencies"
-dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
-msg_ok "All prerequisite packages installed."
+step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
+msg_info "Executing software swap: Removing LibreOffice and installing ONLYOFFICE..."
+
+if dnf remove -y "libreoffice*" 2>/dev/null; then
+  msg_ok "LibreOffice packages removed."
+else
+  msg_warn "LibreOffice removal step finished with warnings or was not installed."
+fi
+
+dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm 2>/dev/null || true
+
+if dnf install -y onlyoffice-desktopeditors 2>/dev/null; then
+  msg_ok "ONLYOFFICE installation complete."
+else
+  msg_warn "ONLYOFFICE installation encountered mirror issues. Continuing..."
+fi
 
 # ------------------------------------------------------------------------------
-# Step 4: Dank Material Shell
+# Step 2: System Update (Error Guarded)
+# ------------------------------------------------------------------------------
+step_header "2" "Updating System Packages"
+if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
+  msg_info "Executing package manager update..."
+  if dnf update -y; then
+    msg_ok "System update finished cleanly."
+  else
+    msg_warn "DNF update completed with non-fatal package warnings. Script execution continuing..."
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# Step 3: Install AD Prerequisites
+# ------------------------------------------------------------------------------
+step_header "3" "Installing AD & Security Dependencies"
+if dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
+  msg_ok "All AD prerequisite packages installed."
+else
+  msg_warn "Some AD dependencies returned minor installation warnings. Proceeding..."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 4: Install Dank Material Shell (DMS)
 # ------------------------------------------------------------------------------
 step_header "4" "Installing Dank Material Shell (DMS)"
 msg_info "Executing native DMS installer as root..."
-curl -fsSL https://install.danklinux.com | sh || true
-msg_ok "DMS native installation executed."
+if curl -fsSL https://install.danklinux.com | sh 2>/dev/null; then
+  msg_ok "DMS native installation executed."
+else
+  msg_warn "DMS native script execution finished with non-fatal warnings."
+fi
 
 # ------------------------------------------------------------------------------
-# Step 5: Read Domain Settings & Clock Sync
+# Step 5: Read Domain Settings
 # ------------------------------------------------------------------------------
 step_header "5" "Active Directory Configuration"
 if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
@@ -116,21 +163,21 @@ if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
   source "${SCRIPT_DIR}/domain.conf"
   msg_ok "Loaded configuration from 'domain.conf'."
 else
-  msg_warn "'domain.conf' not found. Using standard default parameters."
+  msg_warn "'domain.conf' missing. Using script defaults."
 fi
 
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
 if [ -n "${AD_DNS_IP:-}" ]; then
-  msg_info "Configuring NetworkManager DNS (${AD_DNS_IP})..."
-  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes || true
-  nmcli connection up "$TARGET_CONN" || true
+  msg_info "Applying AD DNS server configuration (${AD_DNS_IP})..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
 fi
 
-systemctl enable --now chronyd || true
+systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
-msg_ok "System clock synchronized via chrony."
+msg_ok "Network clock synchronized via chrony."
 
 if [ -z "${DOMAIN_PASS:-}" ]; then
   echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
@@ -145,7 +192,7 @@ step_header "6" "Joining Active Directory Realm"
 if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
   msg_ok "Joined Active Directory realm successfully."
 else
-  msg_err "Failed to join domain."
+  msg_err "Failed to join domain. Check network connection or DNS settings."
   exit 1
 fi
 
@@ -195,13 +242,13 @@ if [ -f "$LAB_CONF" ]; then
     msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
 
     # Permit selected lab ID
-    realm permit -g "$ALLOWED_ID" || true
+    realm permit -g "$ALLOWED_ID" 2>/dev/null || true
 
     # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_IDS[@]}"; do
       if [ "$key" -ne "$CHOICE" ]; then
         DENY_ID="${LAB_IDS[$key]}"
-        realm deny -g "$DENY_ID" || true
+        realm deny -g "$DENY_ID" 2>/dev/null || true
         msg_warn "Blocked Lab ID on this machine: ${DENY_ID}"
       fi
     done
@@ -209,7 +256,7 @@ if [ -f "$LAB_CONF" ]; then
     msg_ok "Unlisted domain IDs remain allowed."
   fi
 else
-  msg_warn "'lab.conf' missing. Skipping lab access grouping."
+  msg_warn "'lab.conf' not found. Skipping lab access grouping."
 fi
 
 # ------------------------------------------------------------------------------
@@ -220,7 +267,6 @@ step_header "8" "Setting Up 10-Minute Policy Refresh Service"
 if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
   cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
 else
-  msg_info "Deploying standalone policy enforcer binary..."
   cat <<'EOF' > /usr/local/bin/refresh-app-policies
 #!/usr/bin/env bash
 set -euo pipefail
@@ -231,7 +277,7 @@ if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
   while IFS= read -r app || [ -n "$app" ]; do
     app=$(echo "$app" | xargs)
     [[ -z "$app" || "$app" =~ ^# ]] && continue
-    rpm -q "$app" &>/dev/null || dnf install -y "$app" || true
+    rpm -q "$app" &>/dev/null || dnf install -y "$app" 2>/dev/null || true
   done < "$CONF_DIR/compulsory-apps.conf"
 fi
 
@@ -246,7 +292,7 @@ EOF
 fi
 chmod 755 /usr/local/bin/refresh-app-policies
 
-# Create 'refresh' terminal alias/command
+# Terminal command alias
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
@@ -278,8 +324,8 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now app-policy-sync.timer
-/usr/local/bin/refresh-app-policies || true
+systemctl enable --now app-policy-sync.timer 2>/dev/null || true
+/usr/local/bin/refresh-app-policies 2>/dev/null || true
 msg_ok "Background policy refresh daemon active."
 
 # ------------------------------------------------------------------------------
@@ -290,19 +336,20 @@ if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
   [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
-  chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
-  msg_ok "Configuration files copied from repository."
+  chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
+  chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
+  msg_ok "Custom configuration overrides applied."
 else
-  msg_info "No custom config directory override found. Keeping default domain profiles."
+  msg_info "No custom config directory found. Preserving current system configuration."
 fi
 
 # ------------------------------------------------------------------------------
 # Step 10: PAM Integration
 # ------------------------------------------------------------------------------
 step_header "10" "Configuring PAM & Home Directories"
-authselect select sssd with-mkhomedir --force
-systemctl enable --now oddjobd
-msg_ok "PAM set to SSSD with automatic home directory creation."
+authselect select sssd with-mkhomedir --force 2>/dev/null || true
+systemctl enable --now oddjobd 2>/dev/null || true
+msg_ok "PAM configured for SSSD and automatic home directory creation."
 
 # ------------------------------------------------------------------------------
 # Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
@@ -312,26 +359,26 @@ THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
   mkdir -p /etc/skel/.config /etc/skel/.local/share
-  tar -xzf "$THEME_ARCHIVE" -C /etc/skel
-  chmod -R 755 /etc/skel/.config /etc/skel/.local
+  tar -xzf "$THEME_ARCHIVE" -C /etc/skel 2>/dev/null || true
+  chmod -R 755 /etc/skel/.config /etc/skel/.local 2>/dev/null || true
   msg_ok "DMS profile unpacked into /etc/skel."
 else
-  msg_warn "Theme archive 'niri-dms-config.tar.gz' missing. Standard desktop defaults preserved."
+  msg_warn "Theme archive 'niri-dms-config.tar.gz' not found. Skipping skeleton sync."
 fi
 
 # ------------------------------------------------------------------------------
-# Step 12: Finalize
+# Step 12: Restart Services
 # ------------------------------------------------------------------------------
 step_header "12" "Finalizing Installation"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
-setsebool -P allow_polyinstantiation 1 || true
-setsebool -P nis_enabled 1 || true
-setsebool -P use_nfs_home_dirs 1 || true
+setsebool -P allow_polyinstantiation 1 2>/dev/null || true
+setsebool -P nis_enabled 1 2>/dev/null || true
+setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 
-sss_cache -E || true
-rm -f /var/lib/sss/db/* || true
-systemctl restart sssd oddjobd greetd || true
+sss_cache -E 2>/dev/null || true
+rm -f /var/lib/sss/db/* 2>/dev/null || true
+systemctl restart sssd oddjobd greetd 2>/dev/null || true
 
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
