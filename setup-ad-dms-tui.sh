@@ -178,14 +178,21 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 4: Install Dank Material Shell (DMS)
+# Step 4: Install Dank Material Shell (DMS) as Non-Root User
 # ------------------------------------------------------------------------------
 step_header "4" "Installing Dank Material Shell (DMS)"
-msg_info "Executing native DMS installer as root..."
-if curl -fsSL https://install.danklinux.com | sh 2>/dev/null; then
-  msg_ok "DMS native installation executed."
+REAL_USER="${SUDO_USER:-}"
+
+if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+  msg_info "Executing DMS installer as standard user '${REAL_USER}'..."
+  if sudo -u "$REAL_USER" bash -c "curl -fsSL https://install.danklinux.com | sh" 2>/dev/null; then
+    msg_ok "DMS native installation executed for user '${REAL_USER}'."
+  else
+    msg_warn "DMS installer finished with execution warnings."
+  fi
 else
-  msg_warn "DMS installer finished with non-fatal execution warnings."
+  msg_warn "Direct root session detected without SUDO_USER context."
+  msg_warn "DMS installer requires standard user privileges. Skipping live installer run (skeleton configs will still deploy to /etc/skel)."
 fi
 
 # ------------------------------------------------------------------------------
@@ -222,21 +229,32 @@ systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 msg_ok "Network clock synchronized via chrony."
 
-if [ -z "${DOMAIN_PASS:-}" ]; then
-  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${TARGET_ADMIN}@${TARGET_REALM}': "
-  read -sp "" DOMAIN_PASS < /dev/tty
-  echo ""
-fi
-
 # ------------------------------------------------------------------------------
-# Step 7: Realm Join
+# Step 7: Realm Join (With Pre-Membership Verification)
 # ------------------------------------------------------------------------------
 step_header "7" "Joining Active Directory Realm"
-if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose; then
-  msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
+
+if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
+  msg_ok "Device is already joined to Active Directory realm '${TARGET_REALM}'. Moving to next step."
 else
-  msg_err "Failed to join domain '${TARGET_REALM}'. Check network connection or DNS settings."
-  exit 1
+  if [ -z "${DOMAIN_PASS:-}" ]; then
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${TARGET_ADMIN}@${TARGET_REALM}': "
+    read -sp "" DOMAIN_PASS < /dev/tty
+    echo ""
+  fi
+
+  msg_info "Joining domain '${TARGET_REALM}'..."
+  if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose 2>/dev/null; then
+    msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
+  else
+    # Double-check membership in case realm join succeeded despite non-zero exit code
+    if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
+      msg_ok "Verified membership in Active Directory realm '${TARGET_REALM}'."
+    else
+      msg_err "Failed to join domain '${TARGET_REALM}'. Check network connection or DNS settings."
+      exit 1
+    fi
+  fi
 fi
 
 # ------------------------------------------------------------------------------
