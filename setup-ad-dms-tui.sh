@@ -28,7 +28,7 @@ done
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP     V1.1           ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
