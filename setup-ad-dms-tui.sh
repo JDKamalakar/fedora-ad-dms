@@ -74,30 +74,64 @@ draw_banner
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
 [[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
-# ------------------------------------------------------------------------------
-# Phase 0: ProtonVPN (PVPN) Prerequisites & Configuration Guard
-# ------------------------------------------------------------------------------
-echo -e "${BOLD}${BLUE}[PHASE 0/12]${NC} ${BOLD}ProtonVPN (PVPN) Setup & Verification${NC}"
-echo -e "${BLUE}======================================================================${NC}"
-msg_info "Checking ProtonVPN / PVPN system packages..."
+# Pre-load configuration settings if available
+if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/domain.conf"
+  msg_ok "Loaded environment settings from 'domain.conf'."
+fi
 
-if ! command -v protonvpn-cli &>/dev/null && ! command -v pvpn &>/dev/null; then
-  msg_info "Installing PVPN repository and client binaries..."
-  FEDORA_VER=$(grep -oP '(?<=VERSION_ID=)\d+' /etc/os-release 2>/dev/null || echo "40")
-  
-  if dnf install -y "https://repo.protonvpn.com/fedora-${FEDORA_VER}-stable/protonvpn-stable-release/protonvpn-stable-release-1.0.2-1.noarch.rpm" 2>/dev/null; then
-    msg_ok "ProtonVPN official repository added."
+# ------------------------------------------------------------------------------
+# Phase 0: ProtonVPN (pVPN) Installation & Provisioning
+# ------------------------------------------------------------------------------
+echo -e "${BOLD}${BLUE}[PHASE 0/12]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Credentials${NC}"
+echo -e "${BLUE}======================================================================${NC}"
+
+SHOULD_INSTALL_PVPN=false
+
+if [ -n "${ENABLE_PVPN:-}" ]; then
+  case "$(echo "$ENABLE_PVPN" | tr '[:upper:]' '[:lower:]')" in
+    yes|y|true|1)
+      SHOULD_INSTALL_PVPN=true
+      msg_info "pVPN installation explicitly enabled in domain.conf."
+      ;;
+    no|n|false|0)
+      SHOULD_INSTALL_PVPN=false
+      msg_info "pVPN installation explicitly disabled in domain.conf."
+      ;;
+    *)
+      SHOULD_INSTALL_PVPN=false
+      ;;
+  esac
+else
+  if ask_yes_no "Install and configure ProtonVPN (pVPN) on this machine?" "Y"; then
+    SHOULD_INSTALL_PVPN=true
+  fi
+fi
+
+if [ "$SHOULD_INSTALL_PVPN" = true ]; then
+  msg_info "Downloading and executing pVPN installation script..."
+  if curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash 2>/dev/null; then
+    msg_ok "pVPN installation script completed successfully."
   else
-    msg_warn "Could not import ProtonVPN RPM repository. Trying distro fallback..."
+    msg_warn "pVPN installer finished with non-fatal warnings."
   fi
 
-  if dnf install -y protonvpn-cli proton-vpn-gnome-desktop 2>/dev/null; then
-    msg_ok "ProtonVPN packages installed successfully."
-  else
-    msg_warn "PVPN installation had minor package warnings. Continuing setup..."
+  # Provision credentials if present in domain.conf
+  if [ -n "${PVPN_USER:-}" ] && [ -n "${PVPN_PASS:-}" ]; then
+    msg_info "Applying pVPN login credentials from domain.conf..."
+    if command -v pvpn &>/dev/null; then
+      (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | pvpn login 2>/dev/null || true
+      msg_ok "pVPN credentials passed to service."
+    elif command -v protonvpn-cli &>/dev/null; then
+      (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | protonvpn-cli login 2>/dev/null || true
+      msg_ok "pVPN credentials passed to protonvpn-cli."
+    else
+      msg_warn "pVPN CLI binary not found in PATH to auto-submit credentials."
+    fi
   fi
 else
-  msg_ok "PVPN command-line/GUI packages are already installed."
+  msg_info "Skipping pVPN setup."
 fi
 
 # ------------------------------------------------------------------------------
@@ -117,7 +151,7 @@ dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffic
 if dnf install -y onlyoffice-desktopeditors 2>/dev/null; then
   msg_ok "ONLYOFFICE installation complete."
 else
-  msg_warn "ONLYOFFICE installation encountered mirror issues. Continuing..."
+  msg_warn "ONLYOFFICE package installation encountered mirror issues. Continuing..."
 fi
 
 # ------------------------------------------------------------------------------
@@ -129,7 +163,7 @@ if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
   if dnf update -y; then
     msg_ok "System update finished cleanly."
   else
-    msg_warn "DNF update completed with non-fatal package warnings. Script execution continuing..."
+    msg_warn "DNF update encountered non-fatal package issues. Script execution continuing..."
   fi
 fi
 
@@ -140,7 +174,7 @@ step_header "3" "Installing AD & Security Dependencies"
 if dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
   msg_ok "All AD prerequisite packages installed."
 else
-  msg_warn "Some AD dependencies returned minor installation warnings. Proceeding..."
+  msg_warn "Some AD dependencies returned minor warnings. Proceeding..."
 fi
 
 # ------------------------------------------------------------------------------
@@ -151,20 +185,13 @@ msg_info "Executing native DMS installer as root..."
 if curl -fsSL https://install.danklinux.com | sh 2>/dev/null; then
   msg_ok "DMS native installation executed."
 else
-  msg_warn "DMS native script execution finished with non-fatal warnings."
+  msg_warn "DMS native script finished with non-fatal execution warnings."
 fi
 
 # ------------------------------------------------------------------------------
-# Step 5: Read Domain Settings
+# Step 5: Read Domain Settings & Clock Sync
 # ------------------------------------------------------------------------------
 step_header "5" "Active Directory Configuration"
-if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
-  # shellcheck source=/dev/null
-  source "${SCRIPT_DIR}/domain.conf"
-  msg_ok "Loaded configuration from 'domain.conf'."
-else
-  msg_warn "'domain.conf' missing. Using script defaults."
-fi
 
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
@@ -340,7 +367,7 @@ if [ -d "${SCRIPT_DIR}/configs" ]; then
   chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
   msg_ok "Custom configuration overrides applied."
 else
-  msg_info "No custom config directory found. Preserving current system configuration."
+  msg_info "No custom config directory found. Preserving system defaults."
 fi
 
 # ------------------------------------------------------------------------------
@@ -367,7 +394,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 12: Restart Services
+# Step 12: Finalize
 # ------------------------------------------------------------------------------
 step_header "12" "Finalizing Installation"
 mkdir -p /var/cache/dms-greeter
