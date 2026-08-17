@@ -3,7 +3,6 @@
 # Fedora Active Directory & DMS Automated Installer (Pure CLI / TUI Edition)
 # Script: setup-ad-dms-tui.sh
 # ==============================================================================
-
 set -euo pipefail
 
 # ANSI Colors
@@ -29,12 +28,12 @@ done
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP    V1           ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/13]${NC} ${BOLD}$2${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -85,9 +84,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Phase 0: ProtonVPN (pVPN) Control Logic ("yes", "no", "ask")
+# Phase 0: ProtonVPN (pVPN) Setup & Initial Connection
 # ------------------------------------------------------------------------------
-echo -e "${BOLD}${BLUE}[PHASE 0/12]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Credentials${NC}"
+echo -e "${BOLD}${BLUE}[PHASE 0/13]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
 echo -e "${BLUE}======================================================================${NC}"
 
 SHOULD_INSTALL_PVPN=false
@@ -103,14 +102,14 @@ case "$PVPN_MODE" in
     msg_info "pVPN installation explicitly disabled (ENABLE_PVPN='no')."
     ;;
   ask|*)
-    if ask_yes_no "Install and configure ProtonVPN (pVPN) on this machine?" "Y"; then
+    if ask_yes_no "Install and connect ProtonVPN (pVPN) for software installation?" "Y"; then
       SHOULD_INSTALL_PVPN=true
     fi
     ;;
 esac
 
 if [ "$SHOULD_INSTALL_PVPN" = true ]; then
-  msg_info "Executing pVPN installer from repository..."
+  msg_info "Downloading and running pVPN installer script..."
   if curl -fsSL https://raw.githubusercontent.com/YourDoritos/pVPN/main/install.sh | bash 2>/dev/null; then
     msg_ok "pVPN installation script executed."
   else
@@ -118,19 +117,21 @@ if [ "$SHOULD_INSTALL_PVPN" = true ]; then
   fi
 
   if [ -n "${PVPN_USER:-}" ] && [ -n "${PVPN_PASS:-}" ]; then
-    msg_info "Applying pVPN login credentials for '${PVPN_USER}'..."
-    if command -v pvpn &>/dev/null; then
-      (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | pvpn login 2>/dev/null || true
-      msg_ok "Credentials submitted to pvpn CLI."
-    elif command -v protonvpn-cli &>/dev/null; then
-      (echo "$PVPN_USER"; sleep 1; echo "$PVPN_PASS") | protonvpn-cli login 2>/dev/null || true
-      msg_ok "Credentials submitted to protonvpn-cli."
+    if command -v pvpnctl &>/dev/null; then
+      msg_info "Logging into pVPN with user '${PVPN_USER}'..."
+      pvpnctl login "$PVPN_USER" "$PVPN_PASS" 2>/dev/null || true
+      
+      msg_info "Connecting to pVPN..."
+      pvpnctl connect 2>/dev/null || true
+      msg_ok "pVPN connection established."
     else
-      msg_warn "pVPN binary not found in system PATH to submit credentials automatically."
+      msg_warn "'pvpnctl' command not found in PATH after installation."
     fi
+  else
+    msg_warn "pVPN credentials missing in 'domain.conf'. Skipping auto-connect."
   fi
 else
-  msg_info "Skipping pVPN configuration phase."
+  msg_info "Skipping pVPN setup phase."
 fi
 
 # ------------------------------------------------------------------------------
@@ -142,7 +143,7 @@ msg_info "Executing software swap: Removing LibreOffice and installing ONLYOFFIC
 if dnf remove -y "libreoffice*" 2>/dev/null; then
   msg_ok "LibreOffice packages removed."
 else
-  msg_warn "LibreOffice removal step finished with warnings or packages were not present."
+  msg_warn "LibreOffice removal finished with warnings or packages were not present."
 fi
 
 dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm 2>/dev/null || true
@@ -150,7 +151,7 @@ dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffic
 if dnf install -y onlyoffice-desktopeditors 2>/dev/null; then
   msg_ok "ONLYOFFICE installation complete."
 else
-  msg_warn "ONLYOFFICE package installation encountered mirror issues. Continuing setup..."
+  msg_warn "ONLYOFFICE package installation encountered minor mirror issues. Continuing setup..."
 fi
 
 # ------------------------------------------------------------------------------
@@ -188,9 +189,21 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 5: Read Domain Settings & Clock Sync
+# Step 5: Disconnect ProtonVPN (pVPN) Before AD/Domain Setup
 # ------------------------------------------------------------------------------
-step_header "5" "Active Directory Configuration"
+step_header "5" "Disconnecting ProtonVPN (pVPN)"
+if command -v pvpnctl &>/dev/null; then
+  msg_info "Disconnecting pVPN to restore direct domain/local network routing..."
+  pvpnctl disconnect 2>/dev/null || true
+  msg_ok "pVPN disconnected successfully."
+else
+  msg_info "pVPN CLI not found. Skipping disconnect step."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 6: Active Directory Network & Clock Configuration
+# ------------------------------------------------------------------------------
+step_header "6" "Active Directory Configuration"
 
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
@@ -216,9 +229,9 @@ if [ -z "${DOMAIN_PASS:-}" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 6: Realm Join
+# Step 7: Realm Join
 # ------------------------------------------------------------------------------
-step_header "6" "Joining Active Directory Realm"
+step_header "7" "Joining Active Directory Realm"
 if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose; then
   msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
 else
@@ -227,9 +240,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 7: Interactive Lab Access Selection
+# Step 8: Interactive Lab Access Selection
 # ------------------------------------------------------------------------------
-step_header "7" "Configuring Lab Access Control Rules"
+step_header "8" "Configuring Lab Access Control Rules"
 
 LAB_CONF="${SCRIPT_DIR}/lab.conf"
 if [ -f "$LAB_CONF" ]; then
@@ -290,9 +303,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 8: Policy Refresh Service
+# Step 9: Policy Refresh Service
 # ------------------------------------------------------------------------------
-step_header "8" "Setting Up 10-Minute Policy Refresh Service"
+step_header "9" "Setting Up 10-Minute Policy Refresh Service"
 
 if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
   cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
@@ -359,9 +372,9 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 msg_ok "Background policy refresh daemon active."
 
 # ------------------------------------------------------------------------------
-# Step 9: System Configs & Short Username Enforcement
+# Step 10: System Configs & Short Username Enforcement
 # ------------------------------------------------------------------------------
-step_header "9" "Applying System Configurations & SSSD Customizations"
+step_header "10" "Applying System Configurations & SSSD Customizations"
 if [ -d "${SCRIPT_DIR}/configs" ]; then
   [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
@@ -387,17 +400,17 @@ if [ -f /etc/sssd/sssd.conf ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 10: PAM Integration
+# Step 11: PAM Integration
 # ------------------------------------------------------------------------------
-step_header "10" "Configuring PAM & Home Directories"
+step_header "11" "Configuring PAM & Home Directories"
 authselect select sssd with-mkhomedir --force 2>/dev/null || true
 systemctl enable --now oddjobd 2>/dev/null || true
 msg_ok "PAM configured for SSSD and automatic home directory creation."
 
 # ------------------------------------------------------------------------------
-# Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
+# Step 12: Configure DMS Profile for New Domain Users (/etc/skel)
 # ------------------------------------------------------------------------------
-step_header "11" "Applying DMS Themes for New Users (/etc/skel)"
+step_header "12" "Applying DMS Themes for New Users (/etc/skel)"
 THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
 
 if [ -f "$THEME_ARCHIVE" ]; then
@@ -410,9 +423,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 12: Finalize
+# Step 13: Finalize
 # ------------------------------------------------------------------------------
-step_header "12" "Finalizing Installation"
+step_header "13" "Finalizing Installation"
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
