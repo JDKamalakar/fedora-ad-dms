@@ -3,8 +3,17 @@
 # Fedora Active Directory & DMS Automated Installer (Pure CLI / TUI Edition)
 # Script: setup-ad-dms-tui.sh
 # ==============================================================================
-
 set -euo pipefail
+
+# Inhibit system sleep/suspend and screen blanking while script runs
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target &>/dev/null || true
+setterm -blank 0 -powersave off -powerdown 0 &>/dev/null || true
+
+cleanup() {
+  # Restore system sleep targets upon exit
+  systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target &>/dev/null || true
+}
+trap cleanup EXIT
 
 # ANSI Colors
 BOLD="\033[1m"
@@ -29,7 +38,7 @@ done
 draw_banner() {
   clear
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
-  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP     V1.1           ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
   echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
 }
 
@@ -193,7 +202,7 @@ if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   fi
 else
   msg_warn "Direct root session detected without SUDO_USER context."
-  msg_warn "DMS installer requires standard user privileges. Skipping live installer run (skeleton configs will still deploy to /etc/skel)."
+  msg_warn "DMS installer requires standard user privileges. Skeleton configs will deploy to /etc/skel."
 fi
 
 # ------------------------------------------------------------------------------
@@ -248,7 +257,6 @@ else
   if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose 2>/dev/null; then
     msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
   else
-    # Double-check membership in case realm join succeeded despite non-zero exit code
     if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
       msg_ok "Verified membership in Active Directory realm '${TARGET_REALM}'."
     else
@@ -303,10 +311,8 @@ if [ -f "$LAB_CONF" ]; then
     
     msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
 
-    # Permit selected lab ID
     realm permit -g "$ALLOWED_ID" 2>/dev/null || true
 
-    # Explicitly block other lab IDs listed in lab.conf
     for key in "${!LAB_IDS[@]}"; do
       if [ "$key" -ne "$CHOICE" ]; then
         DENY_ID="${LAB_IDS[$key]}"
@@ -354,14 +360,12 @@ EOF
 fi
 chmod 755 /usr/local/bin/refresh-app-policies
 
-# Terminal command alias
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 sudo /usr/local/bin/refresh-app-policies
 EOF
 chmod 755 /usr/local/bin/refresh
 
-# Systemd Service
 cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
 [Unit]
 Description=Sync software allow/block lists & install compulsory apps
@@ -372,7 +376,6 @@ Type=oneshot
 ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-# Systemd Timer (Every 10 Minutes)
 cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
 Description=Run app-policy-sync every 10 minutes
@@ -391,17 +394,16 @@ systemctl enable --now app-policy-sync.timer 2>/dev/null || true
 msg_ok "Background policy refresh daemon active."
 
 # ------------------------------------------------------------------------------
-# Step 10: System Configs & Short Username Enforcement
+# Step 10: System Configs & SSSD Domain Login Fixes
 # ------------------------------------------------------------------------------
-step_header "10" "Applying System Configurations & SSSD Customizations"
+step_header "10" "Applying System Configurations & SSSD Settings"
+
 if [ -d "${SCRIPT_DIR}/configs" ]; then
-  [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
   [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
   [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
   msg_ok "Custom configuration overrides applied."
 fi
 
-# Apply Short Username setting to SSSD
 USE_FQDN="False"
 if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "no" ]; then
   USE_FQDN="True"
@@ -413,9 +415,24 @@ if [ -f /etc/sssd/sssd.conf ]; then
   else
     sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
   fi
-  chmod 600 /etc/sssd/sssd.conf 2>/dev/null || true
-  chown root:root /etc/sssd/sssd.conf 2>/dev/null || true
-  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN})."
+
+  if [ "$USE_FQDN" = "False" ]; then
+    if grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
+      sed -i "s/default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
+    else
+      sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
+    fi
+  fi
+
+  if grep -q "fallback_homedir" /etc/sssd/sssd.conf; then
+    sed -i "s|fallback_homedir.*|fallback_homedir = /home/%u@%d|g" /etc/sssd/sssd.conf
+  else
+    sed -i "/\[domain\/.*\]/a fallback_homedir = /home/%u@%d" /etc/sssd/sssd.conf
+  fi
+
+  chmod 600 /etc/sssd/sssd.conf
+  chown root:root /etc/sssd/sssd.conf
+  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN})."
 fi
 
 # ------------------------------------------------------------------------------
@@ -427,34 +444,111 @@ systemctl enable --now oddjobd 2>/dev/null || true
 msg_ok "PAM configured for SSSD and automatic home directory creation."
 
 # ------------------------------------------------------------------------------
-# Step 12: Configure DMS Profile for New Domain Users (/etc/skel)
+# Step 12: Configure DMS Profile & Autostart for Niri Sessions
 # ------------------------------------------------------------------------------
-step_header "12" "Applying DMS Themes for New Users (/etc/skel)"
-THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
+step_header "12" "Deploying DMS Themes & Niri Autostart Settings"
 
-if [ -f "$THEME_ARCHIVE" ]; then
+# Locate archive across subdirectories or current working path
+THEME_ARCHIVE=""
+for candidate in \
+  "${SCRIPT_DIR}/fedora-ad-dms/niri-dms-config.tar.gz" \
+  "${SCRIPT_DIR}/niri-dms-config.tar.gz" \
+  "./fedora-ad-dms/niri-dms-config.tar.gz" \
+  "./niri-dms-config.tar.gz"; do
+    if [ -f "$candidate" ]; then
+      THEME_ARCHIVE="$candidate"
+      break
+    fi
+done
+
+if [ -n "$THEME_ARCHIVE" ]; then
+  msg_info "Found DMS theme archive at: ${THEME_ARCHIVE}"
+  
+  # Deploy to skeleton template for new domain users
   mkdir -p /etc/skel/.config /etc/skel/.local/share
   tar -xzf "$THEME_ARCHIVE" -C /etc/skel 2>/dev/null || true
   chmod -R 755 /etc/skel/.config /etc/skel/.local 2>/dev/null || true
-  msg_ok "DMS profile unpacked into /etc/skel."
+
+  # Deploy directly to running user if invoked via sudo
+  if [ -n "${REAL_USER:-}" ] && [ "$REAL_USER" != "root" ]; then
+    USER_HOME=$(eval echo "~${REAL_USER}")
+    if [ -d "$USER_HOME" ]; then
+      mkdir -p "${USER_HOME}/.config" "${USER_HOME}/.local/share"
+      tar -xzf "$THEME_ARCHIVE" -C "$USER_HOME" 2>/dev/null || true
+      chown -R "${REAL_USER}:" "${USER_HOME}/.config" "${USER_HOME}/.local" 2>/dev/null || true
+    fi
+  fi
+  msg_ok "DMS profile unpacked successfully."
 else
   msg_warn "Theme archive 'niri-dms-config.tar.gz' not found. Skipping skeleton sync."
 fi
 
+# Ensure Niri executes DMS upon login
+configure_niri_autostart() {
+  local config_file="$1"
+  if [ -f "$config_file" ]; then
+    if ! grep -q 'spawn-at-startup "dms"' "$config_file" && ! grep -q 'spawn-at-startup "dank-material-shell"' "$config_file"; then
+      echo -e '\n# Dank Material Shell Autostart\nspawn-at-startup "dms"' >> "$config_file"
+    fi
+  fi
+}
+
+mkdir -p /etc/skel/.config/niri
+[ -f /etc/skel/.config/niri/config.kdl ] || touch /etc/skel/.config/niri/config.kdl
+configure_niri_autostart /etc/skel/.config/niri/config.kdl
+
+if [ -n "${REAL_USER:-}" ] && [ "$REAL_USER" != "root" ]; then
+  USER_HOME=$(eval echo "~${REAL_USER}")
+  if [ -d "${USER_HOME}/.config/niri" ]; then
+    [ -f "${USER_HOME}/.config/niri/config.kdl" ] || touch "${USER_HOME}/.config/niri/config.kdl"
+    configure_niri_autostart "${USER_HOME}/.config/niri/config.kdl"
+    chown -R "${REAL_USER}:" "${USER_HOME}/.config/niri" 2>/dev/null || true
+  fi
+fi
+
+# Fallback XDG desktop autostart entry for DMS
+mkdir -p /etc/xdg/autostart
+cat <<'EOF' > /etc/xdg/autostart/dms.desktop
+[Desktop Entry]
+Type=Application
+Name=Dank Material Shell
+Exec=dms
+X-GNOME-Autostart-enabled=true
+EOF
+chmod 644 /etc/xdg/autostart/dms.desktop
+
+msg_ok "Configured Niri to automatically start DMS on login."
+
 # ------------------------------------------------------------------------------
-# Step 13: Finalize
+# Step 13: Finalize, Prompt & Restart Services with 10s Countdown
 # ------------------------------------------------------------------------------
 step_header "13" "Finalizing Installation"
+
 mkdir -p /var/cache/dms-greeter
 chmod 777 /var/cache/dms-greeter
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 
-sss_cache -E 2>/dev/null || true
-rm -f /var/lib/sss/db/* 2>/dev/null || true
-systemctl restart sssd oddjobd greetd 2>/dev/null || true
-
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
-echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
+echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.  v1.2  ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+
+if ask_yes_no "Restart authentication services (SSSD, Oddjob, Greetd) now?" "Y"; then
+  msg_info "Restarting services in 10 seconds..."
+  for i in {10..1}; do
+    echo -ne "\r  ${YELLOW}[COUNTDOWN]${NC} Restarting services in ${BOLD}${i}${NC} seconds... "
+    sleep 1
+  done
+  echo -e "\r  ${GREEN}[COUNTDOWN]${NC} Executing service restart now (0s)...                         "
+
+  # Stop SSSD cleanly before wiping cache to prevent DB corruption
+  systemctl stop sssd oddjobd greetd 2>/dev/null || true
+  sss_cache -E 2>/dev/null || true
+  rm -f /var/lib/sss/db/* 2>/dev/null || true
+
+  systemctl restart sssd oddjobd greetd 2>/dev/null || true
+  msg_ok "Authentication services restarted. Active Directory domain login is ready!"
+else
+  msg_warn "Service restart deferred. Run 'sudo systemctl restart sssd oddjobd greetd' manually to apply domain login."
+fi
