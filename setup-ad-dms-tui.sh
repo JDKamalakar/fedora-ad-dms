@@ -3,6 +3,7 @@
 # Fedora Active Directory & DMS Automated Installer (Pure CLI / TUI Edition)
 # Script: setup-ad-dms-tui.sh
 # ==============================================================================
+
 set -euo pipefail
 
 # ANSI Colors
