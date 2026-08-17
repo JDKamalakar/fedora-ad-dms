@@ -1,261 +1,338 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fedora AD DMS Automated Setup & Access Enforcer (setup-ad-dms-tui.sh)
-# Version: 3.1.0 (Pure TUI / Systemd Engine)
+# Fedora Active Directory & DMS 12-Step Automated Installer
+# Script: setup-ad-dms-tui.sh
 # ==============================================================================
 set -euo pipefail
 
-VERSION="3.1.0"
+# ANSI Colors
+BOLD="\033[1m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
+BLUE="\033[1;34m"
+MAGENTA="\033[1;35m"
+NC="\033[0m"
 
-BOLD='\033[1m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+ASSUME_YES=false
+SELECTED_LAB_INDEX=""
 
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}[ERROR] This script must be run as root or with sudo.${NC}" >&2
-    exit 1
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF_DIR="/etc/ad-dms"
-LOCAL_CONFIG="${SCRIPT_DIR}/lab.conf"
-LOCAL_TAR="${SCRIPT_DIR}/niri-dms-config.tar.gz"
-
-echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
-echo -e "${CYAN}|${BOLD}      GSFCU LAB SSSD & NIRI DMS AUTOMATED SETUP (v${VERSION})            ${NC}${CYAN}|${NC}"
-echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
-echo
-
-# ------------------------------------------------------------------------------
-# Cleanup Unsafe Profile Hooks
-# ------------------------------------------------------------------------------
-rm -f /etc/profile.d/ad-dms-login-refresh.sh /etc/sudoers.d/ad-dms
-
-# ------------------------------------------------------------------------------
-# STEP 1: PAM & Authselect Configuration
-# ------------------------------------------------------------------------------
-echo -e "${BLUE}::${NC} ${BOLD}[STEP 1/6] Configuring Fedora Authselect PAM Engine...${NC}"
-if command -v authselect &>/dev/null; then
-    authselect select sssd with-mkhomedir --force >/dev/null || true
-    systemctl enable --now oddjobd.service >/dev/null 2>&1 || true
-    echo -e "${GREEN}[OK] PAM configured for SSSD authentication and auto home directory creation.${NC}"
-else
-    echo -e "${RED}[ERROR] authselect binary not found on this system!${NC}" >&2
-    exit 1
-fi
-
-# ------------------------------------------------------------------------------
-# STEP 2: Directory & Policy Initialization
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 2/6] Preparing system policy directories at ${CONF_DIR}...${NC}"
-mkdir -p "$CONF_DIR"
-
-if [ -f "$LOCAL_CONFIG" ]; then
-    cp "$LOCAL_CONFIG" /etc/lab.conf
-    cp "$LOCAL_CONFIG" "$CONF_DIR/lab.conf"
-fi
-
-for app_conf in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf blocked-users.conf; do
-    if [ -f "${SCRIPT_DIR}/${app_conf}" ]; then
-        cp "${SCRIPT_DIR}/${app_conf}" "${CONF_DIR}/${app_conf}"
-        echo -e "  -> Installed policy: ${CYAN}${app_conf}${NC}"
-    else
-        touch "${CONF_DIR}/${app_conf}"
-        echo -e "  -> Initialized blank template: ${CYAN}${app_conf}${NC}"
-    fi
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=true ;;
+    --lab-index=*) SELECTED_LAB_INDEX="${arg#*=}" ;;
+  esac
 done
 
-# ------------------------------------------------------------------------------
-# STEP 3: Active Directory Access Control (SSSD Blacklist Strategy)
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 3/6] Generating Active Directory Access Control Rules...${NC}"
-RAW_HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
-MATCHED_LAB=""
-DENY_GROUPS=()
+draw_banner() {
+  clear
+  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}"
+  echo -e "${CYAN}|${NC} ${BOLD}${MAGENTA}        FEDORA ACTIVE DIRECTORY & DMS AUTOMATED SETUP               ${NC} ${CYAN}|${NC}"
+  echo -e "${CYAN}+--------------------------------------------------------------------+${NC}\n"
+}
 
-if [ -f "/etc/lab.conf" ]; then
-    while IFS=':' read -r lab_name ad_group pattern || [ -n "$lab_name" ]; do
-        lab_name=$(echo "${lab_name:-}" | xargs)
-        ad_group=$(echo "${ad_group:-}" | xargs)
-        pattern=$(echo "${pattern:-}" | xargs | tr '[:lower:]' '[:upper:]')
-        [[ -z "$pattern" || "$lab_name" =~ ^# ]] && continue
+step_header() {
+  echo -e "\n${BOLD}${BLUE}[STEP $1/12]${NC} ${BOLD}$2${NC}"
+  echo -e "${BLUE}======================================================================${NC}"
+}
 
-        if [[ "$RAW_HOSTNAME" == "$pattern"* ]]; then
-            MATCHED_LAB="$lab_name"
-        else
-            [ -n "$ad_group" ] && DENY_GROUPS+=("$ad_group")
-        fi
-    done < /etc/lab.conf
+msg_info()  { echo -e "  ${CYAN}[INFO]${NC} $1"; }
+msg_ok()    { echo -e "  ${GREEN}[OK]${NC} $1"; }
+msg_warn()  { echo -e "  ${YELLOW}[WARN]${NC} $1"; }
+msg_err()   { echo -e "  ${RED}[ERROR]${NC} $1"; }
+
+ask_yes_no() {
+  local prompt="$1"
+  local default="${2:-Y}"
+  local resp
+
+  if [ "$ASSUME_YES" = true ]; then
+    msg_info "${prompt} -> Auto-approved (-y flag)"
+    return 0
+  fi
+
+  while true; do
+    echo -en "  ${YELLOW}[PROMPT]${NC} ${prompt} [Y/n]: "
+    read -r resp < /dev/tty
+    resp="${resp:-$default}"
+    case "$resp" in
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+      *) msg_err "Invalid input. Please enter 'y' or 'n'." ;;
+    esac
+  done
+}
+
+if [ "$EUID" -ne 0 ]; then
+  draw_banner
+  msg_err "This script requires administrative privileges. Run with 'sudo'."
+  exit 1
 fi
 
-DENY_USERS=()
-if [ -f "$CONF_DIR/blocked-users.conf" ]; then
-    while IFS= read -r u || [ -n "$u" ]; do
-        u=$(echo "$u" | xargs)
-        [[ -z "$u" || "$u" =~ ^# ]] && continue
-        DENY_USERS+=("$u")
-    done < "$CONF_DIR/blocked-users.conf"
-fi
-
-DENY_CONFIG_BLOCK="access_provider = simple"
-
-if [ ${#DENY_GROUPS[@]} -gt 0 ]; then
-    DENY_GROUPS_STR=$(IFS=,; echo "${DENY_GROUPS[*]}")
-    DENY_CONFIG_BLOCK="${DENY_CONFIG_BLOCK}
-simple_deny_groups = ${DENY_GROUPS_STR}"
-fi
-
-if [ ${#DENY_USERS[@]} -gt 0 ]; then
-    DENY_USERS_STR=$(IFS=,; echo "${DENY_USERS[*]}")
-    DENY_CONFIG_BLOCK="${DENY_CONFIG_BLOCK}
-simple_deny_users = ${DENY_USERS_STR}"
-fi
-
-echo -e "  * Hostname       : ${BOLD}${RAW_HOSTNAME}${NC}"
-echo -e "  * Detected Lab   : ${BOLD}${MATCHED_LAB:-General Machine}${NC}"
-[ ${#DENY_GROUPS[@]} -gt 0 ] && echo -e "  * Blocked Groups : ${RED}${DENY_GROUPS[*]}${NC}"
-[ ${#DENY_USERS[@]} -gt 0 ]  && echo -e "  * Blocked Users  : ${RED}${DENY_USERS[*]}${NC}"
-
-echo -e "${CYAN}[INFO]${NC} Writing /etc/sssd/sssd.conf and clearing cache..."
-systemctl stop sssd >/dev/null 2>&1 || true
-systemctl reset-failed sssd >/dev/null 2>&1 || true
-
-cat <<EOF > /etc/sssd/sssd.conf
-[sssd]
-services = nss, pam
-domains = gsfcu.local
-
-[domain/gsfcu.local]
-id_provider = ad
-${DENY_CONFIG_BLOCK}
-ad_domain = gsfcu.local
-krb5_realm = GSFCU.LOCAL
-ldap_id_mapping = True
-use_fully_qualified_names = False
-fallback_homedir = /home/%u
-default_shell = /bin/bash
-cache_credentials = True
-case_sensitive = false
-EOF
-
-sed -i 's/\r$//' /etc/sssd/sssd.conf
-chown root:root /etc/sssd/sssd.conf
-chmod 600 /etc/sssd/sssd.conf
-restorecon -v /etc/sssd/sssd.conf >/dev/null 2>&1 || true
-
-rm -rf /var/lib/sss/db/*
-systemctl start sssd
-echo -e "${GREEN}[OK] SSSD service updated and active.${NC}"
+draw_banner
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "$PWD")"
+[[ "$SCRIPT_DIR" == "/dev"* ]] && SCRIPT_DIR="$PWD"
 
 # ------------------------------------------------------------------------------
-# STEP 4: Deploy Niri DMS Desktop Configurations
+# Step 1: Software Swapping
 # ------------------------------------------------------------------------------
-echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 4/6] Deploying Niri DMS environment templates...${NC}"
-if [ -f "$LOCAL_TAR" ]; then
-    TMP_DIR="/tmp/niri-dms-config-extracted"
-    rm -rf "$TMP_DIR"
-    mkdir -p "$TMP_DIR"
-    tar -xzf "$LOCAL_TAR" -C "$TMP_DIR"
+step_header "1" "Software Swapping (LibreOffice -> ONLYOFFICE)"
+msg_info "Executing mandatory software swap: Removing LibreOffice and installing ONLYOFFICE..."
+dnf remove -y "libreoffice*" || true
+dnf install -y https://download.onlyoffice.com/repo/centos/main/noarch/onlyoffice-repo.noarch.rpm || true
+dnf install -y onlyoffice-desktopeditors || true
+msg_ok "ONLYOFFICE installation complete."
 
-    # Copy to skeleton directory for future domain users
-    cp -a "$TMP_DIR"/. /etc/skel/
-    chmod -R a+rX /etc/skel
-    echo -e "  -> Applied template to ${CYAN}/etc/skel${NC}"
+# ------------------------------------------------------------------------------
+# Step 2: System Update
+# ------------------------------------------------------------------------------
+step_header "2" "Updating System Packages"
+if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
+  dnf update -y
+fi
 
-    # Sync to existing local/domain accounts in /home
-    for user_dir in /home/*; do
-        if [ -d "$user_dir" ]; then
-            u_name=$(basename "$user_dir")
-            u_group=$(id -gn "$u_name" 2>/dev/null || echo "$u_name")
-            cp -a "$TMP_DIR"/. "$user_dir/"
-            chown -R "$u_name:$u_group" "$user_dir"
-            echo -e "  -> Updated configuration for ${CYAN}$user_dir${NC}"
-        fi
-    done
-    rm -rf "$TMP_DIR"
-    echo -e "${GREEN}[OK] Desktop configurations deployed successfully.${NC}"
+# ------------------------------------------------------------------------------
+# Step 3: Dependencies
+# ------------------------------------------------------------------------------
+step_header "3" "Installing AD & Security Dependencies"
+dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit
+msg_ok "All prerequisite packages installed."
+
+# ------------------------------------------------------------------------------
+# Step 4: Dank Material Shell
+# ------------------------------------------------------------------------------
+step_header "4" "Installing Dank Material Shell (DMS)"
+msg_info "Executing native DMS installer as root..."
+curl -fsSL https://install.danklinux.com | sh || true
+msg_ok "DMS native installation executed."
+
+# ------------------------------------------------------------------------------
+# Step 5: Read Domain Settings & Clock Sync
+# ------------------------------------------------------------------------------
+step_header "5" "Active Directory Configuration"
+if [ -f "${SCRIPT_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/domain.conf"
+  msg_ok "Loaded configuration from 'domain.conf'."
 else
-    echo -e "${YELLOW}[WARN] Config Archive (${LOCAL_TAR}) missing. Skipping desktop template sync.${NC}"
+  msg_warn "'domain.conf' not found. Using standard default parameters."
+fi
+
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active | grep ethernet | head -n1 | cut -d: -f1 || true)
+TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+
+if [ -n "${AD_DNS_IP:-}" ]; then
+  msg_info "Configuring NetworkManager DNS (${AD_DNS_IP})..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "${DOMAIN_NAME:-gsfcu.local}" ipv4.ignore-auto-dns yes || true
+  nmcli connection up "$TARGET_CONN" || true
+fi
+
+systemctl enable --now chronyd || true
+chronyc makestep > /dev/null 2>&1 || true
+msg_ok "System clock synchronized via chrony."
+
+if [ -z "${DOMAIN_PASS:-}" ]; then
+  echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${DOMAIN_USER:-Administrator}@${DOMAIN_NAME:-gsfcu.local}': "
+  read -sp "" DOMAIN_PASS < /dev/tty
+  echo ""
 fi
 
 # ------------------------------------------------------------------------------
-# STEP 5: Application Policy Enforcement Script
+# Step 6: Realm Join
 # ------------------------------------------------------------------------------
-echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 5/6] Building Application Enforcement Engine...${NC}"
+step_header "6" "Joining Active Directory Realm"
+if echo "$DOMAIN_PASS" | realm join --user="${DOMAIN_USER:-Administrator}" "${DOMAIN_NAME:-gsfcu.local}" --verbose; then
+  msg_ok "Joined Active Directory realm successfully."
+else
+  msg_err "Failed to join domain."
+  exit 1
+fi
 
-cat <<'EOF' > /usr/local/bin/ad-dms-app-enforcer
+# ------------------------------------------------------------------------------
+# Step 7: Interactive Lab Access Selection
+# ------------------------------------------------------------------------------
+step_header "7" "Configuring Lab Access Control Rules"
+
+LAB_CONF="${SCRIPT_DIR}/lab.conf"
+if [ -f "$LAB_CONF" ]; then
+  mapfile -t LAB_ENTRIES < <(grep -v '^[[:space:]]*#' "$LAB_CONF" | grep -v '^[[:space:]]*$')
+  
+  if [ "${#LAB_ENTRIES[@]}" -gt 0 ]; then
+    echo -e "  ${BOLD}Select the Lab ID to allow on this machine:${NC}\n"
+    
+    idx=1
+    declare -A LAB_NAMES
+    declare -A LAB_IDS
+    
+    for entry in "${LAB_ENTRIES[@]}"; do
+      IFS=':' read -r name id <<< "$entry"
+      LAB_NAMES[$idx]="$name"
+      LAB_IDS[$idx]="$id"
+      echo -e "    ${CYAN}[$idx]${NC} ${name} (${YELLOW}ID: ${id}${NC})"
+      ((idx++))
+    done
+    
+    CHOICE="$SELECTED_LAB_INDEX"
+    if [ -z "$CHOICE" ]; then
+      if [ "$ASSUME_YES" = true ]; then
+        CHOICE=1
+      else
+        while true; do
+          echo -en "\n  ${YELLOW}[INPUT]${NC} Select Lab number [1-$((idx-1))]: "
+          read -r CHOICE < /dev/tty
+          if [[ "$CHOICE" =~ ^[0-9]+$ ]] && [ "$CHOICE" -ge 1 ] && [ "$CHOICE" -lt "$idx" ]; then
+            break
+          fi
+          msg_err "Invalid choice. Please enter a valid number."
+        done
+      fi
+    fi
+
+    ALLOWED_ID="${LAB_IDS[$CHOICE]}"
+    ALLOWED_NAME="${LAB_NAMES[$CHOICE]}"
+    
+    msg_ok "Selected Lab: ${ALLOWED_NAME} (${ALLOWED_ID})"
+
+    # Permit selected lab ID
+    realm permit -g "$ALLOWED_ID" || true
+
+    # Explicitly block other lab IDs listed in lab.conf
+    for key in "${!LAB_IDS[@]}"; do
+      if [ "$key" -ne "$CHOICE" ]; then
+        DENY_ID="${LAB_IDS[$key]}"
+        realm deny -g "$DENY_ID" || true
+        msg_warn "Blocked Lab ID on this machine: ${DENY_ID}"
+      fi
+    done
+    
+    msg_ok "Unlisted domain IDs remain allowed."
+  fi
+else
+  msg_warn "'lab.conf' missing. Skipping lab access grouping."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 8: Policy Refresh Service
+# ------------------------------------------------------------------------------
+step_header "8" "Setting Up 10-Minute Policy Refresh Service"
+
+if [ -f "${SCRIPT_DIR}/refresh-app-policies.sh" ]; then
+  cp "${SCRIPT_DIR}/refresh-app-policies.sh" /usr/local/bin/refresh-app-policies
+else
+  msg_info "Deploying standalone policy enforcer binary..."
+  cat <<'EOF' > /usr/local/bin/refresh-app-policies
 #!/usr/bin/env bash
 set -euo pipefail
-
 CONF_DIR="/etc/ad-dms"
+mkdir -p "$CONF_DIR"
 
-# Install mandatory applications
 if [ -f "$CONF_DIR/compulsory-apps.conf" ]; then
-    while IFS= read -r app || [ -n "$app" ]; do
-        app=$(echo "$app" | xargs)
-        [[ -z "$app" || "$app" =~ ^# ]] && continue
-        if ! rpm -q "$app" &>/dev/null; then
-            echo "[ENFORCER] Installing compulsory package: $app"
-            dnf install -y "$app" || true
-        fi
-    done < "$CONF_DIR/compulsory-apps.conf"
+  while IFS= read -r app || [ -n "$app" ]; do
+    app=$(echo "$app" | xargs)
+    [[ -z "$app" || "$app" =~ ^# ]] && continue
+    rpm -q "$app" &>/dev/null || dnf install -y "$app" || true
+  done < "$CONF_DIR/compulsory-apps.conf"
 fi
 
-# Terminate prohibited applications
 if [ -f "$CONF_DIR/blocked-apps.conf" ]; then
-    while IFS= read -r app || [ -n "$app" ]; do
-        app=$(echo "$app" | xargs)
-        [[ -z "$app" || "$app" =~ ^# ]] && continue
-        if pgrep -x "$app" &>/dev/null; then
-            echo "[ENFORCER] Terminating blacklisted process: $app"
-            pkill -9 -x "$app" || true
-        fi
-    done < "$CONF_DIR/blocked-apps.conf"
+  while IFS= read -r app || [ -n "$app" ]; do
+    app=$(echo "$app" | xargs)
+    [[ -z "$app" || "$app" =~ ^# ]] && continue
+    pgrep -x "$app" &>/dev/null && pkill -9 -x "$app" || true
+  done < "$CONF_DIR/blocked-apps.conf"
 fi
 EOF
+fi
+chmod 755 /usr/local/bin/refresh-app-policies
 
-chmod +x /usr/local/bin/ad-dms-app-enforcer
-echo -e "${GREEN}[OK] Installed /usr/local/bin/ad-dms-app-enforcer${NC}"
+# Create 'refresh' terminal alias/command
+cat <<'EOF' > /usr/local/bin/refresh
+#!/usr/bin/env bash
+sudo /usr/local/bin/refresh-app-policies
+EOF
+chmod 755 /usr/local/bin/refresh
 
-# ------------------------------------------------------------------------------
-# STEP 6: Systemd Daemon & Periodic Refresh Timer
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}::${NC} ${BOLD}[STEP 6/6] Registering Background Systemd Daemon...${NC}"
-
-cat <<EOF > /etc/systemd/system/ad-dms-refresh.service
+# Systemd Service
+cat <<'EOF' > /etc/systemd/system/app-policy-sync.service
 [Unit]
-Description=AD DMS Application Policy Enforcer Service
-After=network.target
+Description=Sync software allow/block lists & install compulsory apps
+After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/ad-dms-app-enforcer
+ExecStart=/usr/local/bin/refresh-app-policies
 EOF
 
-cat <<EOF > /etc/systemd/system/ad-dms-refresh.timer
+# Systemd Timer (Every 10 Minutes)
+cat <<'EOF' > /etc/systemd/system/app-policy-sync.timer
 [Unit]
-Description=Run AD DMS App Enforcer at Boot and Every 10 Minutes
+Description=Run app-policy-sync every 10 minutes
 
 [Timer]
-OnBootSec=10s
+OnBootSec=2min
 OnUnitActiveSec=10min
-Persistent=true
 
 [Install]
 WantedBy=timers.target
 EOF
 
-systemctl daemon-reload >/dev/null 2>&1
-systemctl enable --now ad-dms-refresh.timer >/dev/null 2>&1
-echo -e "${GREEN}[OK] Systemd timer activated (triggers 10s post-boot & every 10 mins).${NC}"
+systemctl daemon-reload
+systemctl enable --now app-policy-sync.timer
+/usr/local/bin/refresh-app-policies || true
+msg_ok "Background policy refresh daemon active."
 
-# Run initial pass
-/usr/local/bin/ad-dms-app-enforcer >/dev/null 2>&1 || true
+# ------------------------------------------------------------------------------
+# Step 9: System Configs
+# ------------------------------------------------------------------------------
+step_header "9" "Applying System Configurations"
+if [ -d "${SCRIPT_DIR}/configs" ]; then
+  [ -f "${SCRIPT_DIR}/configs/sssd.conf" ] && cp "${SCRIPT_DIR}/configs/sssd.conf" /etc/sssd/sssd.conf
+  [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
+  [ -f "${SCRIPT_DIR}/configs/greetd" ] && cp "${SCRIPT_DIR}/configs/greetd" /etc/pam.d/greetd
+  chmod 600 /etc/sssd/sssd.conf && chown root:root /etc/sssd/sssd.conf
+  msg_ok "Configuration files copied from repository."
+else
+  msg_info "No custom config directory override found. Keeping default domain profiles."
+fi
 
-echo -e "\n${CYAN}+----------------------------------------------------------------------+${NC}"
-echo -e "${CYAN}|${BOLD}${GREEN}  [SUCCESS] AD DMS DEPLOYMENT COMPLETE (v${VERSION})                    ${NC}${CYAN}|${NC}"
-echo -e "${CYAN}+----------------------------------------------------------------------+${NC}"
+# ------------------------------------------------------------------------------
+# Step 10: PAM Integration
+# ------------------------------------------------------------------------------
+step_header "10" "Configuring PAM & Home Directories"
+authselect select sssd with-mkhomedir --force
+systemctl enable --now oddjobd
+msg_ok "PAM set to SSSD with automatic home directory creation."
+
+# ------------------------------------------------------------------------------
+# Step 11: Configure DMS Profile for New Domain Users (/etc/skel)
+# ------------------------------------------------------------------------------
+step_header "11" "Applying DMS Themes for New Users (/etc/skel)"
+THEME_ARCHIVE="${SCRIPT_DIR}/niri-dms-config.tar.gz"
+
+if [ -f "$THEME_ARCHIVE" ]; then
+  mkdir -p /etc/skel/.config /etc/skel/.local/share
+  tar -xzf "$THEME_ARCHIVE" -C /etc/skel
+  chmod -R 755 /etc/skel/.config /etc/skel/.local
+  msg_ok "DMS profile unpacked into /etc/skel."
+else
+  msg_warn "Theme archive 'niri-dms-config.tar.gz' missing. Standard desktop defaults preserved."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 12: Finalize
+# ------------------------------------------------------------------------------
+step_header "12" "Finalizing Installation"
+mkdir -p /var/cache/dms-greeter
+chmod 777 /var/cache/dms-greeter
+setsebool -P allow_polyinstantiation 1 || true
+setsebool -P nis_enabled 1 || true
+setsebool -P use_nfs_home_dirs 1 || true
+
+sss_cache -E || true
+rm -f /var/lib/sss/db/* || true
+systemctl restart sssd oddjobd greetd || true
+
+echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
+echo -e "${GREEN}|${NC} ${BOLD}Setup complete! Lab access selected and auto-refresh activated.    ${NC} ${GREEN}|${NC}"
+echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
