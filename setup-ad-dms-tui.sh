@@ -42,7 +42,7 @@ draw_banner() {
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/6]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/7]${NC} ${BOLD}$2${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -95,7 +95,7 @@ fi
 # ------------------------------------------------------------------------------
 # Phase 0: ProtonVPN (pVPN) Setup & Initial Connection
 # ------------------------------------------------------------------------------
-echo -e "${BOLD}${BLUE}[PHASE 0/6]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
+echo -e "${BOLD}${BLUE}[PHASE 0/7]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
 echo -e "${BLUE}======================================================================${NC}"
 
 SHOULD_INSTALL_PVPN=false
@@ -187,6 +187,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) as Non-Root User
 # ------------------------------------------------------------------------------
 step_header "4" "Installing Dank Material Shell (DMS)"
@@ -205,9 +206,70 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 5: Disconnect ProtonVPN (pVPN) Before AD/Domain Setup
+# Step 5: Install & Apply Darkly Theme
 # ------------------------------------------------------------------------------
-step_header "5" "Disconnecting ProtonVPN (pVPN)"
+step_header "5" "Installing & Applying Darkly Theme"
+
+msg_info "Enabling deltacopy/darkly COPR repository..."
+dnf copr enable -y deltacopy/darkly 2>/dev/null || true
+
+msg_info "Installing Darkly style package..."
+if dnf install -y darkly 2>/dev/null; then
+  msg_ok "Darkly package installed successfully."
+else
+  msg_warn "Darkly package installation encountered minor warnings. Proceeding with configuration..."
+fi
+
+# Apply Darkly widget style to /etc/skel and current user
+apply_darkly_style() {
+  local target_home="$1"
+  local target_user="${2:-}"
+
+  mkdir -p "${target_home}/.config"
+  local kdeglobals_file="${target_home}/.config/kdeglobals"
+
+  if [ -f "$kdeglobals_file" ]; then
+    if grep -q "\[KDE\]" "$kdeglobals_file"; then
+      if grep -q "widgetStyle" "$kdeglobals_file"; then
+        sed -i "s/widgetStyle.*/widgetStyle=Darkly/g" "$kdeglobals_file"
+      else
+        sed -i "/\[KDE\]/a widgetStyle=Darkly" "$kdeglobals_file"
+      fi
+    else
+      echo -e "\n[KDE]\nwidgetStyle=Darkly" >> "$kdeglobals_file"
+    fi
+  else
+    cat <<'EOF' > "$kdeglobals_file"
+[KDE]
+widgetStyle=Darkly
+EOF
+  fi
+
+  if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
+    chown -R "${target_user}:" "${target_home}/.config" 2>/dev/null || true
+    if command -v kwriteconfig6 &>/dev/null; then
+      sudo -u "$target_user" kwriteconfig6 --file kdeglobals --group KDE --key widgetStyle Darkly 2>/dev/null || true
+    elif command -v kwriteconfig5 &>/dev/null; then
+      sudo -u "$target_user" kwriteconfig5 --file kdeglobals --group KDE --key widgetStyle Darkly 2>/dev/null || true
+    fi
+  fi
+}
+
+apply_darkly_style "/etc/skel"
+
+if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+  USER_HOME=$(eval echo "~${REAL_USER}")
+  if [ -d "$USER_HOME" ]; then
+    apply_darkly_style "$USER_HOME" "$REAL_USER"
+  fi
+fi
+
+msg_ok "Applied Darkly widget style to system templates and user configuration."
+
+# ------------------------------------------------------------------------------
+# Step 6: Disconnect ProtonVPN (pVPN) Before AD/Domain Setup
+# ------------------------------------------------------------------------------
+step_header "6" "Disconnecting ProtonVPN (pVPN)"
 if command -v pvpnctl &>/dev/null; then
   msg_info "Disconnecting pVPN to restore direct domain/local network routing..."
   pvpnctl disconnect 2>/dev/null || true
@@ -217,9 +279,9 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Step 6: Active Directory & DMS Greeter (greetd) Setup
+# Step 7: Active Directory & DMS Greeter (greetd) Setup
 # ------------------------------------------------------------------------------
-step_header "6" "Configuring Active Directory & DMS Greeter (greetd)"
+step_header "7" "Configuring Active Directory & DMS Greeter (greetd)"
 
 TARGET_DOMAIN="${DOMAIN_NAME:-gsfcu.local}"
 TARGET_REALM="${REALM_NAME:-${TARGET_DOMAIN^^}}"
