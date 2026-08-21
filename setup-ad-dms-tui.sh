@@ -42,7 +42,7 @@ draw_banner() {
 }
 
 step_header() {
-  echo -e "\n${BOLD}${BLUE}[STEP $1/5]${NC} ${BOLD}$2${NC}"
+  echo -e "\n${BOLD}${BLUE}[STEP $1/6]${NC} ${BOLD}$2${NC}"
   echo -e "${BLUE}======================================================================${NC}"
 }
 
@@ -95,7 +95,7 @@ fi
 # ------------------------------------------------------------------------------
 # Phase 0: ProtonVPN (pVPN) Setup & Initial Connection
 # ------------------------------------------------------------------------------
-echo -e "${BOLD}${BLUE}[PHASE 0/5]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
+echo -e "${BOLD}${BLUE}[PHASE 0/6]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
 echo -e "${BLUE}======================================================================${NC}"
 
 SHOULD_INSTALL_PVPN=false
@@ -214,6 +214,134 @@ if command -v pvpnctl &>/dev/null; then
   msg_ok "pVPN disconnected successfully."
 else
   msg_info "pVPN CLI not found. Skipping disconnect step."
+fi
+
+# ------------------------------------------------------------------------------
+# Step 6: Active Directory & DMS Greeter (greetd) Setup
+# ------------------------------------------------------------------------------
+step_header "6" "Configuring Active Directory & DMS Greeter (greetd)"
+
+TARGET_DOMAIN="${DOMAIN_NAME:-gsfcu.local}"
+TARGET_REALM="${REALM_NAME:-${TARGET_DOMAIN^^}}"
+TARGET_ADMIN="${DOMAIN_USER:-admin}"
+
+# 1. DNS & Time Sync
+ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
+TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
+
+if [ -n "${AD_DNS_IP:-}" ]; then
+  msg_info "Configuring NetworkManager DNS (${AD_DNS_IP}) for domain ${TARGET_DOMAIN}..."
+  nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$TARGET_DOMAIN" ipv4.ignore-auto-dns yes 2>/dev/null || true
+  nmcli connection up "$TARGET_CONN" 2>/dev/null || true
+fi
+
+systemctl enable --now chronyd 2>/dev/null || true
+chronyc makestep > /dev/null 2>&1 || true
+msg_ok "Network clock synchronized."
+
+# 2. Realm Join (Prompting only if not already joined and password not in env)
+if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
+  msg_ok "Device is already joined to Active Directory realm '${TARGET_REALM}'."
+else
+  if [ -z "${DOMAIN_PASS:-}" ]; then
+    echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${TARGET_ADMIN}@${TARGET_REALM}': "
+    read -rsp "" DOMAIN_PASS < /dev/tty
+    echo ""
+  fi
+
+  msg_info "Joining domain '${TARGET_REALM}'..."
+  if echo "$DOMAIN_PASS" | realm join --user="${TARGET_ADMIN}" "${TARGET_REALM}" --verbose 2>/dev/null; then
+    msg_ok "Joined Active Directory realm '${TARGET_REALM}' successfully."
+  else
+    if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
+      msg_ok "Verified membership in Active Directory realm '${TARGET_REALM}'."
+    else
+      msg_err "Failed to join domain '${TARGET_REALM}'. Check network connectivity or credentials."
+      exit 1
+    fi
+  fi
+fi
+
+# 3. Apply Custom Kerberos and PAM configs if present
+if [ -d "${SCRIPT_DIR}/configs" ]; then
+  [ -f "${SCRIPT_DIR}/configs/krb5.conf" ] && cp "${SCRIPT_DIR}/configs/krb5.conf" /etc/krb5.conf
+  msg_ok "Kerberos configuration overrides applied."
+fi
+
+# Ensure greetd PAM configuration integrates with system-auth (SSSD) and creates home dirs
+cat <<'EOF' > /etc/pam.d/greetd
+#%PAM-1.0
+auth        include     system-auth
+account     include     system-auth
+password    include     system-auth
+session     include     system-auth
+session     optional    pam_gnome_keyring.so auto_start
+session     optional    pam_mkhomedir.so umask=0077 skel=/etc/skel
+EOF
+
+USE_FQDN="False"
+if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "no" ]; then
+  USE_FQDN="True"
+fi
+
+if [ -f /etc/sssd/sssd.conf ]; then
+  if grep -q "\[sssd\]" /etc/sssd/sssd.conf; then
+    if ! grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
+      sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
+    else
+      sed -i "s/default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
+    fi
+  fi
+
+  if grep -q "use_fully_qualified_names" /etc/sssd/sssd.conf; then
+    sed -i "s/use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
+  else
+    sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
+  fi
+
+  if grep -q "fallback_homedir" /etc/sssd/sssd.conf; then
+    sed -i "s|fallback_homedir.*|fallback_homedir = /home/%u@%d|g" /etc/sssd/sssd.conf
+  else
+    sed -i "/\[domain\/.*\]/a fallback_homedir = /home/%u@%d" /etc/sssd/sssd.conf
+  fi
+
+  chmod 600 /etc/sssd/sssd.conf
+  chown root:root /etc/sssd/sssd.conf
+  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN})."
+fi
+
+authselect select sssd with-mkhomedir --force 2>/dev/null || true
+systemctl enable --now oddjobd 2>/dev/null || true
+msg_ok "PAM configured for SSSD and automatic home directory creation."
+
+# 4. DMS Greeter (greetd) Account & Cache Directory Setup
+mkdir -p /var/cache/dms-greeter/users
+chmod 777 /var/cache/dms-greeter
+chmod 777 /var/cache/dms-greeter/users 2>/dev/null || true
+
+# Pre-populate DMS greeter profile cache for domain user
+if [ -n "${TARGET_ADMIN}" ]; then
+  mkdir -p "/var/cache/dms-greeter/users/${TARGET_ADMIN}"
+  [ ! -f "/var/cache/dms-greeter/users/${TARGET_ADMIN}/settings.json" ] && echo "{}" > "/var/cache/dms-greeter/users/${TARGET_ADMIN}/settings.json"
+  [ ! -f "/var/cache/dms-greeter/users/${TARGET_ADMIN}/session.json" ] && echo "{}" > "/var/cache/dms-greeter/users/${TARGET_ADMIN}/session.json"
+  [ ! -f "/var/cache/dms-greeter/users/${TARGET_ADMIN}/colors.json" ] && echo "{}" > "/var/cache/dms-greeter/users/${TARGET_ADMIN}/colors.json"
+  chmod -R 777 "/var/cache/dms-greeter/users/${TARGET_ADMIN}" 2>/dev/null || true
+fi
+
+# Apply SELinux booleans and permissions for domain logins & greeter
+setsebool -P allow_polyinstantiation 1 2>/dev/null || true
+setsebool -P nis_enabled 1 2>/dev/null || true
+setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
+restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter 2>/dev/null || true
+
+# 5. Restart Authentication & Greeter Services
+if ask_yes_no "Restart authentication & greeter services (SSSD, Oddjob, greetd) now?" "Y"; then
+  systemctl stop sssd oddjobd greetd 2>/dev/null || true
+  sss_cache -E 2>/dev/null || true
+  rm -f /var/lib/sss/db/* 2>/dev/null || true
+  systemctl restart sssd oddjobd 2>/dev/null || true
+  systemctl restart greetd 2>/dev/null || true
+  msg_ok "Authentication & greeter services restarted. Domain login is ready on DMS Greeter!"
 fi
 
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
