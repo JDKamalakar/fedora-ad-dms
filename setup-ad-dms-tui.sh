@@ -177,33 +177,153 @@ if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 3: Install AD Prerequisites
+# Step 3: Install AD Prerequisites & Core Build Tools
 # ------------------------------------------------------------------------------
 step_header "3" "Installing AD & Security Dependencies"
-if dnf install -y realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
-  msg_ok "All AD prerequisite packages installed."
+if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit git cmake extra-cmake-modules 2>/dev/null; then
+  msg_ok "All AD prerequisite packages and core tools installed."
 else
   msg_warn "AD dependencies installed with minor package warnings. Proceeding..."
 fi
 
 # ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
-# Step 4: Install Dank Material Shell (DMS) as Non-Root User
+# Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
 # ------------------------------------------------------------------------------
 step_header "4" "Installing Dank Material Shell (DMS)"
 REAL_USER="${SUDO_USER:-}"
 
+# 1. Execute DMS Installer Script (Dankinstall latest/git version)
+DMS_TARGET_USER=""
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-  msg_info "Executing DMS installer as standard user '${REAL_USER}'..."
-  if sudo -u "$REAL_USER" bash -c "curl -fsSL https://install.danklinux.com | sh" 2>/dev/null; then
-    msg_ok "DMS native installation executed for user '${REAL_USER}'."
-  else
-    msg_warn "DMS installer finished with execution warnings."
-  fi
+  DMS_TARGET_USER="$REAL_USER"
 else
-  msg_warn "Direct root session detected without SUDO_USER context."
-  msg_warn "DMS installer requires standard user privileges. Skeleton configs will deploy to /etc/skel."
+  # Detect first human interactive user with UID >= 1000 if not running under sudo
+  DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd || true)
 fi
+
+msg_info "Downloading latest Dank Material Shell installer..."
+DMS_TMP_DIR=$(mktemp -d)
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64) ARCH_TAG="amd64" ;;
+  aarch64) ARCH_TAG="arm64" ;;
+  *) ARCH_TAG="amd64" ;;
+esac
+
+LATEST_DMS_TAG=$(curl -s https://api.github.com/repos/AvengeMedia/DankMaterialShell/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+DMS_INSTALLED=false
+
+if [ -n "$LATEST_DMS_TAG" ]; then
+  msg_info "Detected latest DMS release: ${LATEST_DMS_TAG}"
+  if curl -fsSL "https://github.com/AvengeMedia/DankMaterialShell/releases/download/${LATEST_DMS_TAG}/dankinstall-${ARCH_TAG}.gz" -o "${DMS_TMP_DIR}/dankinstall.gz" 2>/dev/null; then
+    gunzip -f "${DMS_TMP_DIR}/dankinstall.gz"
+    chmod +x "${DMS_TMP_DIR}/dankinstall"
+
+    # Check if this dankinstall binary supports headless mode (-c / --compositor flag)
+    if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--compositor"; then
+      msg_info "Executing headless DMS installation (Niri + Kitty + DankCalendar + DankSearch + Greeter)..."
+      
+      # Build flag list based on supported capabilities in dankinstall help
+      DMS_FLAGS=("-c" "niri" "-t" "kitty" "-y")
+      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--dankcalendar"; then
+        DMS_FLAGS+=("--dankcalendar")
+      fi
+      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--danksearch"; then
+        DMS_FLAGS+=("--danksearch")
+      fi
+      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--include-deps"; then
+        DMS_FLAGS+=("--include-deps" "dms-greeter")
+      fi
+
+      if [ -n "$DMS_TARGET_USER" ] && id "$DMS_TARGET_USER" &>/dev/null; then
+        # Ensure target user has cached sudo permissions before invocation
+        if sudo -u "$DMS_TARGET_USER" "${DMS_TMP_DIR}/dankinstall" "${DMS_FLAGS[@]}" 2>&1; then
+          DMS_INSTALLED=true
+          msg_ok "DMS installation with full dependencies executed successfully for user '${DMS_TARGET_USER}'."
+        fi
+      else
+        if "${DMS_TMP_DIR}/dankinstall" "${DMS_FLAGS[@]}" 2>&1; then
+          DMS_INSTALLED=true
+          msg_ok "DMS installation with full dependencies executed successfully."
+        fi
+      fi
+    else
+      msg_info "Installed dankinstall version does not have headless flags. Using COPR / git installation fallback..."
+    fi
+  fi
+fi
+
+rm -rf "$DMS_TMP_DIR"
+
+# Enable COPR repositories (avengemedia/dms and git repository for latest bleeding-edge/git builds)
+msg_info "Configuring and synchronizing DMS COPR repositories (including git builds)..."
+dnf copr enable -y avengemedia/dms 2>/dev/null || true
+dnf copr enable -y avengemedia/dms-git 2>/dev/null || true
+dnf copr enable -y avengemedia/danklinux 2>/dev/null || true
+
+# Install / upgrade packages to ensure latest git packages and optional dependencies are present
+dnf install -y dms dms-greeter greetd niri kitty matugen quickshell 2>/dev/null || true
+dnf upgrade -y dms dms-greeter 2>/dev/null || true
+msg_ok "DMS packages and git versions synchronized."
+
+# 2. Deploy Preconfigured DMS & Niri Settings for All Users (Skel and Active User)
+deploy_dms_configs() {
+  local target_home="$1"
+  local target_user="${2:-}"
+
+  mkdir -p "${target_home}/.config/niri" "${target_home}/.config/DankMaterialShell" "${target_home}/.local/share"
+
+  # Deploy niri-dms-config.tar.gz
+  local niri_archive=""
+  for cand in "${SCRIPT_DIR}/niri-dms-config.tar.gz" "${SCRIPT_DIR}/fedora-ad-dms/niri-dms-config.tar.gz" "/tmp/fedora-ad-dms/niri-dms-config.tar.gz"; do
+    if [ -f "$cand" ]; then
+      niri_archive="$cand"
+      break
+    fi
+  done
+
+  if [ -n "$niri_archive" ]; then
+    tar -xzf "$niri_archive" -C "$target_home" 2>/dev/null || true
+  fi
+
+  # Deploy DankMaterialShell.tar.gz
+  local dms_archive=""
+  for cand in "${SCRIPT_DIR}/DankMaterialShell.tar.gz" "${SCRIPT_DIR}/fedora-ad-dms/DankMaterialShell.tar.gz" "/tmp/fedora-ad-dms/DankMaterialShell.tar.gz"; do
+    if [ -f "$cand" ]; then
+      dms_archive="$cand"
+      break
+    fi
+  done
+
+  if [ -n "$dms_archive" ]; then
+    mkdir -p "${target_home}/.config"
+    tar -xzf "$dms_archive" -C "${target_home}/.config" 2>/dev/null || true
+  fi
+
+  # Ensure Niri config spawns DMS on startup
+  local kdl_file="${target_home}/.config/niri/config.kdl"
+  if [ -f "$kdl_file" ]; then
+    if ! grep -q 'spawn-at-startup "dms"' "$kdl_file" && ! grep -q 'spawn-at-startup "dank-material-shell"' "$kdl_file"; then
+      echo -e '\nspawn-at-startup "dms"' >> "$kdl_file"
+    fi
+  fi
+
+  if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
+    chown -R "${target_user}:" "${target_home}/.config" "${target_home}/.local" 2>/dev/null || true
+  fi
+}
+
+msg_info "Deploying pre-configured DMS & Niri settings to '/etc/skel' for all domain & new users..."
+deploy_dms_configs "/etc/skel"
+
+if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
+  USER_HOME=$(eval echo "~${REAL_USER}")
+  if [ -d "$USER_HOME" ]; then
+    msg_info "Deploying pre-configured DMS settings to current user '${REAL_USER}' (${USER_HOME})..."
+    deploy_dms_configs "$USER_HOME" "$REAL_USER"
+  fi
+fi
+msg_ok "DMS and Niri configurations successfully deployed."
 
 # ------------------------------------------------------------------------------
 # Step 5: Install & Apply Darkly Theme
@@ -213,11 +333,27 @@ step_header "5" "Installing & Applying Darkly Theme"
 msg_info "Enabling deltacopy/darkly COPR repository..."
 dnf copr enable -y deltacopy/darkly 2>/dev/null || true
 
+DARKLY_INSTALLED=false
 msg_info "Installing Darkly style package..."
-if dnf install -y darkly 2>/dev/null; then
-  msg_ok "Darkly package installed successfully."
+if dnf install -y darkly darkly-qt5 darkly-qt6 2>/dev/null; then
+  DARKLY_INSTALLED=true
+  msg_ok "Darkly package installed via repository."
 else
-  msg_warn "Darkly package installation encountered minor warnings. Proceeding with configuration..."
+  msg_warn "COPR package install failed or unavailable for this release. Building Darkly from source..."
+  DARKLY_BUILD_DIR=$(mktemp -d)
+  if git clone --depth 1 https://github.com/Bali10050/Darkly.git "${DARKLY_BUILD_DIR}" 2>/dev/null; then
+    dnf install -y git cmake extra-cmake-modules kwin-devel kf6-kcolorscheme-devel kf6-kguiaddons-devel kf6-ki18n-devel kf6-kiconthemes-devel kf6-kirigami-devel kf6-kcmutils-devel 2>/dev/null || true
+    (
+      cd "${DARKLY_BUILD_DIR}"
+      chmod +x install.sh 2>/dev/null || true
+      ./install.sh 2>/dev/null || true
+    )
+    DARKLY_INSTALLED=true
+    msg_ok "Darkly compiled and installed from source."
+  else
+    msg_warn "Could not clone Darkly repository. Setting configuration fallback."
+  fi
+  rm -rf "${DARKLY_BUILD_DIR}"
 fi
 
 # Apply Darkly widget style to /etc/skel and current user
@@ -230,8 +366,8 @@ apply_darkly_style() {
 
   if [ -f "$kdeglobals_file" ]; then
     if grep -q "\[KDE\]" "$kdeglobals_file"; then
-      if grep -q "widgetStyle" "$kdeglobals_file"; then
-        sed -i "s/widgetStyle.*/widgetStyle=Darkly/g" "$kdeglobals_file"
+      if grep -q "widgetStyle=" "$kdeglobals_file"; then
+        sed -i "s/^widgetStyle=.*/widgetStyle=Darkly/g" "$kdeglobals_file"
       else
         sed -i "/\[KDE\]/a widgetStyle=Darkly" "$kdeglobals_file"
       fi
@@ -347,39 +483,70 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
 fi
 
 if [ -f /etc/sssd/sssd.conf ]; then
+  # Ensure sssd.conf contains required sections and permissions
   if grep -q "\[sssd\]" /etc/sssd/sssd.conf; then
     if ! grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
       sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
     else
-      sed -i "s/default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
+      sed -i "s/^default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
     fi
   fi
 
   if grep -q "use_fully_qualified_names" /etc/sssd/sssd.conf; then
-    sed -i "s/use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
+    sed -i "s/^use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
   else
     sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
   fi
 
   if grep -q "fallback_homedir" /etc/sssd/sssd.conf; then
-    sed -i "s|fallback_homedir.*|fallback_homedir = /home/%u@%d|g" /etc/sssd/sssd.conf
+    sed -i "s|^fallback_homedir.*|fallback_homedir = /home/%u@%d|g" /etc/sssd/sssd.conf
   else
     sed -i "/\[domain\/.*\]/a fallback_homedir = /home/%u@%d" /etc/sssd/sssd.conf
   fi
 
+  # Enable access_provider = permit and disable GPO restrictions for domain users
+  if grep -q "access_provider" /etc/sssd/sssd.conf; then
+    sed -i "s/^access_provider.*/access_provider = permit/g" /etc/sssd/sssd.conf
+  else
+    sed -i "/\[domain\/.*\]/a access_provider = permit" /etc/sssd/sssd.conf
+  fi
+
+  if ! grep -q "ad_gpo_access_control" /etc/sssd/sssd.conf; then
+    sed -i "/\[domain\/.*\]/a ad_gpo_access_control = permissive" /etc/sssd/sssd.conf
+  fi
+
+  if ! grep -q "cache_credentials" /etc/sssd/sssd.conf; then
+    sed -i "/\[domain\/.*\]/a cache_credentials = True" /etc/sssd/sssd.conf
+  fi
+
   chmod 600 /etc/sssd/sssd.conf
   chown root:root /etc/sssd/sssd.conf
-  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN})."
+  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN}, access_provider = permit)."
 fi
 
 authselect select sssd with-mkhomedir --force 2>/dev/null || true
 systemctl enable --now oddjobd 2>/dev/null || true
 msg_ok "PAM configured for SSSD and automatic home directory creation."
 
-# 4. DMS Greeter (greetd) Account & Cache Directory Setup
+# 4. DMS Greeter (greetd) Account, Service & Cache Directory Setup
+mkdir -p /etc/greetd
+cat <<'EOF' > /etc/greetd/config.toml
+[terminal]
+vt = 1
+
+[default_session]
+command = "dms-greeter --command niri"
+user = "greeter"
+EOF
+
+# Ensure greeter user exists and has video/input/greeter permissions
+if ! id "greeter" &>/dev/null; then
+  useradd -M -N -g 1000 -r -s /sbin/nologin -d /var/empty/greetd greeter 2>/dev/null || useradd -r -s /sbin/nologin greeter 2>/dev/null || true
+fi
+usermod -aG video,input greeter 2>/dev/null || true
+
 mkdir -p /var/cache/dms-greeter/users
-chmod 777 /var/cache/dms-greeter
-chmod 777 /var/cache/dms-greeter/users 2>/dev/null || true
+chmod -R 777 /var/cache/dms-greeter 2>/dev/null || true
 
 # Pre-populate DMS greeter profile cache for domain user
 if [ -n "${TARGET_ADMIN}" ]; then
@@ -394,7 +561,13 @@ fi
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
-restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter 2>/dev/null || true
+restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter /etc/greetd 2>/dev/null || true
+
+# Disable conflicting display managers and enable greetd
+for dm in gdm sddm lightdm; do
+  systemctl disable "$dm" 2>/dev/null || true
+done
+systemctl enable greetd 2>/dev/null || true
 
 # 5. Restart Authentication & Greeter Services
 if ask_yes_no "Restart authentication & greeter services (SSSD, Oddjob, greetd) now?" "Y"; then

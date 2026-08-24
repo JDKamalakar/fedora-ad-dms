@@ -46,6 +46,7 @@ fetch_file() {
 fetch_file "setup-ad-dms-tui.sh" "true"
 fetch_file "lab.conf" "true"
 fetch_file "niri-dms-config.tar.gz" "true"
+fetch_file "DankMaterialShell.tar.gz" "true"
 fetch_file "domain.conf" "false"
 fetch_file "refresh-app-policies.sh" "false"
 fetch_file "allowed-apps.conf" "false"
