@@ -20,7 +20,7 @@ fi
 PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.1...${NC}"
+echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.2...${NC}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
@@ -45,13 +45,16 @@ fetch_file() {
 # Fetch repository components
 fetch_file "setup-ad-dms-tui.sh" "true"
 fetch_file "lab.conf" "true"
-fetch_file "niri-dms-config.tar.gz" "true"
-fetch_file "DankMaterialShell.tar.gz" "true"
 fetch_file "domain.conf" "false"
 fetch_file "refresh-app-policies.sh" "false"
 fetch_file "allowed-apps.conf" "false"
 fetch_file "blocked-apps.conf" "false"
 fetch_file "compulsory-apps.conf" "false"
+
+# Fetch presets (preset configurations to be deployed across all user accounts)
+mkdir -p presets
+fetch_file "presets/niri-dms-config.tar.gz" "true"
+fetch_file "presets/DankMaterialShell.tar.gz" "true"
 
 chmod +x setup-ad-dms-tui.sh
 [ -f refresh-app-policies.sh ] && chmod +x refresh-app-policies.sh
