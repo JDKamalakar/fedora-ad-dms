@@ -294,6 +294,12 @@ deploy_presets() {
     fi
   fi
 
+  # CRITICAL: Remove hardcoded display output config — outputs.kdl must be
+  # generated dynamically by DMS per machine. If deployed, Niri crashes
+  # immediately when the expected output (e.g. DP-1) is not found.
+  rm -f "${target_home}/.config/niri/dms/outputs.kdl"
+  rm -f "${target_home}/.config/niri/config.kdl.backup"*
+
   # Fallback to dms setup if configs are missing
   if [ ! -d "${target_home}/.config/DankMaterialShell" ] && command -v dms &>/dev/null; then
     if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
