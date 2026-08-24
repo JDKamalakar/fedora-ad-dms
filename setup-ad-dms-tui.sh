@@ -192,16 +192,15 @@ fi
 step_header "4" "Installing Dank Material Shell (DMS)"
 REAL_USER="${SUDO_USER:-}"
 
-# 1. Execute DMS Installer Script (Dankinstall latest/git version)
+# 1. Execute DMS Installer Script directly (interactive, latest version)
 DMS_TARGET_USER=""
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   DMS_TARGET_USER="$REAL_USER"
 else
-  # Detect first human interactive user with UID >= 1000 if not running under sudo
   DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd || true)
 fi
 
-msg_info "Downloading latest Dank Material Shell installer..."
+msg_info "Downloading latest Dank Material Shell installer (dankinstall)..."
 DMS_TMP_DIR=$(mktemp -d)
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -218,38 +217,15 @@ if [ -n "$LATEST_DMS_TAG" ]; then
   if curl -fsSL "https://github.com/AvengeMedia/DankMaterialShell/releases/download/${LATEST_DMS_TAG}/dankinstall-${ARCH_TAG}.gz" -o "${DMS_TMP_DIR}/dankinstall.gz" 2>/dev/null; then
     gunzip -f "${DMS_TMP_DIR}/dankinstall.gz"
     chmod +x "${DMS_TMP_DIR}/dankinstall"
-
-    # Check if this dankinstall binary supports headless mode (-c / --compositor flag)
-    if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--compositor"; then
-      msg_info "Executing headless DMS installation (Niri + Kitty + DankCalendar + DankSearch + Greeter)..."
-      
-      # Build flag list based on supported capabilities in dankinstall help
-      DMS_FLAGS=("-c" "niri" "-t" "kitty" "-y")
-      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--dankcalendar"; then
-        DMS_FLAGS+=("--dankcalendar")
-      fi
-      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--danksearch"; then
-        DMS_FLAGS+=("--danksearch")
-      fi
-      if "${DMS_TMP_DIR}/dankinstall" --help 2>&1 | grep -q -- "--include-deps"; then
-        DMS_FLAGS+=("--include-deps" "dms-greeter")
-      fi
-
-      if [ -n "$DMS_TARGET_USER" ] && id "$DMS_TARGET_USER" &>/dev/null; then
-        # Ensure target user has cached sudo permissions before invocation
-        if sudo -u "$DMS_TARGET_USER" "${DMS_TMP_DIR}/dankinstall" "${DMS_FLAGS[@]}" 2>&1; then
-          DMS_INSTALLED=true
-          msg_ok "DMS installation with full dependencies executed successfully for user '${DMS_TARGET_USER}'."
-        fi
-      else
-        if "${DMS_TMP_DIR}/dankinstall" "${DMS_FLAGS[@]}" 2>&1; then
-          DMS_INSTALLED=true
-          msg_ok "DMS installation with full dependencies executed successfully."
-        fi
-      fi
+    msg_info "Running DMS installer interactively for user '${DMS_TARGET_USER}'..."
+    if [ -n "$DMS_TARGET_USER" ] && id "$DMS_TARGET_USER" &>/dev/null; then
+      sudo -u "$DMS_TARGET_USER" "${DMS_TMP_DIR}/dankinstall" 2>&1 && DMS_INSTALLED=true || true
     else
-      msg_info "Installed dankinstall version does not have headless flags. Using COPR / git installation fallback..."
+      "${DMS_TMP_DIR}/dankinstall" 2>&1 && DMS_INSTALLED=true || true
     fi
+    msg_ok "DMS installer completed."
+  else
+    msg_warn "Could not download dankinstall binary. Falling back to COPR packages."
   fi
 fi
 
@@ -444,9 +420,15 @@ systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 msg_ok "Network clock synchronized."
 
-# 2. Realm Join (Prompting only if not already joined and password not in env)
+# 2. Realm Join — always leave and re-join to allow correcting credentials
+# Leave existing enrollment first (silently) so a fresh join can be attempted
 if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
-  msg_ok "Device is already joined to Active Directory realm '${TARGET_REALM}'."
+  msg_info "Machine is currently enrolled in '${TARGET_REALM}'. Leaving to allow re-enrollment with correct credentials..."
+  realm leave "${TARGET_REALM}" 2>/dev/null || true
+fi
+
+if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
+  msg_ok "Device is already joined to Active Directory realm '${TARGET_REALM}'."  # still joined after leave attempt
 else
   if [ -z "${DOMAIN_PASS:-}" ]; then
     echo -en "  ${YELLOW}[INPUT]${NC} Enter Domain Admin Password for '${TARGET_ADMIN}@${TARGET_REALM}': "
