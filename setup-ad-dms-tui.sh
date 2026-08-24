@@ -177,11 +177,11 @@ if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 3: Install AD Prerequisites & Core Build Tools
+# Step 3: Install AD Prerequisites
 # ------------------------------------------------------------------------------
 step_header "3" "Installing AD & Security Dependencies"
-if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit git cmake extra-cmake-modules 2>/dev/null; then
-  msg_ok "All AD prerequisite packages and core tools installed."
+if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
+  msg_ok "All AD prerequisite packages installed."
 else
   msg_warn "AD dependencies installed with minor package warnings. Proceeding..."
 fi
