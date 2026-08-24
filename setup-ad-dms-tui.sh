@@ -471,44 +471,37 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
 fi
 
 if [ -f /etc/sssd/sssd.conf ]; then
-  # Ensure sssd.conf contains required sections and permissions
-  if grep -q "\[sssd\]" /etc/sssd/sssd.conf; then
-    if ! grep -q "default_domain_suffix" /etc/sssd/sssd.conf; then
-      sed -i "/\[sssd\]/a default_domain_suffix = ${TARGET_DOMAIN}" /etc/sssd/sssd.conf
-    else
-      sed -i "s/^default_domain_suffix.*/default_domain_suffix = ${TARGET_DOMAIN}/g" /etc/sssd/sssd.conf
-    fi
-  fi
+  # Inject or update domain configuration cleanly
+  cat <<EOF > /etc/sssd/sssd.conf
+[sssd]
+domains = ${TARGET_DOMAIN}
+config_file_version = 2
+services = nss, pam
+default_domain_suffix = ${TARGET_DOMAIN}
 
-  if grep -q "use_fully_qualified_names" /etc/sssd/sssd.conf; then
-    sed -i "s/^use_fully_qualified_names.*/use_fully_qualified_names = ${USE_FQDN}/g" /etc/sssd/sssd.conf
-  else
-    sed -i "/\[domain\/.*\]/a use_fully_qualified_names = ${USE_FQDN}" /etc/sssd/sssd.conf
-  fi
-
-  if grep -q "fallback_homedir" /etc/sssd/sssd.conf; then
-    sed -i "s|^fallback_homedir.*|fallback_homedir = /home/%u@%d|g" /etc/sssd/sssd.conf
-  else
-    sed -i "/\[domain\/.*\]/a fallback_homedir = /home/%u@%d" /etc/sssd/sssd.conf
-  fi
-
-  # Enable access_provider = permit and disable GPO restrictions for domain users
-  if grep -q "access_provider" /etc/sssd/sssd.conf; then
-    sed -i "s/^access_provider.*/access_provider = permit/g" /etc/sssd/sssd.conf
-  else
-    sed -i "/\[domain\/.*\]/a access_provider = permit" /etc/sssd/sssd.conf
-  fi
-
-  if ! grep -q "ad_gpo_access_control" /etc/sssd/sssd.conf; then
-    sed -i "/\[domain\/.*\]/a ad_gpo_access_control = permissive" /etc/sssd/sssd.conf
-  fi
-
-  if ! grep -q "cache_credentials" /etc/sssd/sssd.conf; then
-    sed -i "/\[domain\/.*\]/a cache_credentials = True" /etc/sssd/sssd.conf
-  fi
+[domain/${TARGET_DOMAIN}]
+default_shell = /bin/bash
+krb5_store_password_if_offline = True
+cache_credentials = True
+krb5_realm = ${TARGET_REALM}
+realmd_tags = manages-system joined-with-adcli
+id_provider = ad
+fallback_homedir = /home/%u@%d
+override_homedir = /home/%u
+ad_domain = ${TARGET_DOMAIN}
+use_fully_qualified_names = ${USE_FQDN}
+ldap_id_mapping = True
+access_provider = permit
+ad_gpo_access_control = permissive
+EOF
 
   chmod 600 /etc/sssd/sssd.conf
   chown root:root /etc/sssd/sssd.conf
+  
+  # Validate SSSD configuration syntax
+  if command -v sssctl &>/dev/null; then
+    sssctl config-check 2>/dev/null || true
+  fi
   msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN}, access_provider = permit)."
 fi
 
