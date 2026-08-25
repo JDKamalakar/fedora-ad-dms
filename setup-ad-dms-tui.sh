@@ -567,16 +567,56 @@ if command -v dms &>/dev/null; then
   dms greeter sync 2>/dev/null || true
 fi
 
-# 5. Restart Authentication & Greeter Services
-if ask_yes_no "Restart authentication & greeter services (SSSD, Oddjob, greetd) now?" "Y"; then
-  systemctl stop sssd oddjobd greetd 2>/dev/null || true
+# 5. Restart Authentication Services
+if ask_yes_no "Restart authentication services (SSSD, Oddjob) now?" "Y"; then
+  echo ""
+  for i in 6 5 4 3 2 1; do
+    echo -ne "  ${YELLOW}[WAIT]${NC} Restarting in ${BOLD}${i}${NC} seconds... (Ctrl+C to abort)\r"
+    sleep 1
+  done
+  echo ""
+  systemctl stop sssd oddjobd 2>/dev/null || true
   sss_cache -E 2>/dev/null || true
   rm -f /var/lib/sss/db/* 2>/dev/null || true
   systemctl restart sssd oddjobd 2>/dev/null || true
-  systemctl restart greetd 2>/dev/null || true
-  msg_ok "Authentication & greeter services restarted. Domain login is ready on DMS Greeter!"
+  msg_ok "Authentication services restarted."
 fi
+
+# ------------------------------------------------------------------------------
+# AD Account Diagnostics
+# ------------------------------------------------------------------------------
+echo -e "\n${BOLD}--- Active Directory Diagnostics ---${NC}"
+
+echo -e "\n${CYAN}[1] Realm Status:${NC}"
+realm list 2>/dev/null || echo "  (realm list returned nothing — machine may not be joined)"
+
+echo -e "\n${CYAN}[2] SSSD Service Status:${NC}"
+systemctl is-active sssd 2>/dev/null && systemctl status sssd --no-pager -l 2>/dev/null | tail -20 || echo "  SSSD is NOT running"
+
+echo -e "\n${CYAN}[3] SSSD Config (/etc/sssd/sssd.conf):${NC}"
+cat /etc/sssd/sssd.conf 2>/dev/null || echo "  (file not found)"
+
+echo -e "\n${CYAN}[4] DNS Resolution — AD Domain SRV Records:${NC}"
+if command -v host &>/dev/null; then
+  host -t srv "_ldap._tcp.dc._msdcs.${TARGET_DOMAIN}" 2>&1 || true
+  host -t srv "_kerberos._tcp.${TARGET_DOMAIN}" 2>&1 || true
+else
+  dig +short srv "_ldap._tcp.dc._msdcs.${TARGET_DOMAIN}" 2>&1 || true
+fi
+
+echo -e "\n${CYAN}[5] Kerberos Config (/etc/krb5.conf):${NC}"
+grep -A5 "\\[realms\\]" /etc/krb5.conf 2>/dev/null || echo "  (no krb5.conf or [realms] section)"
+
+echo -e "\n${CYAN}[6] SSSD Log (last 30 lines):${NC}"
+journalctl -u sssd -n 30 --no-pager 2>/dev/null || true
+
+echo -e "\n${CYAN}[7] Test domain user lookup:${NC}"
+echo -n "  id ${TARGET_ADMIN}: "
+id "${TARGET_ADMIN}" 2>&1 || true
+echo -n "  id ${TARGET_ADMIN}@${TARGET_DOMAIN}: "
+id "${TARGET_ADMIN}@${TARGET_DOMAIN}" 2>&1 || true
 
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Installation steps complete successfully!                            ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
+

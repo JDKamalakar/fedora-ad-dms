@@ -20,7 +20,7 @@ fi
 PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.4...${NC}"
+echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.5...${NC}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
