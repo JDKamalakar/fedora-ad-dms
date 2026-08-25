@@ -92,6 +92,12 @@ else
   msg_warn "'domain.conf' missing. Falling back to default parameters."
 fi
 
+# ==============================================================================
+# CONFIGURABLE INSTALLATION COMMANDS & VARIABLES
+# Edit this variable to add future flags, options, or alternate endpoints
+# ==============================================================================
+DMS_INSTALL_CMD="${DMS_INSTALL_CMD:-curl -fsSL https://install.danklinux.com | sh}"
+
 # ------------------------------------------------------------------------------
 # Phase 0: ProtonVPN (pVPN) Setup & Initial Connection
 # ------------------------------------------------------------------------------
@@ -192,7 +198,6 @@ fi
 step_header "4" "Installing Dank Material Shell (DMS)"
 REAL_USER="${SUDO_USER:-}"
 
-# 1. Execute DMS Installer Script directly (interactive, latest version)
 DMS_TARGET_USER=""
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   DMS_TARGET_USER="$REAL_USER"
@@ -200,53 +205,41 @@ else
   DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd || true)
 fi
 
-msg_info "Downloading latest Dank Material Shell installer (dankinstall)..."
-DMS_TMP_DIR=$(mktemp -d)
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64) ARCH_TAG="amd64" ;;
-  aarch64) ARCH_TAG="arm64" ;;
-  *) ARCH_TAG="amd64" ;;
-esac
-
-LATEST_DMS_TAG=$(curl -s https://api.github.com/repos/AvengeMedia/DankMaterialShell/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
-DMS_INSTALLED=false
-
-if [ -n "$LATEST_DMS_TAG" ]; then
-  msg_info "Detected latest DMS release: ${LATEST_DMS_TAG}"
-  if curl -fsSL "https://github.com/AvengeMedia/DankMaterialShell/releases/download/${LATEST_DMS_TAG}/dankinstall-${ARCH_TAG}.gz" -o "${DMS_TMP_DIR}/dankinstall.gz" 2>/dev/null; then
-    gunzip -f "${DMS_TMP_DIR}/dankinstall.gz"
-    chmod +x "${DMS_TMP_DIR}/dankinstall"
-    msg_info "Running DMS installer interactively for user '${DMS_TARGET_USER}'..."
-    if [ -n "$DMS_TARGET_USER" ] && id "$DMS_TARGET_USER" &>/dev/null; then
-      sudo -u "$DMS_TARGET_USER" "${DMS_TMP_DIR}/dankinstall" 2>&1 && DMS_INSTALLED=true || true
-    else
-      "${DMS_TMP_DIR}/dankinstall" 2>&1 && DMS_INSTALLED=true || true
-    fi
-    msg_ok "DMS installer completed."
-  else
-    msg_warn "Could not download dankinstall binary. Falling back to COPR packages."
+# 1. Version Detection & Conditional Install Prompt
+SHOULD_RUN_DMS_INSTALL=true
+if command -v dms &>/dev/null; then
+  CURRENT_DMS_VER=$(dms --version 2>/dev/null || echo "installed")
+  msg_info "Detected existing Dank Material Shell version: ${CURRENT_DMS_VER}"
+  if ! ask_yes_no "DMS is already installed. Re-run installation command?" "N"; then
+    SHOULD_RUN_DMS_INSTALL=false
+    msg_info "Skipping DMS installation command execution."
   fi
 fi
 
-rm -rf "$DMS_TMP_DIR"
+if [ "$SHOULD_RUN_DMS_INSTALL" = true ]; then
+  msg_info "Executing DMS installer command: '${DMS_INSTALL_CMD}'..."
+  if [ -n "$DMS_TARGET_USER" ] && [ "$DMS_TARGET_USER" != "root" ]; then
+    sudo -u "$DMS_TARGET_USER" bash -c "$DMS_INSTALL_CMD" 2>&1 || true
+  else
+    eval "$DMS_INSTALL_CMD" 2>&1 || true
+  fi
+  msg_ok "DMS installer command completed."
+fi
 
-# Enable COPR repositories (avengemedia/dms and git repository for latest bleeding-edge/git builds)
-msg_info "Configuring and synchronizing DMS COPR repositories (including git builds)..."
+# Enable COPR repositories & sync required packages
+msg_info "Configuring and synchronizing DMS COPR repositories..."
 dnf copr enable -y avengemedia/dms 2>/dev/null || true
 dnf copr enable -y avengemedia/dms-git 2>/dev/null || true
 dnf copr enable -y avengemedia/danklinux 2>/dev/null || true
 
-# Install / upgrade packages to ensure latest git packages and optional dependencies are present
 dnf install -y dms dms-greeter greetd niri kitty matugen quickshell 2>/dev/null || true
 dnf upgrade -y dms dms-greeter 2>/dev/null || true
-msg_ok "DMS packages and git versions synchronized."
+msg_ok "DMS packages and dependencies synchronized."
 
-# 2. Deploy Preset Configurations for DankMaterialShell & Niri
-# Preset archives located in presets/ folder
+# 2. Deploy ALL Preset Archives found in presets/
 PRESETS_DIR=""
 for cand_dir in "${SCRIPT_DIR}/presets" "/tmp/fedora-ad-dms/presets" "${SCRIPT_DIR}" "/tmp/fedora-ad-dms"; do
-  if [ -d "$cand_dir" ] && { [ -f "${cand_dir}/DankMaterialShell.tar.gz" ] || [ -f "${cand_dir}/niri-dms-config.tar.gz" ]; }; then
+  if [ -d "$cand_dir" ] && ls "$cand_dir"/*.tar.gz &>/dev/null; then
     PRESETS_DIR="$cand_dir"
     break
   fi
@@ -258,25 +251,25 @@ deploy_presets() {
 
   mkdir -p "${target_home}/.config" "${target_home}/.local/share"
 
-  if [ -n "$PRESETS_DIR" ]; then
-    # Unpack DankMaterialShell preset
-    if [ -f "${PRESETS_DIR}/DankMaterialShell.tar.gz" ]; then
-      tar -xzf "${PRESETS_DIR}/DankMaterialShell.tar.gz" -C "${target_home}/.config" 2>/dev/null || true
-    fi
-
-    # Unpack Niri DMS configuration preset
-    if [ -f "${PRESETS_DIR}/niri-dms-config.tar.gz" ]; then
-      tar -xzf "${PRESETS_DIR}/niri-dms-config.tar.gz" -C "$target_home" 2>/dev/null || true
-    fi
+  if [ -n "$PRESETS_DIR" ] && [ -d "$PRESETS_DIR" ]; then
+    for preset_archive in "${PRESETS_DIR}"/*.tar.gz "${PRESETS_DIR}"/*.tgz; do
+      [ -f "$preset_archive" ] || continue
+      msg_info "Unpacking preset archive: $(basename "$preset_archive")"
+      
+      # Extract root-level dotfolders directly to ~, otherwise extract into ~/.config
+      if tar -tzf "$preset_archive" 2>/dev/null | grep -q -E '^\.?/?(\.config|\.local|\.bash|\.zsh)'; then
+        tar -xzf "$preset_archive" -C "$target_home" 2>/dev/null || true
+      else
+        tar -xzf "$preset_archive" -C "${target_home}/.config" 2>/dev/null || true
+      fi
+    done
   fi
 
-  # CRITICAL: Remove hardcoded display output config — outputs.kdl must be
-  # generated dynamically by DMS per machine. If deployed, Niri crashes
-  # immediately when the expected output (e.g. DP-1) is not found.
+  # Dynamic Hardware Guard: Remove static display configurations to prevent Niri startup crashes
   rm -f "${target_home}/.config/niri/dms/outputs.kdl"
   rm -f "${target_home}/.config/niri/config.kdl.backup"*
 
-  # Fallback to dms setup if configs are missing
+  # Fallback setup if configs are missing
   if [ ! -d "${target_home}/.config/DankMaterialShell" ] && command -v dms &>/dev/null; then
     if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
       sudo -u "$target_user" dms setup 2>/dev/null || true
@@ -288,18 +281,18 @@ deploy_presets() {
   fi
 }
 
-msg_info "Deploying presets from '${PRESETS_DIR:-presets/}' to '/etc/skel' for all domain & new users..."
+msg_info "Deploying all preset archives from '${PRESETS_DIR:-presets/}' to '/etc/skel'..."
 deploy_presets "/etc/skel"
 
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   USER_HOME=$(eval echo "~${REAL_USER}")
   if [ -d "$USER_HOME" ]; then
-    msg_info "Deploying presets to current user '${REAL_USER}' (${USER_HOME})..."
+    msg_info "Deploying preset archives to current user '${REAL_USER}' (${USER_HOME})..."
     deploy_presets "$USER_HOME" "$REAL_USER"
   fi
 fi
 
-msg_ok "DMS and Niri preset configurations successfully deployed."
+msg_ok "All DMS and desktop preset configurations successfully deployed."
 
 # ------------------------------------------------------------------------------
 # Step 5: Install & Apply Darkly Theme
@@ -408,7 +401,6 @@ if [ -n "${AD_DNS_IP:-}" ]; then
   nmcli connection modify "$TARGET_CONN" ipv4.dns "$AD_DNS_IP" ipv4.dns-search "$TARGET_DOMAIN" ipv4.ignore-auto-dns yes 2>/dev/null || true
   nmcli connection up "$TARGET_CONN" 2>/dev/null || true
   
-  # Ensure systemd-resolved routes queries for the domain to AD DNS
   if command -v resolvectl &>/dev/null; then
     resolvectl dns "$TARGET_CONN" "$AD_DNS_IP" 2>/dev/null || true
     resolvectl domain "$TARGET_CONN" "~${TARGET_DOMAIN}" "${TARGET_DOMAIN}" 2>/dev/null || true
@@ -420,7 +412,7 @@ systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 msg_ok "Network clock synchronized."
 
-# 2. Realm Join — ask to rejoin if already enrolled
+# 2. Realm Join
 if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
   if ask_yes_no "Machine is already joined to '${TARGET_REALM}'. Rejoin with updated credentials?" "N"; then
     msg_info "Leaving '${TARGET_REALM}' to allow re-enrollment..."
@@ -450,10 +442,7 @@ if ! realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
   fi
 fi
 
-# 3. Generate correct Kerberos config from domain variables
-# IMPORTANT: Do NOT copy the static template configs/krb5.conf here — realm join
-# already writes the correct GSFCU.LOCAL realm into /etc/krb5.conf. Overwriting it
-# with the EXAMPLE.COM template causes SSSD to fail with 'Invalid SSSD configuration'.
+# 3. Generate Kerberos config
 if [ ! -s /etc/krb5.conf ] || ! grep -qi "${TARGET_REALM}" /etc/krb5.conf 2>/dev/null; then
   msg_info "Writing /etc/krb5.conf for realm '${TARGET_REALM}'..."
   cat <<EOF > /etc/krb5.conf
@@ -481,7 +470,7 @@ EOF
   msg_ok "/etc/krb5.conf written for realm '${TARGET_REALM}'."
 fi
 
-# Full system-auth & systemd-logind compatible PAM stack for greetd
+# Full PAM stack for greetd
 cat <<'EOF' > /etc/pam.d/greetd
 #%PAM-1.0
 auth       substack    system-auth
@@ -513,14 +502,13 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
   USE_FQDN="True"
 fi
 
-# Build SSSD config without conflicting default_domain_suffix when short names are active
+# Avoid SSSD domain conflict: default_domain_suffix is omitted when use_fully_qualified_names is False
 SSSD_SUFFIX=""
 if [ "$USE_FQDN" = "True" ]; then
   SSSD_SUFFIX="default_domain_suffix = ${TARGET_DOMAIN}"
 fi
 
 if [ -f /etc/sssd/sssd.conf ]; then
-  # Inject or update domain configuration cleanly
   cat <<EOF > /etc/sssd/sssd.conf
 [sssd]
 domains = ${TARGET_DOMAIN}
@@ -530,8 +518,8 @@ ${SSSD_SUFFIX}
 
 [domain/${TARGET_DOMAIN}]
 default_shell = /bin/bash
-krb5_store_password_if_offline = true
-cache_credentials = true
+krb5_store_password_if_offline = True
+cache_credentials = True
 krb5_realm = ${TARGET_REALM}
 realmd_tags = manages-system joined-with-adcli
 id_provider = ad
@@ -539,7 +527,7 @@ fallback_homedir = /home/%u@%d
 override_homedir = /home/%u
 ad_domain = ${TARGET_DOMAIN}
 use_fully_qualified_names = ${USE_FQDN}
-ldap_id_mapping = true
+ldap_id_mapping = True
 access_provider = permit
 ad_gpo_access_control = permissive
 EOF
@@ -547,7 +535,6 @@ EOF
   chmod 600 /etc/sssd/sssd.conf
   chown root:root /etc/sssd/sssd.conf
   
-  # Validate SSSD configuration syntax
   if command -v sssctl &>/dev/null; then
     sssctl config-check 2>/dev/null || true
   fi
@@ -569,7 +556,6 @@ command = "dms-greeter --command niri"
 user = "greeter"
 EOF
 
-# Ensure greeter user exists and has video/input/greeter permissions
 if ! id "greeter" &>/dev/null; then
   useradd -M -N -g 1000 -r -s /sbin/nologin -d /var/empty/greetd greeter 2>/dev/null || useradd -r -s /sbin/nologin greeter 2>/dev/null || true
 fi
@@ -587,13 +573,12 @@ if [ -n "${TARGET_ADMIN}" ]; then
   chmod -R 777 "/var/cache/dms-greeter/users/${TARGET_ADMIN}" 2>/dev/null || true
 fi
 
-# Apply SELinux booleans and permissions for domain logins & greeter
+# Apply SELinux booleans and permissions
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter /etc/greetd 2>/dev/null || true
 
-# Sync DMS greeter sessions cleanly
 if command -v dms &>/dev/null; then
   msg_info "Synchronizing DMS greeter desktop sessions..."
   dms greeter sync 2>/dev/null || true
@@ -658,4 +643,3 @@ id "${TARGET_ADMIN}@${TARGET_DOMAIN}" 2>&1 || true
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Installation steps complete successfully!                            ${NC} ${GREEN}|${NC}"
 echo -e "${GREEN}+--------------------------------------------------------------------+${NC}\n"
-
