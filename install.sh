@@ -54,12 +54,12 @@ fetch_file "lab.conf" "true"
 fetch_file "domain.conf" "false"
 
 # Policy Engine & App Configuration Files
-fetch_file "refresh-app-policies.sh" "true"
-fetch_file "remote-tasks.sh" "true"
-fetch_file "allowed-apps.conf" "false"
-fetch_file "blocked-apps.conf" "false"
-fetch_file "compulsory-apps.conf" "false"
-fetch_file "group-apps.conf" "false"
+fetch_file "config/refresh-app-policies.sh" "true"
+fetch_file "config/remote-tasks.sh" "true"
+fetch_file "config/allowed-apps.conf" "true"
+fetch_file "config/blocked-apps.conf" "true"
+fetch_file "config/compulsory-apps.conf" "true"
+fetch_file "config/group-apps.conf" "true"
 
 # ------------------------------------------------------------------------------
 # 2. Dynamically Auto-Discover and Fetch All Presets
