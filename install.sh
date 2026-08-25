@@ -22,7 +22,7 @@ PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 API_PRESETS_URL="https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.9...${NC}"
+echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V1.0...${NC}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/presets"
 cd "$WORK_DIR"
@@ -46,16 +46,20 @@ fetch_file() {
 }
 
 # ------------------------------------------------------------------------------
-# 1. Fetch Core System Components & Configurations
+# 1. Fetch Core System Components & Policy Configurations
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}${CYAN}[1/3] Downloading core installer scripts and domain configs...${NC}"
 fetch_file "setup-ad-dms-tui.sh" "true"
 fetch_file "lab.conf" "true"
 fetch_file "domain.conf" "false"
+
+# Policy Engine & App Configuration Files
 fetch_file "refresh-app-policies.sh" "false"
+fetch_file "remote-tasks.sh" "false"
 fetch_file "allowed-apps.conf" "false"
 fetch_file "blocked-apps.conf" "false"
 fetch_file "compulsory-apps.conf" "false"
+fetch_file "group-apps.conf" "false"
 
 # ------------------------------------------------------------------------------
 # 2. Dynamically Auto-Discover and Fetch All Presets
@@ -79,6 +83,7 @@ fi
 echo -e "\n${BOLD}${CYAN}[3/3] Preparing execution environment...${NC}"
 chmod +x setup-ad-dms-tui.sh
 [ -f refresh-app-policies.sh ] && chmod +x refresh-app-policies.sh
+[ -f remote-tasks.sh ] && chmod +x remote-tasks.sh
 
 echo -e "${GREEN}[OK] Handing over execution to setup-ad-dms-tui.sh...${NC}\n"
 exec ./setup-ad-dms-tui.sh "$@"

@@ -94,7 +94,6 @@ fi
 
 # ==============================================================================
 # CONFIGURABLE INSTALLATION COMMANDS & VARIABLES
-# Edit this variable to add future flags, options, or alternate endpoints
 # ==============================================================================
 DMS_INSTALL_CMD="${DMS_INSTALL_CMD:-curl -fsSL https://install.danklinux.com | sh}"
 
@@ -183,14 +182,27 @@ if ask_yes_no "Run full system update ('dnf update')?" "Y"; then
 fi
 
 # ------------------------------------------------------------------------------
-# Step 3: Install AD Prerequisites
+# Step 3: Install AD Prerequisites & Deploy System Policy Engine
 # ------------------------------------------------------------------------------
-step_header "3" "Installing AD & Security Dependencies"
+step_header "3" "Installing AD Dependencies & Staging App Policy Configurations"
 if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
   msg_ok "All AD prerequisite packages installed."
 else
   msg_warn "AD dependencies installed with minor package warnings. Proceeding..."
 fi
+
+CONF_DIR="/etc/ad-dms"
+mkdir -p "$CONF_DIR"
+
+msg_info "Deploying system app policy configurations to '${CONF_DIR}'..."
+for config_file in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf refresh-app-policies.sh remote-tasks.sh; do
+  if [ -f "${SCRIPT_DIR}/${config_file}" ]; then
+    cp -f "${SCRIPT_DIR}/${config_file}" "${CONF_DIR}/"
+    msg_ok "Deployed: ${config_file}"
+  fi
+done
+
+chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
@@ -205,7 +217,6 @@ else
   DMS_TARGET_USER=$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd || true)
 fi
 
-# 1. Version Detection & Conditional Install Prompt
 SHOULD_RUN_DMS_INSTALL=true
 if command -v dms &>/dev/null; then
   CURRENT_DMS_VER=$(dms --version 2>/dev/null || echo "installed")
@@ -226,7 +237,6 @@ if [ "$SHOULD_RUN_DMS_INSTALL" = true ]; then
   msg_ok "DMS installer command completed."
 fi
 
-# Enable COPR repositories & sync required packages
 msg_info "Configuring and synchronizing DMS COPR repositories..."
 dnf copr enable -y avengemedia/dms 2>/dev/null || true
 dnf copr enable -y avengemedia/dms-git 2>/dev/null || true
@@ -236,7 +246,6 @@ dnf install -y dms dms-greeter greetd niri kitty matugen quickshell 2>/dev/null 
 dnf upgrade -y dms dms-greeter 2>/dev/null || true
 msg_ok "DMS packages and dependencies synchronized."
 
-# 2. Deploy ALL Preset Archives found in presets/
 PRESETS_DIR=""
 for cand_dir in "${SCRIPT_DIR}/presets" "/tmp/fedora-ad-dms/presets" "${SCRIPT_DIR}" "/tmp/fedora-ad-dms"; do
   if [ -d "$cand_dir" ] && ls "$cand_dir"/*.tar.gz &>/dev/null; then
@@ -256,7 +265,6 @@ deploy_presets() {
       [ -f "$preset_archive" ] || continue
       msg_info "Unpacking preset archive: $(basename "$preset_archive")"
       
-      # Extract root-level dotfolders directly to ~, otherwise extract into ~/.config
       if tar -tzf "$preset_archive" 2>/dev/null | grep -q -E '^\.?/?(\.config|\.local|\.bash|\.zsh)'; then
         tar -xzf "$preset_archive" -C "$target_home" 2>/dev/null || true
       else
@@ -265,11 +273,9 @@ deploy_presets() {
     done
   fi
 
-  # Dynamic Hardware Guard: Remove static display configurations to prevent Niri startup crashes
   rm -f "${target_home}/.config/niri/dms/outputs.kdl"
   rm -f "${target_home}/.config/niri/config.kdl.backup"*
 
-  # Fallback setup if configs are missing
   if [ ! -d "${target_home}/.config/DankMaterialShell" ] && command -v dms &>/dev/null; then
     if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
       sudo -u "$target_user" dms setup 2>/dev/null || true
@@ -325,7 +331,6 @@ else
   rm -rf "${DARKLY_BUILD_DIR}"
 fi
 
-# Apply Darkly widget style to /etc/skel and current user
 apply_darkly_style() {
   local target_home="$1"
   local target_user="${2:-}"
@@ -392,7 +397,6 @@ TARGET_DOMAIN="${DOMAIN_NAME:-gsfcu.local}"
 TARGET_REALM="${REALM_NAME:-${TARGET_DOMAIN^^}}"
 TARGET_ADMIN="${DOMAIN_USER:-admin}"
 
-# 1. DNS & Time Sync
 ACTIVE_CONN=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ethernet | head -n1 | cut -d: -f1 || true)
 TARGET_CONN="${ACTIVE_CONN:-Wired connection 1}"
 
@@ -412,7 +416,6 @@ systemctl enable --now chronyd 2>/dev/null || true
 chronyc makestep > /dev/null 2>&1 || true
 msg_ok "Network clock synchronized."
 
-# 2. Realm Join
 if realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
   if ask_yes_no "Machine is already joined to '${TARGET_REALM}'. Rejoin with updated credentials?" "N"; then
     msg_info "Leaving '${TARGET_REALM}' to allow re-enrollment..."
@@ -442,7 +445,6 @@ if ! realm list 2>/dev/null | grep -iq "${TARGET_DOMAIN}"; then
   fi
 fi
 
-# 3. Generate Kerberos config
 if [ ! -s /etc/krb5.conf ] || ! grep -qi "${TARGET_REALM}" /etc/krb5.conf 2>/dev/null; then
   msg_info "Writing /etc/krb5.conf for realm '${TARGET_REALM}'..."
   cat <<EOF > /etc/krb5.conf
@@ -470,7 +472,6 @@ EOF
   msg_ok "/etc/krb5.conf written for realm '${TARGET_REALM}'."
 fi
 
-# Full PAM stack for greetd
 cat <<'EOF' > /etc/pam.d/greetd
 #%PAM-1.0
 auth       substack    system-auth
@@ -502,7 +503,6 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
   USE_FQDN="True"
 fi
 
-# Avoid SSSD domain conflict: default_domain_suffix is omitted when use_fully_qualified_names is False
 SSSD_SUFFIX=""
 if [ "$USE_FQDN" = "True" ]; then
   SSSD_SUFFIX="default_domain_suffix = ${TARGET_DOMAIN}"
@@ -545,7 +545,6 @@ authselect select sssd with-mkhomedir --force 2>/dev/null || true
 systemctl enable --now oddjobd 2>/dev/null || true
 msg_ok "PAM configured for SSSD and automatic home directory creation."
 
-# 4. DMS Greeter (greetd) Account, Service & Cache Directory Setup
 mkdir -p /etc/greetd
 cat <<'EOF' > /etc/greetd/config.toml
 [terminal]
@@ -564,7 +563,6 @@ usermod -aG video,input greeter 2>/dev/null || true
 mkdir -p /var/cache/dms-greeter/users
 chmod -R 777 /var/cache/dms-greeter 2>/dev/null || true
 
-# Pre-populate DMS greeter profile cache for domain user
 if [ -n "${TARGET_ADMIN}" ]; then
   mkdir -p "/var/cache/dms-greeter/users/${TARGET_ADMIN}"
   [ ! -f "/var/cache/dms-greeter/users/${TARGET_ADMIN}/settings.json" ] && echo "{}" > "/var/cache/dms-greeter/users/${TARGET_ADMIN}/settings.json"
@@ -573,18 +571,16 @@ if [ -n "${TARGET_ADMIN}" ]; then
   chmod -R 777 "/var/cache/dms-greeter/users/${TARGET_ADMIN}" 2>/dev/null || true
 fi
 
-# Apply SELinux booleans and permissions
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
-restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter /etc/greetd 2>/dev/null || true
+restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter /etc/greetd /etc/ad-dms 2>/dev/null || true
 
 if command -v dms &>/dev/null; then
   msg_info "Synchronizing DMS greeter desktop sessions..."
   dms greeter sync 2>/dev/null || true
 fi
 
-# 5. Restart Authentication Services
 if ask_yes_no "Restart authentication services (SSSD, Oddjob) now?" "Y"; then
   echo ""
   for i in 6 5 4 3 2 1; do
@@ -598,6 +594,31 @@ if ask_yes_no "Restart authentication services (SSSD, Oddjob) now?" "Y"; then
   systemctl restart sssd oddjobd 2>/dev/null || true
   msg_ok "Authentication services restarted."
 fi
+
+# ------------------------------------------------------------------------------
+# Passwordless Package Manager Privileges for Non-Admin / Non-Sudo Users
+# ------------------------------------------------------------------------------
+msg_info "Configuring passwordless package updates for non-sudo/domain users..."
+
+cat <<'EOF' > /etc/sudoers.d/99-ad-dms-dnf-updates
+# Allow all authenticated users (including standard domain accounts) to run DNF updates
+ALL ALL=(ALL) NOPASSWD: /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y, /usr/bin/pkexec /usr/bin/dnf *
+EOF
+chmod 0440 /etc/sudoers.d/99-ad-dms-dnf-updates
+
+mkdir -p /etc/polkit-1/rules.d
+cat <<'EOF' > /etc/polkit-1/rules.d/49-allow-dnf-updates.rules
+/* Allow standard non-admin users to update packages via PackageKit/Polkit */
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.packagekit.system-update" ||
+         action.id == "org.freedesktop.packagekit.system-sources-refresh" ||
+         action.id == "org.freedesktop.packagekit.package-install") &&
+        subject.active) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+msg_ok "Passwordless package update privileges granted to all active users."
 
 # ------------------------------------------------------------------------------
 # AD Account Diagnostics
@@ -639,6 +660,18 @@ echo -n "  id ${TARGET_ADMIN}: "
 id "${TARGET_ADMIN}" 2>&1 || true
 echo -n "  id ${TARGET_ADMIN}@${TARGET_DOMAIN}: "
 id "${TARGET_ADMIN}@${TARGET_DOMAIN}" 2>&1 || true
+
+# ------------------------------------------------------------------------------
+# Post-Diagnostics Application Policy Sync
+# ------------------------------------------------------------------------------
+echo -e "\n${BOLD}${CYAN}[POST-DIAGNOSTICS] Enforcing Application & System Policies...${NC}"
+if [ -x "${CONF_DIR}/refresh-app-policies.sh" ]; then
+  msg_info "Executing policy engine '${CONF_DIR}/refresh-app-policies.sh'..."
+  "${CONF_DIR}/refresh-app-policies.sh" 2>&1 || true
+  msg_ok "Application policy enforcement complete."
+else
+  msg_warn "Policy script not found at '${CONF_DIR}/refresh-app-policies.sh'."
+fi
 
 echo -e "\n${GREEN}+--------------------------------------------------------------------+${NC}"
 echo -e "${GREEN}|${NC} ${BOLD}Installation steps complete successfully!                            ${NC} ${GREEN}|${NC}"
