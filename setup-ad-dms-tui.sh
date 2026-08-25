@@ -513,6 +513,12 @@ if [ "$(echo "${ALLOW_SHORT_USERNAMES:-yes}" | tr '[:upper:]' '[:lower:]')" = "n
   USE_FQDN="True"
 fi
 
+# Build SSSD config without conflicting default_domain_suffix when short names are active
+SSSD_SUFFIX=""
+if [ "$USE_FQDN" = "True" ]; then
+  SSSD_SUFFIX="default_domain_suffix = ${TARGET_DOMAIN}"
+fi
+
 if [ -f /etc/sssd/sssd.conf ]; then
   # Inject or update domain configuration cleanly
   cat <<EOF > /etc/sssd/sssd.conf
@@ -520,12 +526,12 @@ if [ -f /etc/sssd/sssd.conf ]; then
 domains = ${TARGET_DOMAIN}
 config_file_version = 2
 services = nss, pam
-default_domain_suffix = ${TARGET_DOMAIN}
+${SSSD_SUFFIX}
 
 [domain/${TARGET_DOMAIN}]
 default_shell = /bin/bash
-krb5_store_password_if_offline = True
-cache_credentials = True
+krb5_store_password_if_offline = true
+cache_credentials = true
 krb5_realm = ${TARGET_REALM}
 realmd_tags = manages-system joined-with-adcli
 id_provider = ad
@@ -533,7 +539,7 @@ fallback_homedir = /home/%u@%d
 override_homedir = /home/%u
 ad_domain = ${TARGET_DOMAIN}
 use_fully_qualified_names = ${USE_FQDN}
-ldap_id_mapping = True
+ldap_id_mapping = true
 access_provider = permit
 ad_gpo_access_control = permissive
 EOF
@@ -545,7 +551,7 @@ EOF
   if command -v sssctl &>/dev/null; then
     sssctl config-check 2>/dev/null || true
   fi
-  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, default_domain_suffix = ${TARGET_DOMAIN}, access_provider = permit)."
+  msg_ok "Configured SSSD (use_fully_qualified_names = ${USE_FQDN}, access_provider = permit)."
 fi
 
 authselect select sssd with-mkhomedir --force 2>/dev/null || true
