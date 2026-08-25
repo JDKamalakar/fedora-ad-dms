@@ -204,6 +204,35 @@ done
 
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
+
+# ------------------------------------------------------------------------------
+# Step 3a: Refresh CMD Policy
+# ------------------------------------------------------------------------------
+
+# Deploy system-wide 'refresh' utility command
+msg_info "Deploying refresh utility command..."
+cat <<'EOF' > /usr/local/bin/refresh
+#!/usr/bin/env bash
+set -euo pipefail
+REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
+CONF_DIR="/etc/ad-dms"
+[ "$EUID" -ne 0 ] && exec sudo "$0" "$@"
+echo -e "\033[1;36m[INFO] Refetching policy engine from GitHub...\033[0m"
+for f in refresh-app-policies.sh remote-tasks.sh allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf; do
+  curl -fsSL "${REPO_RAW_URL}/${f}" -o "${CONF_DIR}/${f}" 2>/dev/null || true
+done
+chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
+"${CONF_DIR}/refresh-app-policies.sh"
+EOF
+chmod +x /usr/local/bin/refresh
+msg_ok "Deployed: refresh"
+
+msg_info "Creating user alias 'refresh' for convenience..."
+cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
+alias refresh='sudo /usr/local/bin/refresh'
+EOF
+msg_ok "Deployed: refresh alias"
+
 # ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
 # ------------------------------------------------------------------------------
