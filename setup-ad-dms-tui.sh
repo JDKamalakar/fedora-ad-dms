@@ -215,15 +215,43 @@ msg_info "Deploying refresh utility command..."
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 set -euo pipefail
+
 REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
 CONF_DIR="/etc/ad-dms"
-[ "$EUID" -ne 0 ] && exec sudo "$0" "$@"
-echo -e "\033[1;36m[INFO] Refetching policy engine from GitHub...\033[0m"
-for f in refresh-app-policies.sh remote-tasks.sh allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf; do
-  curl -fsSL "${REPO_RAW_URL}/${f}" -o "${CONF_DIR}/${f}" 2>/dev/null || true
+
+if [ "$EUID" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
+echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files from GitHub...\033[0m"
+mkdir -p "$CONF_DIR"
+
+FILES=(
+  "refresh-app-policies.sh"
+  "remote-tasks.sh"
+  "allowed-apps.conf"
+  "blocked-apps.conf"
+  "compulsory-apps.conf"
+  "group-apps.conf"
+)
+
+for file in "${FILES[@]}"; do
+  echo -n -e "  -> Downloading remote file: ${file}... "
+  if curl -fsSL "${REPO_RAW_URL}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+    echo -e "\033[1;32m[OK]\033[0m"
+  else
+    echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
+  fi
 done
+
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
-"${CONF_DIR}/refresh-app-policies.sh"
+
+if [ -x "${CONF_DIR}/refresh-app-policies.sh" ]; then
+  "${CONF_DIR}/refresh-app-policies.sh"
+else
+  echo -e "\033[1;31m[ERROR] Missing executable engine script at '${CONF_DIR}/refresh-app-policies.sh'\033[0m"
+  exit 1
+fi
 EOF
 chmod +x /usr/local/bin/refresh
 msg_ok "Deployed: /usr/local/bin/refresh"
