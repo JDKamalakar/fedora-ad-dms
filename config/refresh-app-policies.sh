@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# AD-DMS Policy Enforcement Engine
+# AD-DMS Policy Enforcement & Permission Engine
 # Script: /etc/ad-dms/refresh-app-policies.sh
 # ==============================================================================
 set -euo pipefail
@@ -30,16 +30,13 @@ parse_config_file() {
   [ ! -f "$file" ] && return 1
 
   while IFS= read -r line || [ -n "$line" ]; do
-    # Strip leading/trailing whitespace
     line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
-    # Detect Flatpak section identifier header
     if [[ "$line" =~ ^#[[:space:]]*---[[:space:]]*FLATPAK[[:space:]]*PACKAGES[[:space:]]*--- || "$line" =~ ^#[[:space:]]*FLATPAK ]]; then
       mode="flatpak"
       continue
     fi
 
-    # Ignore comments, empty lines, and KEY=VALUE configuration variables
     if [[ -z "$line" || "$line" =~ ^# || "$line" =~ = ]]; then
       continue
     fi
@@ -52,6 +49,19 @@ parse_config_file() {
   done < "$file"
 }
 
+# Collect all allowed software across compulsory, allowed, and group configs
+ALL_ALLOWED_DNF=()
+ALL_ALLOWED_FLATPAK=()
+
+collect_allowed_apps() {
+  local file="$1"
+  [ ! -f "$file" ] && return 0
+
+  parse_config_file "$file"
+  ALL_ALLOWED_DNF+=("${dnf_apps[@]:-}")
+  ALL_ALLOWED_FLATPAK+=("${flatpak_apps[@]:-}")
+}
+
 # ------------------------------------------------------------------------------
 # 1. Process Compulsory Apps
 # ------------------------------------------------------------------------------
@@ -59,7 +69,6 @@ echo -e "${BOLD}${CYAN}[1/4] Processing compulsory-apps.conf...${NC}"
 if [ -f "${CONF_DIR}/compulsory-apps.conf" ]; then
   parse_config_file "${CONF_DIR}/compulsory-apps.conf"
 
-  # Native DNF Packages
   for pkg in "${dnf_apps[@]:-}"; do
     if ! rpm -qa "$pkg" 2>/dev/null | grep -q .; then
       echo -e "  -> ${YELLOW}[DNF INSTALL]${NC} Installing missing mandatory package: ${BOLD}${pkg}${NC}"
@@ -69,7 +78,6 @@ if [ -f "${CONF_DIR}/compulsory-apps.conf" ]; then
     fi
   done
 
-  # Flatpak Applications
   for app in "${flatpak_apps[@]:-}"; do
     if ! flatpak list --app --columns=application 2>/dev/null | grep -q -i -E "^${app}$"; then
       echo -e "  -> ${YELLOW}[FLATPAK INSTALL]${NC} Installing mandatory Flatpak: ${BOLD}${app}${NC}"
@@ -96,11 +104,9 @@ if [ -f "${CONF_DIR}/blocked-apps.conf" ]; then
     BLOCK_ALL_FLATPAKS="true"
   fi
 
-  # 1. Remove & Exclude DNF Packages (Using rpm -qa for wildcard glob expansion)
   EXCLUDE_LIST=""
   for pkg in "${dnf_apps[@]:-}"; do
     EXCLUDE_LIST="${EXCLUDE_LIST} ${pkg}"
-    
     if rpm -qa "$pkg" 2>/dev/null | grep -q .; then
       echo -e "  -> ${RED}[DNF REMOVE]${NC} Removing blacklisted DNF package/pattern: ${BOLD}${pkg}${NC}"
       dnf remove -y "$pkg" 2>/dev/null || true
@@ -109,14 +115,12 @@ if [ -f "${CONF_DIR}/blocked-apps.conf" ]; then
     fi
   done
 
-  # Synchronize DNF exclude rules in /etc/dnf/dnf.conf
   if [ -n "$EXCLUDE_LIST" ]; then
     sed -i '/^excludepkgs=/d' /etc/dnf/dnf.conf 2>/dev/null || true
     echo "excludepkgs=${EXCLUDE_LIST}" >> /etc/dnf/dnf.conf
     echo -e "  -> ${GREEN}[DNF POLICY]${NC} Exclude list written to /etc/dnf/dnf.conf"
   fi
 
-  # 2. Uninstall Blacklisted Flatpaks (Checks system and user scopes)
   for app in "${flatpak_apps[@]:-}"; do
     if flatpak list --app --columns=application 2>/dev/null | grep -q -i -E "^${app}$"; then
       echo -e "  -> ${RED}[FLATPAK UNINSTALL]${NC} Uninstalling blacklisted Flatpak: ${BOLD}${app}${NC}"
@@ -127,42 +131,77 @@ if [ -f "${CONF_DIR}/blocked-apps.conf" ]; then
     fi
   done
 
-  # 3. Handle System-Wide Non-Root Flatpak Restrictions via Polkit
-  POLKIT_FLATPAK_RULE="/etc/polkit-1/rules.d/50-block-flatpak-install.rules"
-  if [ "$BLOCK_ALL_FLATPAKS" = "true" ]; then
-    cat <<'EOF' > "$POLKIT_FLATPAK_RULE"
-/* Block non-root users from installing or modifying Flatpaks */
-polkit.addRule(function(action, subject) {
-    if ((action.id == "org.freedesktop.Flatpak.app-install" ||
-         action.id == "org.freedesktop.Flatpak.runtime-install" ||
-         action.id == "org.freedesktop.Flatpak.modify-repo") &&
-        !subject.isInGroup("wheel") && subject.user != "root") {
-        return polkit.Result.NO;
-    }
-});
-EOF
-    echo -e "  -> ${YELLOW}[POLKIT ENFORCED]${NC} Non-root Flatpak installations completely disabled."
-  else
-    rm -f "$POLKIT_FLATPAK_RULE" 2>/dev/null || true
-    echo -e "  -> ${GREEN}[POLKIT VERIFIED]${NC} Non-root Flatpak installation permissions active."
-  fi
-
   echo -e "  ${GREEN}[STATUS] blocked-apps.conf synced successfully (${#dnf_apps[@]} DNF, ${#flatpak_apps[@]} Flatpak).${NC}\n"
 else
   echo -e "  ${YELLOW}[SKIP] blocked-apps.conf not found.${NC}\n"
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Process Allowed Apps
+# 3. Process Allowed Apps & Generate Dynamic Permissions
 # ------------------------------------------------------------------------------
-echo -e "${BOLD}${CYAN}[3/4] Processing allowed-apps.conf...${NC}"
-if [ -f "${CONF_DIR}/allowed-apps.conf" ]; then
-  parse_config_file "${CONF_DIR}/allowed-apps.conf"
-  echo -e "  -> ${GREEN}[VERIFIED]${NC} Whitelist loaded: ${#dnf_apps[@]} DNF packages, ${#flatpak_apps[@]} Flatpak applications."
-  echo -e "  ${GREEN}[STATUS] allowed-apps.conf synced successfully.${NC}\n"
-else
-  echo -e "  ${YELLOW}[SKIP] allowed-apps.conf not found.${NC}\n"
-fi
+echo -e "${BOLD}${CYAN}[3/4] Processing allowed-apps.conf & generating permission policies...${NC}"
+
+collect_allowed_apps "${CONF_DIR}/compulsory-apps.conf"
+collect_allowed_apps "${CONF_DIR}/allowed-apps.conf"
+
+# Remove duplicate entries
+ALLOWED_DNF_UNIQUE=($(echo "${ALL_ALLOWED_DNF[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+ALLOWED_FLATPAK_UNIQUE=($(echo "${ALL_ALLOWED_FLATPAK[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+# A. Generate Dynamic Flatpak Polkit Rule
+POLKIT_FLATPAK_RULE="/etc/polkit-1/rules.d/45-ad-dms-flatpak-allowlist.rules"
+mkdir -p /etc/polkit-1/rules.d
+
+FLATPAK_JS_ARRAY=""
+for fp in "${ALLOWED_FLATPAK_UNIQUE[@]:-}"; do
+  [ -z "$fp" ] && continue
+  FLATPAK_JS_ARRAY="${FLATPAK_JS_ARRAY}\"${fp}\", "
+done
+FLATPAK_JS_ARRAY="${FLATPAK_JS_ARRAY%, }"
+
+cat <<EOF > "$POLKIT_FLATPAK_RULE"
+/* Dynamically generated by AD-DMS Policy Engine */
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.Flatpak.app-install" ||
+         action.id == "org.freedesktop.Flatpak.runtime-install") && subject.active) {
+        var ref = action.lookup("app_ref");
+        if (ref) {
+            /* Allow all runtime dependencies automatically */
+            if (ref.indexOf("runtime/") === 0) {
+                return polkit.Result.YES;
+            }
+            var allowedApps = [ ${FLATPAK_JS_ARRAY} ];
+            for (var i = 0; i < allowedApps.length; i++) {
+                if (ref.indexOf("app/" + allowedApps[i] + "/") === 0) {
+                    return polkit.Result.YES;
+                }
+            }
+        }
+        /* Demand admin auth for unapproved Flatpaks */
+        if (!subject.isInGroup("wheel") && subject.user != "root") {
+            return polkit.Result.AUTH_ADMIN;
+        }
+    }
+});
+EOF
+echo -e "  -> ${GREEN}[POLKIT DYNAMIC]${NC} Flatpak passwordless rules updated for ${#ALLOWED_FLATPAK_UNIQUE[@]} allowed apps."
+
+# B. Generate Dynamic DNF Sudoers Rule
+SUDOERS_FILE="/etc/sudoers.d/99-ad-dms-dnf-updates"
+DNF_CMD_RULES="/usr/local/bin/refresh, /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y"
+
+for pkg in "${ALLOWED_DNF_UNIQUE[@]:-}"; do
+  [ -z "$pkg" ] && continue
+  DNF_CMD_RULES="${DNF_CMD_RULES}, /usr/bin/dnf install ${pkg}, /usr/bin/dnf install -y ${pkg}, /usr/bin/dnf5 install ${pkg}, /usr/bin/dnf5 install -y ${pkg}"
+done
+
+cat <<EOF > "$SUDOERS_FILE"
+# Dynamically generated by AD-DMS Policy Engine
+ALL ALL=(ALL) NOPASSWD: ${DNF_CMD_RULES}
+EOF
+chmod 0440 "$SUDOERS_FILE"
+echo -e "  -> ${GREEN}[SUDOERS DYNAMIC]${NC} DNF passwordless install privileges updated for ${#ALLOWED_DNF_UNIQUE[@]} allowed packages."
+echo -e "  ${GREEN}[STATUS] allowed-apps.conf synced successfully.${NC}\n"
 
 # ------------------------------------------------------------------------------
 # 4. Process Group Apps (Hostname / Lab Specific)
