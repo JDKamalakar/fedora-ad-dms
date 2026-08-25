@@ -22,14 +22,18 @@ PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 API_PRESETS_URL="https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V2.1...${NC}"
+echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V2.0...${NC}"
 rm -rf "$WORK_DIR"
-mkdir -p "$WORK_DIR/presets"
+mkdir -p "$WORK_DIR/presets" "$WORK_DIR/config"
 cd "$WORK_DIR"
 
 fetch_file() {
   local file="$1"
   local required="${2:-true}"
+  
+  # Ensure target local sub-directory exists before curl writes
+  mkdir -p "$(dirname "${file}")"
+
   echo -n -e "  -> Downloading ${file}... "
   if curl -fsSL "${PRIMARY_URL}/${file}" -o "${file}" 2>/dev/null; then
     echo -e "${GREEN}[OK]${NC}"
@@ -53,13 +57,16 @@ fetch_file "setup-ad-dms-tui.sh" "true"
 fetch_file "lab.conf" "true"
 fetch_file "domain.conf" "false"
 
-# Policy Engine & App Configuration Files
+# Policy Engine & App Configuration Files (from repository config/ directory)
 fetch_file "config/refresh-app-policies.sh" "true"
 fetch_file "config/remote-tasks.sh" "true"
 fetch_file "config/allowed-apps.conf" "true"
 fetch_file "config/blocked-apps.conf" "true"
 fetch_file "config/compulsory-apps.conf" "true"
 fetch_file "config/group-apps.conf" "true"
+
+# Flatten config directory into work root for setup-ad-dms-tui.sh compatibility
+cp -f config/* . 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
 # 2. Dynamically Auto-Discover and Fetch All Presets
@@ -84,6 +91,8 @@ echo -e "\n${BOLD}${CYAN}[3/3] Preparing execution environment...${NC}"
 chmod +x setup-ad-dms-tui.sh
 [ -f refresh-app-policies.sh ] && chmod +x refresh-app-policies.sh
 [ -f remote-tasks.sh ] && chmod +x remote-tasks.sh
+[ -f config/refresh-app-policies.sh ] && chmod +x config/refresh-app-policies.sh
+[ -f config/remote-tasks.sh ] && chmod +x config/remote-tasks.sh
 
 echo -e "${GREEN}[OK] Handing over execution to setup-ad-dms-tui.sh...${NC}\n"
 exec ./setup-ad-dms-tui.sh "$@"
