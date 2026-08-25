@@ -22,7 +22,6 @@ PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 API_PRESETS_URL="https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-
 echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V2.1...${NC}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/presets"
