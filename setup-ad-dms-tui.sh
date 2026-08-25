@@ -185,11 +185,15 @@ fi
 # Step 3: Install AD Prerequisites & Deploy System Policy Engine
 # ------------------------------------------------------------------------------
 step_header "3" "Installing AD Dependencies & Staging App Policy Configurations"
-if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit 2>/dev/null; then
-  msg_ok "All AD prerequisite packages installed."
+if dnf install -y dnf-plugins-core realmd sssd sssd-ad adcli krb5-workstation oddjob oddjob-mkhomedir samba-common-tools bind-utils chrony NetworkManager polkit flatpak 2>/dev/null; then
+  msg_ok "All AD prerequisite packages and Flatpak installed."
 else
   msg_warn "AD dependencies installed with minor package warnings. Proceeding..."
 fi
+
+msg_info "Configuring global Flathub remote repository..."
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+msg_ok "Flathub remote repository added system-wide."
 
 CONF_DIR="/etc/ad-dms"
 mkdir -p "$CONF_DIR"
@@ -204,12 +208,9 @@ done
 
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
-
 # ------------------------------------------------------------------------------
-# Step 3a: Refresh CMD Policy
+# Step 3a: System-Wide Refresh Command & Global Shell Alias
 # ------------------------------------------------------------------------------
-
-# Deploy system-wide 'refresh' utility command
 msg_info "Deploying refresh utility command..."
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
@@ -225,13 +226,14 @@ chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 "${CONF_DIR}/refresh-app-policies.sh"
 EOF
 chmod +x /usr/local/bin/refresh
-msg_ok "Deployed: refresh"
+msg_ok "Deployed: /usr/local/bin/refresh"
 
 msg_info "Creating user alias 'refresh' for convenience..."
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 alias refresh='sudo /usr/local/bin/refresh'
 EOF
-msg_ok "Deployed: refresh alias"
+chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
+msg_ok "Deployed: /etc/profile.d/99-ad-dms-aliases.sh"
 
 # ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
@@ -625,13 +627,13 @@ if ask_yes_no "Restart authentication services (SSSD, Oddjob) now?" "Y"; then
 fi
 
 # ------------------------------------------------------------------------------
-# Passwordless Package Manager Privileges for Non-Admin / Non-Sudo Users
+# Passwordless Privileges for Non-Admin / Non-Sudo Users (DNF & Refresh Command)
 # ------------------------------------------------------------------------------
-msg_info "Configuring passwordless package updates for non-sudo/domain users..."
+msg_info "Configuring passwordless package updates and refresh privileges for non-sudo users..."
 
 cat <<'EOF' > /etc/sudoers.d/99-ad-dms-dnf-updates
-# Allow all authenticated users (including standard domain accounts) to run DNF updates
-ALL ALL=(ALL) NOPASSWD: /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y, /usr/bin/pkexec /usr/bin/dnf *
+# Allow all authenticated users (including standard domain accounts) to run DNF updates and policy refresh
+ALL ALL=(ALL) NOPASSWD: /usr/local/bin/refresh, /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y, /usr/bin/pkexec /usr/bin/dnf *
 EOF
 chmod 0440 /etc/sudoers.d/99-ad-dms-dnf-updates
 
@@ -647,7 +649,7 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
-msg_ok "Passwordless package update privileges granted to all active users."
+msg_ok "Passwordless package update and policy refresh privileges granted to all active users."
 
 # ------------------------------------------------------------------------------
 # AD Account Diagnostics
