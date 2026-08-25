@@ -209,7 +209,7 @@ done
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
-# Step 3a: System-Wide Refresh Command & Global Shell Alias
+# Step 3a: System-Wide Refresh Command, Alias & Headless Background Timer
 # ------------------------------------------------------------------------------
 msg_info "Deploying refresh utility command..."
 cat <<'EOF' > /usr/local/bin/refresh
@@ -223,7 +223,14 @@ if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
 fi
 
-echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files from GitHub...\033[0m"
+# Detect if running in headless background mode (no TTY)
+if [ ! -t 1 ]; then
+  exec >> /var/log/ad-dms-refresh.log 2>&1
+  echo "=== Policy Sync Started: $(date) ==="
+else
+  echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files from GitHub...\033[0m"
+fi
+
 mkdir -p "$CONF_DIR"
 
 FILES=(
@@ -236,11 +243,11 @@ FILES=(
 )
 
 for file in "${FILES[@]}"; do
-  echo -n -e "  -> Downloading remote file: ${file}... "
+  [ -t 1 ] && echo -n -e "  -> Downloading remote file: ${file}... "
   if curl -fsSL "${REPO_RAW_URL}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-    echo -e "\033[1;32m[OK]\033[0m"
+    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
   else
-    echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
+    [ -t 1 ] && echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
   fi
 done
 
@@ -249,19 +256,52 @@ chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 if [ -x "${CONF_DIR}/refresh-app-policies.sh" ]; then
   "${CONF_DIR}/refresh-app-policies.sh"
 else
-  echo -e "\033[1;31m[ERROR] Missing executable engine script at '${CONF_DIR}/refresh-app-policies.sh'\033[0m"
+  echo "[ERROR] Missing executable engine script at '${CONF_DIR}/refresh-app-policies.sh'"
   exit 1
 fi
 EOF
 chmod +x /usr/local/bin/refresh
 msg_ok "Deployed: /usr/local/bin/refresh"
 
-msg_info "Creating user alias 'refresh' for convenience..."
+msg_info "Creating user alias 'refresh'..."
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 alias refresh='sudo /usr/local/bin/refresh'
 EOF
 chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
-msg_ok "Deployed: /etc/profile.d/99-ad-dms-aliases.sh"
+
+# ------------------------------------------------------------------------------
+# Systemd Headless Background Timer Configuration
+# ------------------------------------------------------------------------------
+INTERVAL="${REFRESH_INTERVAL:-1h}"
+msg_info "Configuring automated headless background timer (Interval: ${INTERVAL})..."
+
+cat <<'EOF' > /etc/systemd/system/ad-dms-refresh.service
+[Unit]
+Description=AD-DMS Automated Headless Policy Refresh Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/refresh
+EOF
+
+cat <<EOF > /etc/systemd/system/ad-dms-refresh.timer
+[Unit]
+Description=Run AD-DMS Policy Refresh Periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${INTERVAL}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now ad-dms-refresh.timer 2>/dev/null || true
+msg_ok "Systemd background timer 'ad-dms-refresh.timer' activated (${INTERVAL} interval)."
 
 # ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
