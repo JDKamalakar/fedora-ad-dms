@@ -154,17 +154,28 @@ print("\n".join(games))
   dnf_apps=($(echo "${dnf_apps[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
   flatpak_apps=($(echo "${flatpak_apps[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
 
-  # 2. Fast Bulk Removal of installed blacklisted RPMs (Query all at once instead of pkg-by-pkg)
+  # 2. Fast Bulk Removal of installed blacklisted RPMs with visual progress indicator
+  echo -ne "  -> ${CYAN}[SCANNING RPMs]${NC} Checking ${#dnf_apps[@]} package rules against local RPM database... "
+  ALL_INSTALLED_QUERY=$(rpm -qa --qf '%{NAME}\n' 2>/dev/null || true)
   INSTALLED_RPMS=()
   for pkg in "${dnf_apps[@]:-}"; do
     [ -z "$pkg" ] && continue
-    if rpm -qa "$pkg" 2>/dev/null | grep -q .; then
-      INSTALLED_RPMS+=("$pkg")
+    # Handle wildcards or exact package match cleanly against cached list
+    if [[ "$pkg" == *"*"* ]]; then
+      matched=$(echo "$ALL_INSTALLED_QUERY" | grep -E "^${pkg//\*/.*}$" || true)
+      for m in $matched; do [ -n "$m" ] && INSTALLED_RPMS+=("$m"); done
+    else
+      if echo "$ALL_INSTALLED_QUERY" | grep -q -x "$pkg"; then
+        INSTALLED_RPMS+=("$pkg")
+      fi
     fi
   done
+  echo -e "${GREEN}[DONE]${NC}"
 
   if [ ${#INSTALLED_RPMS[@]} -gt 0 ]; then
-    echo -e "  -> ${RED}[DNF REMOVE]${NC} Purging blacklisted packages: ${INSTALLED_RPMS[*]}"
+    # Deduplicate matches
+    INSTALLED_RPMS=($(echo "${INSTALLED_RPMS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+    echo -e "  -> ${RED}[DNF REMOVE]${NC} Purging ${#INSTALLED_RPMS[@]} blacklisted package(s): ${INSTALLED_RPMS[*]}"
     dnf remove -y "${INSTALLED_RPMS[@]}" 2>/dev/null || true
   fi
 
@@ -177,7 +188,9 @@ print("\n".join(games))
   fi
 
   # 4. Fast Flatpak Blacklist Removal & Process Termination
+  echo -ne "  -> ${CYAN}[SCANNING FLATPAKS]${NC} Checking installed Flatpaks across system & user scopes... "
   CURRENT_FPS=$(flatpak list --app --columns=application 2>/dev/null || true)
+  echo -e "${GREEN}[DONE]${NC}"
   for app in "${flatpak_apps[@]:-}"; do
     [ -z "$app" ] && continue
     if echo "$CURRENT_FPS" | grep -q -i -E "^${app}$"; then
@@ -832,6 +845,8 @@ echo -e "  -> ${GREEN}[DEVICE GUARD]${NC} Hardware policy guard active (Brightne
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 # AD-DMS Command Redirections & User Helpers
 alias refresh='sudo /usr/local/bin/refresh'
+alias violation='sudo /usr/local/bin/ad-dms-record-violation'
+alias violations='sudo /usr/local/bin/ad-dms-record-violation'
 
 dnf() {
   if [ "${1:-}" = "install" ]; then

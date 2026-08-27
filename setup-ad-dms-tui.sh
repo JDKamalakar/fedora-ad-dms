@@ -306,6 +306,8 @@ msg_info "Creating user command redirections and aliases..."
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 # AD-DMS Command Redirections & User Helpers
 alias refresh='sudo /usr/local/bin/refresh'
+alias violation='sudo /usr/local/bin/ad-dms-record-violation'
+alias violations='sudo /usr/local/bin/ad-dms-record-violation'
 
 dnf() {
   if [ "${1:-}" = "install" ]; then
