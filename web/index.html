@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AD-DMS Control Center | Material You M3 Expressive</title>
+  
+  <!-- Google Fonts: Inter, Roboto Flex, Google Sans & Material Symbols -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="dark-theme">
+  <!-- Dynamic M3 Background Mesh -->
+  <div class="m3-mesh-bg"></div>
+
+  <!-- App Layout -->
+  <div class="m3-app-shell">
+    
+    <!-- M3 Expressive Navigation Rail -->
+    <aside class="m3-nav-rail" id="navRail">
+      <div class="nav-brand">
+        <div class="brand-icon-box">
+          <span class="material-symbols-rounded">security</span>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">AD-DMS</span>
+          <span class="brand-subtitle">Control Center</span>
+        </div>
+      </div>
+
+      <nav class="nav-items">
+        <button class="m3-nav-item active" data-tab="overview" id="navOverview">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">dashboard</span>
+          <span class="nav-label">Overview</span>
+        </button>
+
+        <button class="m3-nav-item" data-tab="domain" id="navDomain">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">domain</span>
+          <span class="nav-label">Domain</span>
+        </button>
+
+        <button class="m3-nav-item" data-tab="policies" id="navPolicies">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">policy</span>
+          <span class="nav-label">Policies</span>
+        </button>
+
+        <button class="m3-nav-item" data-tab="devices" id="navDevices">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">devices</span>
+          <span class="nav-label">Hardware</span>
+        </button>
+
+        <button class="m3-nav-item" data-tab="violations" id="navViolations">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">shield_with_heart</span>
+          <span class="nav-label">Violations</span>
+        </button>
+
+        <button class="m3-nav-item" data-tab="labs" id="navLabs">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">lan</span>
+          <span class="nav-label">Lab Matrix</span>
+        </button>
+      </nav>
+
+      <div class="nav-footer">
+        <button class="m3-icon-button" id="themeToggle" title="Toggle Light / Dark Mode">
+          <span class="material-symbols-rounded">dark_mode</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Stage -->
+    <main class="m3-main-container">
+      
+      <!-- Top App Bar -->
+      <header class="m3-top-bar">
+        <div class="top-bar-left">
+          <h1 class="page-title" id="currentPageTitle">System Overview</h1>
+          <div class="sync-badge pulse">
+            <span class="pulse-dot"></span>
+            <span id="timerCountdown">Sync in: ~1h</span>
+          </div>
+        </div>
+
+        <div class="top-bar-actions">
+          <button class="m3-button secondary" id="btnExportAll">
+            <span class="material-symbols-rounded">download</span>
+            <span>Export Configs</span>
+          </button>
+          
+          <button class="m3-button primary" id="btnTriggerRefresh">
+            <span class="material-symbols-rounded">sync</span>
+            <span>Refresh Policy Engine</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section class="tab-pane active" id="pane-overview">
+        <!-- Hero Expressive Card -->
+        <div class="m3-hero-card">
+          <div class="hero-content">
+            <div class="hero-pill">
+              <span class="material-symbols-rounded">verified_user</span> Active Directory & DMS Policy Engine v2.4
+            </div>
+            <h2>Centralized Workstation Governance</h2>
+            <p>Real-time enforcement of Active Directory integration, user-level Flatpak isolation, game discovery filters, and hardware brightness/sound locks across all academic lab endpoints.</p>
+            
+            <div class="hero-actions">
+              <button class="m3-chip interactive" onclick="copyInstallCmd()">
+                <span class="material-symbols-rounded">content_copy</span>
+                <span id="chipCopyText">Copy Quick-Deploy Command</span>
+              </button>
+            </div>
+          </div>
+          <div class="hero-visual">
+            <div class="shield-orb">
+              <span class="material-symbols-rounded icon-big">gite</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Stats Grid -->
+        <div class="stats-grid">
+          <div class="m3-card stat-card">
+            <div class="stat-icon-wrapper primary-tint">
+              <span class="material-symbols-rounded">apps</span>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value" id="statAllowedCount">8</span>
+              <span class="stat-label">Allowed / Compulsory Apps</span>
+            </div>
+          </div>
+
+          <div class="m3-card stat-card">
+            <div class="stat-icon-wrapper error-tint">
+              <span class="material-symbols-rounded">block</span>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value" id="statBlockedCount">12</span>
+              <span class="stat-label">Blacklisted & Auto-Games</span>
+            </div>
+          </div>
+
+          <div class="m3-card stat-card">
+            <div class="stat-icon-wrapper tertiary-tint">
+              <span class="material-symbols-rounded">computer</span>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value" id="statLabCount">11</span>
+              <span class="stat-label">Configured Lab Profiles</span>
+            </div>
+          </div>
+
+          <div class="m3-card stat-card">
+            <div class="stat-icon-wrapper warning-tint">
+              <span class="material-symbols-rounded">notification_important</span>
+            </div>
+            <div class="stat-info">
+              <span class="stat-value" id="statViolationCount">0</span>
+              <span class="stat-label">Active Policy Infractions</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Status Panels -->
+        <div class="cards-split-grid">
+          <div class="m3-card panel-card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="material-symbols-rounded">lock_clock</span>
+                <h3>Active Guard Daemons</h3>
+              </div>
+            </div>
+            <div class="daemon-list">
+              <div class="daemon-item">
+                <div class="daemon-info">
+                  <span class="daemon-name">ad-dms-refresh.timer</span>
+                  <span class="daemon-sub">Synchronizes Git policy rules</span>
+                </div>
+                <span class="m3-badge success">Active (1h)</span>
+              </div>
+              <div class="daemon-item">
+                <div class="daemon-info">
+                  <span class="daemon-name">ad-dms-gui-scan.timer</span>
+                  <span class="daemon-sub">Intercepts GUI Store Flatpaks</span>
+                </div>
+                <span class="m3-badge success">Active (2m)</span>
+              </div>
+              <div class="daemon-item">
+                <div class="daemon-info">
+                  <span class="daemon-name">ad-dms-device-guard.timer</span>
+                  <span class="daemon-sub">Enforces 100% Brightness & Sound</span>
+                </div>
+                <span class="m3-badge success">Active (5m)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="m3-card panel-card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="material-symbols-rounded">terminal</span>
+                <h3>CLI Commands Reference</h3>
+              </div>
+            </div>
+            <div class="cmd-reference-box">
+              <div class="cmd-line"><code>install &lt;pkg&gt;</code><span>Safe DNF installation</span></div>
+              <div class="cmd-line"><code>install flatpak &lt;id&gt;</code><span>User-scoped Flatpak</span></div>
+              <div class="cmd-line"><code>refresh --t</code><span>Check timer countdown</span></div>
+              <div class="cmd-line"><code>violation &lt;user&gt; --get</code><span>Query infraction count</span></div>
+              <div class="cmd-line"><code>violation &lt;user&gt; --set 0</code><span>Reset violation score</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: DOMAIN CONFIGURATION -->
+      <section class="tab-pane" id="pane-domain">
+        <div class="m3-card form-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">settings_ethernet</span>
+              <h3>Domain & Authentication Parameters (domain.conf)</h3>
+            </div>
+            <button class="m3-button primary small" onclick="saveDomainConfig()">
+              <span class="material-symbols-rounded">save</span> Save Changes
+            </button>
+          </div>
+
+          <form id="domainForm" class="m3-form-grid" onsubmit="event.preventDefault(); saveDomainConfig();">
+            <div class="m3-text-field">
+              <label for="confDomainName">Active Directory Domain</label>
+              <input type="text" id="confDomainName" value="gsfcu.local" required>
+            </div>
+
+            <div class="m3-text-field">
+              <label for="confRealmName">Kerberos Realm</label>
+              <input type="text" id="confRealmName" value="GSFCU.LOCAL" required>
+            </div>
+
+            <div class="m3-text-field">
+              <label for="confDnsIp">AD DNS Server IP</label>
+              <input type="text" id="confDnsIp" value="10.205.4.177" required>
+            </div>
+
+            <div class="m3-text-field">
+              <label for="confDomainUser">Enrollment Admin User</label>
+              <input type="text" id="confDomainUser" value="admin" required>
+            </div>
+
+            <div class="m3-text-field">
+              <label for="confRefreshInterval">Policy Refresh Interval</label>
+              <input type="text" id="confRefreshInterval" value="1h" placeholder="e.g. 30m, 1h, 2h" required>
+            </div>
+
+            <div class="m3-text-field">
+              <label for="confSystemTimezone">System Timezone</label>
+              <input type="text" id="confSystemTimezone" value="Asia/Kolkata" required>
+            </div>
+
+            <div class="m3-text-field full-width">
+              <label for="confBlockNotifTitle">Blocked Alert Notification Title</label>
+              <input type="text" id="confBlockNotifTitle" value="Unauthorized Application Blocked" required>
+            </div>
+
+            <div class="m3-text-field full-width">
+              <label for="confBlockNotifMsg">Blocked Alert Message Body</label>
+              <textarea id="confBlockNotifMsg" rows="2" required>Access Denied: This application is blacklisted under University IT Policy and has been terminated and removed.</textarea>
+            </div>
+
+            <div class="m3-text-field full-width">
+              <label for="confAcademicWarningMsg">Unapproved Academic Warning Prompt</label>
+              <textarea id="confAcademicWarningMsg" rows="2" required>WARNING: This software is not pre-approved. If this package is found to be non-academic or violates institution policy, strict disciplinary action will be initiated.</textarea>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- TAB 3: APP POLICIES -->
+      <section class="tab-pane" id="pane-policies">
+        <div class="policy-columns">
+          
+          <!-- Blocked Apps Card -->
+          <div class="m3-card policy-card border-error">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="material-symbols-rounded color-error">dangerous</span>
+                <h3>Blocked Applications</h3>
+              </div>
+              <button class="m3-icon-button" onclick="addRulePrompt('blocked')" title="Add Blacklist Rule">
+                <span class="material-symbols-rounded">add_circle</span>
+              </button>
+            </div>
+            <p class="policy-desc">Packages & Flatpaks auto-killed and purged upon detection.</p>
+            <div class="chips-container" id="containerBlocked"></div>
+          </div>
+
+          <!-- Allowed Apps Card -->
+          <div class="m3-card policy-card border-success">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="material-symbols-rounded color-success">check_circle</span>
+                <h3>Allowed Applications</h3>
+              </div>
+              <button class="m3-icon-button" onclick="addRulePrompt('allowed')" title="Add Allowed Rule">
+                <span class="material-symbols-rounded">add_circle</span>
+              </button>
+            </div>
+            <p class="policy-desc">Pre-approved software installed passwordlessly by standard users.</p>
+            <div class="chips-container" id="containerAllowed"></div>
+          </div>
+
+          <!-- Compulsory Baseline Apps Card -->
+          <div class="m3-card policy-card border-primary">
+            <div class="card-header">
+              <div class="card-title-group">
+                <span class="material-symbols-rounded color-primary">verified</span>
+                <h3>Compulsory Apps</h3>
+              </div>
+              <button class="m3-icon-button" onclick="addRulePrompt('compulsory')" title="Add Compulsory Rule">
+                <span class="material-symbols-rounded">add_circle</span>
+              </button>
+            </div>
+            <p class="policy-desc">Mandatory software enforced and kept installed on every host.</p>
+            <div class="chips-container" id="containerCompulsory"></div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- TAB 4: HARDWARE GOVERNANCE -->
+      <section class="tab-pane" id="pane-devices">
+        <div class="m3-card form-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">settings_brightness</span>
+              <h3>Hardware Governance Rules (device-rules.conf)</h3>
+            </div>
+            <button class="m3-button primary small" onclick="saveDeviceRules()">
+              <span class="material-symbols-rounded">save</span> Apply Hardware Locks
+            </button>
+          </div>
+
+          <div class="m3-toggle-list">
+            <div class="m3-switch-row">
+              <div class="switch-meta">
+                <span class="switch-title">Lock Display Brightness to 100%</span>
+                <span class="switch-sub">Periodically forces display backlight to maximum brightness (sysfs, brightnessctl, ddcutil).</span>
+              </div>
+              <label class="m3-switch">
+                <input type="checkbox" id="switchBrightness" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="m3-switch-row">
+              <div class="switch-meta">
+                <span class="switch-title">Lock Master Volume to 100% & Unmute</span>
+                <span class="switch-sub">Overrides user audio reduction to ensure audible alarm capabilities (PipeWire wpctl, PulseAudio pactl).</span>
+              </div>
+              <label class="m3-switch">
+                <input type="checkbox" id="switchVolume" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="siren-preview-box">
+            <div class="siren-meta">
+              <span class="material-symbols-rounded siren-icon">volume_up</span>
+              <div>
+                <h4>Audible Siren Security Asset</h4>
+                <p>Configured sound: <code>assets/Siren.mp3</code> (Triggers on $>3$ user infractions)</p>
+              </div>
+            </div>
+            <button class="m3-button secondary" id="btnTestSiren">
+              <span class="material-symbols-rounded">play_circle</span>
+              <span>Test Audio Playback</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: VIOLATION TRACKER -->
+      <section class="tab-pane" id="pane-violations">
+        <div class="m3-card table-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">shield_person</span>
+              <h3>User Security Infractions (/var/log/ad-dms-violations/)</h3>
+            </div>
+            <div class="table-actions">
+              <button class="m3-button secondary small" onclick="addMockViolation()">
+                <span class="material-symbols-rounded">add_alert</span> Simulate Violation
+              </button>
+            </div>
+          </div>
+
+          <div class="m3-table-wrapper">
+            <table class="m3-table" id="violationsTable">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Infractions</th>
+                  <th>Siren Status</th>
+                  <th>Last Violation Event</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="violationsBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: LAB MATRIX -->
+      <section class="tab-pane" id="pane-labs">
+        <div class="m3-card table-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">hub</span>
+              <h3>Academic Lab Configurations (lab.conf)</h3>
+            </div>
+          </div>
+
+          <div class="m3-table-wrapper">
+            <table class="m3-table" id="labTable">
+              <thead>
+                <tr>
+                  <th>Lab Name</th>
+                  <th>AD Group ID</th>
+                  <th>Hostname Pattern</th>
+                  <th>Assigned Lab Software</th>
+                </tr>
+              </thead>
+              <tbody id="labBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="m3-toast-container" id="toastContainer"></div>
+
+  <!-- Audio Element for siren preview -->
+  <audio id="sirenAudio" src="../assets/Siren.mp3" preload="none"></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>

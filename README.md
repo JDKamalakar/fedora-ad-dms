@@ -7,6 +7,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Fedora%20Linux%2040%2B-blue.svg?logo=fedora)](https://fedoraproject.org)
 [![Active Directory](https://img.shields.io/badge/Domain-Active%20Directory%20SSSD-green.svg?logo=windows)](https://ubuntu.com)
 [![Desktop](https://img.shields.io/badge/Shell-Dank%20Material%20Shell%20(Niri)-purple.svg)](https://github.com/Avenge-Media/dms)
+[![Design](https://img.shields.io/badge/Design-Material%203%20Expressive-blueviolet.svg)](https://m3.material.io)
 [![License](https://img.shields.io/badge/License-MIT-orange.svg)](#)
 
 ---
@@ -26,9 +27,12 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 ## 📑 Table of Contents
 - [📖 Overview & Architecture](#-overview--architecture)
 - [✨ Key Features](#-key-features)
+- [🌐 Material 3 Expressive Web Control Center](#-material-3-expressive-web-control-center)
 - [🧩 Configuration & Governance Structure](#-configuration--governance-structure)
 - [🚀 User Installation Engine (`install`)](#-user-installation-engine-install)
 - [🔄 Automated Policy Synchronization (`refresh`)](#-automated-policy-synchronization-refresh)
+- [💡 Hardware & Device Governance (100% Brightness & Volume)](#-hardware--device-governance-100-brightness--volume)
+- [🚨 Infraction Tracker & Siren Alarm](#-infraction-tracker--siren-alarm)
 - [🛡️ Security, Polkit & Domain Admin Access](#-security-polkit--domain-admin-access)
 - [🛠️ Workflow Breakdown](#️-workflow-breakdown)
 - [🎨 DMS Desktop Integration & Power Menu](#-dms-desktop-integration--power-menu)
@@ -55,9 +59,30 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 | **⚡ Universal User `install` CLI** | Replaces raw package managers with a policy-aware CLI (`install <pkg>` & `install flatpak <id>`). |
 | **🚫 Dynamic Game & Blacklist Blocker** | Automatically resolves and blacklists the entire DNF `games` group and Flatpak AppStream gaming categories. |
 | **🛡️ GUI App Store Guard** | Systemd background daemon actively terminates and uninstalls blocked apps installed via GNOME Software or KDE Discover. |
-| **🚨 Violation Tracker & Siren Alarm** | Tracks policy infractions per user in `/var/log/ad-dms-violations/` and sounds an audible alarm if $>3$ violations occur. |
-| **🔄 Self-Updating Policy Engine** | Running `refresh` or periodic systemd timers synchronizes rules and remote tasks directly from GitHub. |
+| **🔊 Siren Alarm & Volume Lock** | Plays `Siren.mp3` at **100% Volume** when user policy violations exceed 3 infractions. |
+| **💡 Hardware Governance** | Background timer forces **100% Brightness** and **100% Sound** every 5 minutes (`device-rules.conf`). |
+| **📊 User Infraction Tracker** | Secure per-user tracking via `violation <user> --get` and `violation <user> --set <n>`. |
+| **🔄 Self-Updating Policy Engine** | Running `refresh` updates rules, timer intervals, and remote tasks directly from GitHub. |
+| **🌐 Material 3 Web Dashboard** | Local animated web dashboard adhering to Google Material 3 Expressive guidelines. |
 | **🔑 Domain Admin Polkit Auth** | Allows AD `Domain Admins` to authenticate against GUI elevation dialogs alongside local `wheel` admins. |
+
+---
+
+## 🌐 Material 3 Expressive Web Control Center
+
+A modern, animated, Google Material 3 Expressive web application is included to manage domain configurations, policy lists, hardware locks, and violation records locally.
+
+### Launching the Dashboard:
+```bash
+./start-dashboard.sh
+```
+* Access the control center at: **`http://localhost:8080`**
+
+### Dashboard Features:
+* **Interactive M3 Navigation Rail**: Switch smoothly between Overview, Domain Settings, Policy Editor, Device Rules, Violation Tracker, and Lab Matrix.
+* **Material You Theming**: Instant Light / Dark mode toggle with dynamic ambient gradient mesh.
+* **Live Infraction Simulator & Siren Audio Test**: Test `Siren.mp3` volume playback and reset user violation scores.
+* **Config Exporter**: Export generated `domain.conf` and policy files directly from the browser.
 
 ---
 
@@ -73,8 +98,10 @@ All policy engine rules are managed under `/etc/ad-dms/` (synced from the reposi
 ├── allowed-apps.conf           # Pre-approved whitelist (passwordless install)
 ├── blocked-apps.conf           # Explicitly blacklisted packages & AppStream IDs
 ├── group-apps.conf             # Hostname / Lab-specific software packages
+├── device-rules.conf           # Hardware governance rules (brightness & volume)
 ├── refresh-app-policies.sh     # Core policy enforcement and daemon manager
-└── remote-tasks.sh             # Administrator remote maintenance task scripts
+├── remote-tasks.sh             # Administrator remote maintenance task scripts
+└── assets/Siren.mp3            # High-volume security siren audio asset
 ```
 
 ### 1. `domain.conf`
@@ -111,6 +138,19 @@ org.DolphinEmu.dolphin-emu
 org.PPSSPP.PPSSPP
 ```
 
+### 3. `device-rules.conf`
+Enforces hardware settings across workstations:
+```ini
+# Lock system display brightness to 100% (yes / no)
+LOCK_BRIGHTNESS_100="yes"
+
+# Lock system audio / master volume to 100% (yes / no)
+LOCK_VOLUME_100="yes"
+
+# Re-enforcement check interval
+DEVICE_CHECK_INTERVAL="5m"
+```
+
 ---
 
 ## 🚀 User Installation Engine (`install`)
@@ -125,7 +165,7 @@ install <package_name>
 install flatpak <appstream_id>
 ```
 
-```
+```text
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║   AD-DMS APPLICATION INSTALLER                                           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -133,16 +173,18 @@ install flatpak <appstream_id>
 
 ### Decision & Security Matrix:
 * **Blocked Packages (`blocked-apps.conf` + Auto-discovered games)**:
-  * ❌ Immediately denied.
+  * ❌ Immediately denied and terminated.
   * 🔔 Critical desktop notification with human-readable application name (e.g. *Heroic Games Launcher*).
   * 📝 Increments security violation count (`/var/log/ad-dms-violations/<user>.count`).
-  * 🔊 Triggers audible siren alarm if user has $>3$ violations.
+  * 🔊 Triggers high-volume `Siren.mp3` if infractions $>3$.
 * **Allowed / Compulsory Packages (`allowed-apps.conf` & `compulsory-apps.conf`)**:
   * ✅ Installed passwordlessly without requiring administrative credentials.
 * **Unapproved Packages**:
   * ⚠️ Displays institutional academic warning.
   * ❓ Prompts user to confirm academic necessity (`[y/N]`).
   * 🔑 Demands administrative authentication.
+* **Administrative Accounts (`root`, `wheel`, `Domain Admins`)**:
+  * ⚡ Automatically bypasses restriction checks and installs directly.
 
 ---
 
@@ -156,8 +198,8 @@ Users and administrators can run:
 refresh
 ```
 * Automatically self-elevates to root without password prompts.
-* Downloads the latest rules and scripts from GitHub.
-* Synchronizes DNF exclusions, Flatpak allowances, lab group apps, and runs pending `remote-tasks.sh`.
+* Downloads the latest rules and scripts from GitHub (`refresh-app-policies.sh`, `domain.conf`, `device-rules.conf`, `Siren.mp3`, etc.).
+* Synchronizes DNF exclusions, Flatpak allowances, lab group apps, timer intervals, and runs pending `remote-tasks.sh`.
 
 ### Checking Timer Countdown
 To inspect when the next automated sync is scheduled:
@@ -173,6 +215,30 @@ refresh -t
 
 ---
 
+## 💡 Hardware & Device Governance (100% Brightness & Volume)
+
+The `ad-dms-device-guard.timer` runs every 5 minutes to ensure:
+* **Brightness is locked at 100%**: Automatically adjusts sysfs backlight, `brightnessctl`, and `ddcutil`.
+* **Sound Volume is locked at 100% & Unmuted**: Restores master volume through PipeWire (`wpctl`), PulseAudio (`pactl`), and ALSA (`amixer`).
+
+---
+
+## 🚨 Infraction Tracker & Siren Alarm
+
+Policy infractions are tracked per user under `/var/log/ad-dms-violations/`:
+
+```bash
+# Query a user's infraction count
+violation oslab --get
+
+# Reset or modify a user's count (Admin only)
+violation oslab --set 0
+```
+
+When a user triggers **more than 3 violations**, any subsequent infraction automatically turns the volume to 100% and blares `Siren.mp3`.
+
+---
+
 ## 🛡️ Security, Polkit & Domain Admin Access
 
 ### 1. Polkit Domain Admin Elevation (`10-ad-admin-auth.rules`)
@@ -184,7 +250,7 @@ polkit.addAdminRule(function(action, subject) {
 ```
 
 ### 2. User-Level Flatpak Sandboxing (`45-ad-dms-flatpak-allowlist.rules`)
-Users can manage user-scope Flatpaks without root credentials, while the systemd background daemon (`ad-dms-gui-scan.timer`) actively guards against unauthorized or game Flatpaks every 2 minutes.
+Users can manage user-scope Flatpaks without root credentials, while the systemd background daemon (`ad-dms-gui-scan.timer`) actively guards against unauthorized or game Flatpaks every 2 minutes across all user homes.
 
 ---
 
