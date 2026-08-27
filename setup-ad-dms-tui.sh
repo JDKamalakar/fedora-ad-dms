@@ -298,7 +298,9 @@ alias refresh='sudo /usr/local/bin/refresh'
 dnf() {
   if [ "${1:-}" = "install" ]; then
     shift
-    echo -e "\033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall $*\033[0m"
+    echo -e "\n\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;36m║\033[0m \033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall $*\033[0m           \033[1;36m║\033[0m"
+    echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m\n"
     /usr/local/bin/install "$@"
   else
     command dnf "$@"
@@ -308,7 +310,9 @@ dnf() {
 flatpak() {
   if [ "${1:-}" = "install" ]; then
     shift
-    echo -e "\033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall flatpak $*\033[0m"
+    echo -e "\n\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;36m║\033[0m \033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall flatpak $*\033[0m   \033[1;36m║\033[0m"
+    echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m\n"
     /usr/local/bin/install flatpak "$@"
   else
     command flatpak "$@"
@@ -764,6 +768,14 @@ EOF
 chmod 0440 /etc/sudoers.d/99-ad-dms-dnf-updates
 
 mkdir -p /etc/polkit-1/rules.d
+
+cat <<'EOF' > /etc/polkit-1/rules.d/10-ad-admin-auth.rules
+/* Allow wheel group, root, and Domain Admins to authenticate for administrative actions in GUI & Polkit */
+polkit.addAdminRule(function(action, subject) {
+    return ["unix-group:wheel", "unix-group:Domain Admins", "unix-group:domain admins", "unix-user:root"];
+});
+EOF
+
 cat <<'EOF' > /etc/polkit-1/rules.d/45-ad-dms-flatpak-allowlist.rules
 /* Allow active users to install/manage user-level Flatpaks without root password */
 polkit.addRule(function(action, subject) {
