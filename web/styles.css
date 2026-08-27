@@ -4,7 +4,7 @@
    ============================================================================== */
 
 :root {
-  /* M3 Dark Palette Tokens (Tailored Tones) */
+  /* M3 Dark Palette Tokens */
   --md-sys-color-primary: #a8c8ff;
   --md-sys-color-on-primary: #003062;
   --md-sys-color-primary-container: #004689;
@@ -40,19 +40,18 @@
   --md-sys-color-outline: #8d9199;
   --md-sys-color-outline-variant: #43474e;
 
-  /* Elevation & Curves */
-  --md-shape-corner-extra-small: 4px;
+  /* Shapes */
   --md-shape-corner-small: 8px;
   --md-shape-corner-medium: 12px;
   --md-shape-corner-large: 16px;
-  --md-shape-corner-extra-large: 28px;
+  --md-shape-corner-extra-large: 24px;
   --md-shape-corner-full: 9999px;
 
-  /* Typography */
+  /* Fonts */
   --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  /* Transitions & Motion */
+  /* Motion */
   --m3-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
   --m3-duration-medium: 300ms;
 }
@@ -83,7 +82,6 @@ body.light-theme {
   --md-sys-color-outline-variant: #c4c6d0;
 }
 
-/* Base resets */
 * {
   margin: 0;
   padding: 0;
@@ -107,9 +105,9 @@ body {
   left: -10%;
   width: 140%;
   height: 140%;
-  background: radial-gradient(circle at 20% 30%, rgba(0, 70, 137, 0.18) 0%, transparent 40%),
-              radial-gradient(circle at 80% 20%, rgba(87, 62, 94, 0.15) 0%, transparent 45%),
-              radial-gradient(circle at 50% 80%, rgba(0, 82, 48, 0.12) 0%, transparent 50%);
+  background: radial-gradient(circle at 20% 30%, rgba(0, 70, 137, 0.22) 0%, transparent 40%),
+              radial-gradient(circle at 80% 20%, rgba(87, 62, 94, 0.18) 0%, transparent 45%),
+              radial-gradient(circle at 50% 80%, rgba(0, 82, 48, 0.15) 0%, transparent 50%);
   pointer-events: none;
   z-index: 0;
   filter: blur(60px);
@@ -185,7 +183,7 @@ body {
   align-items: center;
   gap: 14px;
   padding: 12px 18px;
-  border-radius: var(--md-shape-corner-extra-large);
+  border-radius: var(--md-shape-corner-full);
   border: none;
   background: transparent;
   color: var(--md-sys-color-on-surface-variant);
@@ -234,7 +232,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 28px;
-  max-width: 1400px;
+  max-width: 1440px;
 }
 
 /* Top App Bar */
@@ -364,16 +362,16 @@ body {
 
 /* M3 Expressive Cards */
 .m3-card {
-  background: rgba(29, 32, 36, 0.7);
+  background: rgba(29, 32, 36, 0.75);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--md-shape-corner-extra-large);
   padding: 24px;
   transition: all 300ms var(--m3-easing-emphasized);
 }
 
 .m3-card:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 /* Hero Expressive Card */
@@ -607,7 +605,8 @@ body {
 }
 
 .m3-text-field input,
-.m3-text-field textarea {
+.m3-text-field textarea,
+.m3-text-field select {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-corner-medium);
@@ -619,7 +618,8 @@ body {
 }
 
 .m3-text-field input:focus,
-.m3-text-field textarea:focus {
+.m3-text-field textarea:focus,
+.m3-text-field select:focus {
   border-color: var(--md-sys-color-primary);
   box-shadow: 0 0 0 2px rgba(168, 200, 255, 0.2);
 }
@@ -632,7 +632,7 @@ body {
 }
 
 .policy-card {
-  min-height: 480px;
+  min-height: 520px;
   display: flex;
   flex-direction: column;
 }
@@ -651,26 +651,60 @@ body {
   margin-bottom: 16px;
 }
 
+.policy-sub-section {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub-badge {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: var(--md-shape-corner-small);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.dnf-badge {
+  background: rgba(168, 200, 255, 0.2);
+  color: var(--md-sys-color-primary);
+}
+
+.flatpak-badge {
+  background: rgba(221, 188, 226, 0.2);
+  color: var(--md-sys-color-tertiary);
+}
+
 .chips-container {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   overflow-y: auto;
-  max-height: 380px;
+  max-height: 180px;
   padding-right: 4px;
+  background: rgba(0, 0, 0, 0.15);
+  padding: 10px;
+  border-radius: var(--md-shape-corner-medium);
 }
 
 .policy-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 5px 10px;
   border-radius: var(--md-shape-corner-full);
-  font-size: 13px;
+  font-size: 12px;
   font-family: var(--font-mono);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--md-sys-color-on-surface);
+}
+
+.policy-chip.chip-flatpak {
+  border-color: rgba(221, 188, 226, 0.3);
 }
 
 .policy-chip button {
@@ -814,6 +848,63 @@ input:checked + .slider:before {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.table-input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-corner-small);
+  padding: 8px 12px;
+  color: var(--md-sys-color-on-surface);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+/* Material 3 Modal Dialog */
+.m3-modal-backdrop {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  place-items: center;
+  animation: fadeIn 200ms ease;
+}
+
+.m3-modal-backdrop.show {
+  display: grid;
+}
+
+.m3-modal-card {
+  width: 100%;
+  max-width: 500px;
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--md-shape-corner-extra-large);
+  padding: 24px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-header h3 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* Toast Notifications */
 .m3-toast-container {
   position: fixed;
@@ -822,7 +913,7 @@ input:checked + .slider:before {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 999;
+  z-index: 9999;
 }
 
 .m3-toast {
@@ -831,7 +922,7 @@ input:checked + .slider:before {
   gap: 12px;
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   padding: 14px 20px;
   border-radius: var(--md-shape-corner-medium);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);

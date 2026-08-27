@@ -1,71 +1,48 @@
 /* ==============================================================================
-   AD-DMS Control Center | Client-Side Dynamic Controller
-   M3 Tab Switcher, Local Configuration State, Live Actions & Export Engine
+   AD-DMS Control Center | Client-Side Controller
+   Live Repository Integration, Custom M3 Modals, DNF/Flatpak Split & Git Push
    ============================================================================== */
 
-// State Object representing live repository configurations
-const AppState = {
-  domain: {
-    ENABLE_PVPN: "yes",
-    PVPN_USER: "gsfcu@proton.me",
-    PVPN_PASS: "Test@1199",
-    DOMAIN_NAME: "gsfcu.local",
-    REALM_NAME: "GSFCU.LOCAL",
-    AD_DNS_IP: "10.205.4.177",
-    DOMAIN_USER: "admin",
-    ALLOW_SHORT_USERNAMES: "yes",
-    REFRESH_INTERVAL: "1h",
-    SYSTEM_TIMEZONE: "Asia/Kolkata",
-    BLOCK_NOTIFICATION_TITLE: "Unauthorized Application Blocked",
-    BLOCK_NOTIFICATION_MSG: "Access Denied: This application is blacklisted under University IT Policy and has been terminated and removed.",
-    ACADEMIC_WARNING_MSG: "WARNING: This software is not pre-approved. If this package is found to be non-academic or violates institution policy, strict disciplinary action will be initiated."
-  },
-  deviceRules: {
-    LOCK_BRIGHTNESS_100: "yes",
-    LOCK_VOLUME_100: "yes",
-    DEVICE_CHECK_INTERVAL: "5m"
-  },
-  policies: {
-    blocked: [
-      "*steam*", "*game*", "lutris", "playonlinux", "minetest", "supertuxkart",
-      "kmahjongg", "kmines", "kpat", "mines",
-      "com.valvesoftware.Steam", "net.lutris.Lutris", "io.github.Faugus.faugus-launcher",
-      "com.heroicgameslauncher.hgl", "org.DolphinEmu.dolphin-emu", "org.PPSSPP.PPSSPP"
-    ],
-    allowed: [
-      "code", "vlc", "htop", "fastfetch", "chromium-browser.desktop", "firefox", "curl", "git", "kitty", "haruna",
-      "org.videolan.VLC", "org.blender.Blender", "org.gimp.GIMP", "org.inkscape.Inkscape"
-    ],
-    compulsory: [
-      "dms", "kitty", "niri", "greetd", "proton-vpn-gnome-desktop", "onlyoffice-desktopeditors"
-    ]
-  },
-  labs: [
-    { name: "Programming Lab", group: "prolab", prefix: "GSFCUPLLAB", apps: "code, git, gcc, python3" },
-    { name: "Operating Systems Lab", group: "oslab", prefix: "GSFCUOSLAB", apps: "qemu, gdb, valgrind, gcc" },
-    { name: "Data Science Lab", group: "dslab", prefix: "GSFCUDSLAB", apps: "jupyter-lab, pandas, r-base" },
-    { name: "Data Engineering Lab", group: "delab", prefix: "GSFCUDELAB", apps: "dbeaver, postgresql, docker" },
-    { name: "AI/ML Lab", group: "ailab", prefix: "GSFCUAILAB", apps: "pytorch, tensorflow, ollama" },
-    { name: "Robotic & Automation Lab", group: "ralab", prefix: "GSFCURALAB", apps: "ros2, gazebo, arduino" },
-    { name: "Cybersecurity Lab", group: "cslab", prefix: "GSFCUCSLAB", apps: "wireshark, nmap, burpsuite" },
-    { name: "CAD Lab", group: "cadlab", prefix: "GSFCUCADLAB", apps: "freecad, blender, openscad" }
-  ],
-  violations: [
-    { user: "student_lab1", count: 1, lastItem: "com.valvesoftware.Steam", date: "Today, 10:14 AM" },
-    { user: "guest_user", count: 4, lastItem: "com.heroicgameslauncher.hgl", date: "Today, 11:30 AM" }
-  ]
+let AppState = {
+  domain: {},
+  deviceRules: {},
+  blocked: { dnf: [], flatpak: [] },
+  allowed: { dnf: [], flatpak: [] },
+  compulsory: { dnf: [], flatpak: [] },
+  labs: [],
+  groupApps: { dnf: {}, flatpak: {} },
+  violations: []
 };
 
-// Initialize Application
+// Initialize on Load
 document.addEventListener('DOMContentLoaded', () => {
   setupNavigation();
   setupThemeToggle();
-  renderPolicyChips();
-  renderViolations();
-  renderLabs();
   setupAudioTest();
-  updateStats();
+  setupGitPushButton();
+  loadLiveConfigs();
 });
+
+// Fetch Live Data from Server API
+async function loadLiveConfigs() {
+  try {
+    const res = await fetch('/api/all-data');
+    if (!res.ok) throw new Error('API fetch error');
+    const data = await res.json();
+    AppState = data;
+    
+    populateDomainForm();
+    populateDeviceRules();
+    renderPolicyChips();
+    renderGroupApps();
+    renderViolations();
+    updateStats();
+    showToast('Loaded active repository configurations', 'cloud_done');
+  } catch (err) {
+    console.error('Failed to load configs from API:', err);
+    showToast('Offline Mode: Using local memory buffer', 'cloud_off');
+  }
+}
 
 // Tab Navigation
 function setupNavigation() {
@@ -99,38 +76,226 @@ function setupThemeToggle() {
   });
 }
 
-// Render Policy Chips
-function renderPolicyChips() {
-  ['blocked', 'allowed', 'compulsory'].forEach(category => {
-    const container = document.getElementById(`container${capitalize(category)}`);
-    if (!container) return;
-    container.innerHTML = '';
+// Populate Domain Settings
+function populateDomainForm() {
+  const d = AppState.domain || {};
+  document.getElementById('confDomainName').value = d.DOMAIN_NAME || 'gsfcu.local';
+  document.getElementById('confRealmName').value = d.REALM_NAME || 'GSFCU.LOCAL';
+  document.getElementById('confDnsIp').value = d.AD_DNS_IP || '10.205.4.177';
+  document.getElementById('confDomainUser').value = d.DOMAIN_USER || 'admin';
+  document.getElementById('confRefreshInterval').value = d.REFRESH_INTERVAL || '1h';
+  document.getElementById('confSystemTimezone').value = d.SYSTEM_TIMEZONE || 'Asia/Kolkata';
+  document.getElementById('confBlockNotifTitle').value = d.BLOCK_NOTIFICATION_TITLE || 'Unauthorized Application Blocked';
+  document.getElementById('confBlockNotifMsg').value = d.BLOCK_NOTIFICATION_MSG || 'Access Denied: This application is blacklisted under University IT Policy and has been terminated and removed.';
+  document.getElementById('confAcademicWarningMsg').value = d.ACADEMIC_WARNING_MSG || 'WARNING: This software is not pre-approved. If this package is found to be non-academic or violates institution policy, strict disciplinary action will be initiated.';
+  
+  document.getElementById('timerCountdown').textContent = `Interval: ~${d.REFRESH_INTERVAL || '1h'}`;
+}
 
-    AppState.policies[category].forEach(item => {
-      const chip = document.createElement('div');
-      chip.className = 'policy-chip';
-      chip.innerHTML = `
-        <span>${item}</span>
-        <button onclick="removePolicyItem('${category}', '${item}')" title="Remove">&times;</button>
-      `;
-      container.appendChild(chip);
+async function saveDomainConfig() {
+  AppState.domain.DOMAIN_NAME = document.getElementById('confDomainName').value.trim();
+  AppState.domain.REALM_NAME = document.getElementById('confRealmName').value.trim();
+  AppState.domain.AD_DNS_IP = document.getElementById('confDnsIp').value.trim();
+  AppState.domain.DOMAIN_USER = document.getElementById('confDomainUser').value.trim();
+  AppState.domain.REFRESH_INTERVAL = document.getElementById('confRefreshInterval').value.trim();
+  AppState.domain.SYSTEM_TIMEZONE = document.getElementById('confSystemTimezone').value.trim();
+  AppState.domain.BLOCK_NOTIFICATION_TITLE = document.getElementById('confBlockNotifTitle').value.trim();
+  AppState.domain.BLOCK_NOTIFICATION_MSG = document.getElementById('confBlockNotifMsg').value.trim();
+  AppState.domain.ACADEMIC_WARNING_MSG = document.getElementById('confAcademicWarningMsg').value.trim();
+
+  try {
+    const res = await fetch('/api/save-domain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(AppState.domain)
     });
+    const result = await res.json();
+    showToast(result.message || 'Saved domain.conf', 'check_circle');
+    document.getElementById('timerCountdown').textContent = `Interval: ~${AppState.domain.REFRESH_INTERVAL}`;
+  } catch (err) {
+    showToast('Saved domain settings in memory', 'check_circle');
+  }
+}
+
+// Populate Device Rules
+function populateDeviceRules() {
+  const r = AppState.deviceRules || {};
+  document.getElementById('switchBrightness').checked = (r.LOCK_BRIGHTNESS_100 || 'yes') === 'yes';
+  document.getElementById('switchVolume').checked = (r.LOCK_VOLUME_100 || 'yes') === 'yes';
+}
+
+async function saveDeviceRules() {
+  AppState.deviceRules.LOCK_BRIGHTNESS_100 = document.getElementById('switchBrightness').checked ? 'yes' : 'no';
+  AppState.deviceRules.LOCK_VOLUME_100 = document.getElementById('switchVolume').checked ? 'yes' : 'no';
+
+  try {
+    const res = await fetch('/api/save-devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(AppState.deviceRules)
+    });
+    const result = await res.json();
+    showToast(result.message || 'Saved device-rules.conf', 'tune');
+  } catch (err) {
+    showToast('Device rules saved in memory', 'tune');
+  }
+}
+
+// Render Split Policy Chips (DNF and Flatpak separated)
+function renderPolicyChips() {
+  ['blocked', 'allowed', 'compulsory'].forEach(cat => {
+    const dnfCont = document.getElementById(`container${capitalize(cat)}Dnf`);
+    const fpCont = document.getElementById(`container${capitalize(cat)}Flatpak`);
+
+    if (dnfCont) {
+      dnfCont.innerHTML = '';
+      (AppState[cat]?.dnf || []).forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'policy-chip';
+        chip.innerHTML = `<span>${item}</span><button onclick="removePolicyRule('${cat}', 'dnf', '${item}')" title="Remove">&times;</button>`;
+        dnfCont.appendChild(chip);
+      });
+    }
+
+    if (fpCont) {
+      fpCont.innerHTML = '';
+      (AppState[cat]?.flatpak || []).forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'policy-chip chip-flatpak';
+        chip.innerHTML = `<span>${item}</span><button onclick="removePolicyRule('${cat}', 'flatpak', '${item}')" title="Remove">&times;</button>`;
+        fpCont.appendChild(chip);
+      });
+    }
   });
   updateStats();
 }
 
-function removePolicyItem(category, item) {
-  AppState.policies[category] = AppState.policies[category].filter(i => i !== item);
-  renderPolicyChips();
-  showToast(`Removed rule: ${item}`, 'delete');
+async function removePolicyRule(category, type, item) {
+  if (AppState[category] && AppState[category][type]) {
+    AppState[category][type] = AppState[category][type].filter(i => i !== item);
+    renderPolicyChips();
+    await syncPoliciesToServer();
+    showToast(`Removed rule: ${item}`, 'delete');
+  }
 }
 
-function addRulePrompt(category) {
-  const item = prompt(`Enter package name or Flatpak App ID to add to ${category} policy:`);
-  if (item && item.trim()) {
-    AppState.policies[category].push(item.trim());
-    renderPolicyChips();
-    showToast(`Added ${item} to ${category} rules`, 'add_task');
+async function syncPoliciesToServer() {
+  try {
+    await fetch('/api/save-policies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        blocked: AppState.blocked,
+        allowed: AppState.allowed,
+        compulsory: AppState.compulsory
+      })
+    });
+  } catch (err) {
+    console.warn('Policy sync saved in memory buffer');
+  }
+}
+
+// Open Custom Material Modal for Adding Policy Rule
+function openAddPolicyModal(category) {
+  const modal = document.getElementById('customModal');
+  const title = document.getElementById('modalTitle');
+  const body = document.getElementById('modalBody');
+  const footer = document.getElementById('modalFooter');
+
+  title.textContent = `Add Rule to ${capitalize(category)} Policy`;
+  body.innerHTML = `
+    <div class="m3-text-field" style="margin-bottom:14px;">
+      <label for="modalAppType">Package Type</label>
+      <select id="modalAppType">
+        <option value="dnf">Native DNF / RPM Package (e.g. vlc, *game*)</option>
+        <option value="flatpak">Flatpak AppStream ID (e.g. org.videolan.VLC)</option>
+      </select>
+    </div>
+    <div class="m3-text-field">
+      <label for="modalAppName">Application Name or Identifier</label>
+      <input type="text" id="modalAppName" placeholder="e.g. htop or com.valvesoftware.Steam" autofocus required>
+    </div>
+  `;
+
+  footer.innerHTML = `
+    <button class="m3-button secondary" onclick="closeModal()">Cancel</button>
+    <button class="m3-button primary" onclick="submitAddPolicyRule('${category}')">
+      <span class="material-symbols-rounded">add_circle</span> Add Item
+    </button>
+  `;
+
+  modal.classList.add('show');
+  setTimeout(() => document.getElementById('modalAppName')?.focus(), 50);
+}
+
+async function submitAddPolicyRule(category) {
+  const type = document.getElementById('modalAppType').value;
+  const name = document.getElementById('modalAppName').value.trim();
+
+  if (!name) {
+    showToast('Please enter an application or package name', 'error');
+    return;
+  }
+
+  if (!AppState[category]) AppState[category] = { dnf: [], flatpak: [] };
+  if (!AppState[category][type]) AppState[category][type] = [];
+
+  AppState[category][type].push(name);
+  renderPolicyChips();
+  closeModal();
+  await syncPoliciesToServer();
+  showToast(`Added ${name} to ${category} (${type.toUpperCase()})`, 'add_task');
+}
+
+// Group Apps Editor
+function renderGroupApps() {
+  const tbody = document.getElementById('groupAppsBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const labs = AppState.labs || [];
+  const ga = AppState.groupApps || { dnf: {}, flatpak: {} };
+
+  labs.forEach(lab => {
+    const tr = document.createElement('tr');
+    const dnfVal = ga.dnf[lab.prefix] || '';
+    const fpVal = ga.flatpak[lab.prefix] || '';
+
+    tr.innerHTML = `
+      <td>
+        <strong>${lab.prefix}</strong>
+        <div style="font-size:12px; color:var(--md-sys-color-outline);">${lab.name} (${lab.group})</div>
+      </td>
+      <td>
+        <input type="text" class="table-input" data-prefix="${lab.prefix}" data-type="dnf" value="${dnfVal}" placeholder="e.g. code gcc git">
+      </td>
+      <td>
+        <input type="text" class="table-input" data-prefix="${lab.prefix}" data-type="flatpak" value="${fpVal}" placeholder="e.g. org.videolan.VLC">
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function saveGroupApps() {
+  const inputs = document.querySelectorAll('#groupAppsBody .table-input');
+  inputs.forEach(inp => {
+    const prefix = inp.getAttribute('data-prefix');
+    const type = inp.getAttribute('data-type');
+    if (!AppState.groupApps[type]) AppState.groupApps[type] = {};
+    AppState.groupApps[type][prefix] = inp.value.trim();
+  });
+
+  try {
+    const res = await fetch('/api/save-group-apps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(AppState.groupApps)
+    });
+    const result = await res.json();
+    showToast(result.message || 'Saved group-apps.conf', 'check_circle');
+  } catch (err) {
+    showToast('Group apps saved in memory', 'check_circle');
   }
 }
 
@@ -140,7 +305,7 @@ function renderViolations() {
   if (!tbody) return;
   tbody.innerHTML = '';
 
-  AppState.violations.forEach((v, index) => {
+  (AppState.violations || []).forEach((v, index) => {
     const tr = document.createElement('tr');
     const isAlarm = v.count > 3;
     tr.innerHTML = `
@@ -151,10 +316,10 @@ function renderViolations() {
           ? '<span class="color-error" style="font-weight:700;">🚨 Siren Triggered (100% Vol)</span>' 
           : '<span style="color:var(--md-sys-color-outline)">Normal (Silent)</span>'}
       </td>
-      <td><code>${v.lastItem}</code> <span style="font-size:12px; color:var(--md-sys-color-outline);">(${v.date})</span></td>
+      <td><code>${v.lastItem || 'Policy Violation'}</code> <span style="font-size:12px; color:var(--md-sys-color-outline);">(${v.date})</span></td>
       <td>
-        <button class="m3-button secondary small" onclick="resetViolation(${index})">
-          <span class="material-symbols-rounded">restart_alt</span> Reset
+        <button class="m3-button secondary small" onclick="resetViolationScore(${index})">
+          <span class="material-symbols-rounded">restart_alt</span> Reset (0)
         </button>
       </td>
     `;
@@ -162,56 +327,118 @@ function renderViolations() {
   });
 }
 
-function resetViolation(index) {
+function resetViolationScore(index) {
   const v = AppState.violations[index];
   v.count = 0;
   renderViolations();
   updateStats();
-  showToast(`Reset violation score for user '${v.user}' to 0`, 'check');
+  showToast(`Reset violations for user '${v.user}' to 0`, 'check');
 }
 
-function addMockViolation() {
-  const user = prompt("Enter username to record violation against (e.g. oslab):", "oslab");
+function openSimulateViolationModal() {
+  const modal = document.getElementById('customModal');
+  const title = document.getElementById('modalTitle');
+  const body = document.getElementById('modalBody');
+  const footer = document.getElementById('modalFooter');
+
+  title.textContent = 'Simulate Policy Violation';
+  body.innerHTML = `
+    <div class="m3-text-field" style="margin-bottom:14px;">
+      <label for="simUser">Username</label>
+      <input type="text" id="simUser" value="oslab" placeholder="e.g. oslab" required>
+    </div>
+    <div class="m3-text-field">
+      <label for="simApp">Attempted Blocked Application</label>
+      <input type="text" id="simApp" value="com.valvesoftware.Steam" placeholder="e.g. com.valvesoftware.Steam" required>
+    </div>
+  `;
+
+  footer.innerHTML = `
+    <button class="m3-button secondary" onclick="closeModal()">Cancel</button>
+    <button class="m3-button primary" onclick="submitSimulateViolation()">
+      <span class="material-symbols-rounded">warning</span> Record Infraction
+    </button>
+  `;
+
+  modal.classList.add('show');
+}
+
+function submitSimulateViolation() {
+  const user = document.getElementById('simUser').value.trim();
+  const app = document.getElementById('simApp').value.trim();
   if (!user) return;
-  const app = prompt("Enter attempted blocked app ID:", "com.valvesoftware.Steam");
-  
-  let record = AppState.violations.find(v => v.user === user);
+
+  let record = (AppState.violations || []).find(v => v.user === user);
   if (record) {
     record.count++;
-    record.lastItem = app || "unauthorized_app";
-    record.date = "Just now";
+    record.lastItem = app;
+    record.date = 'Just now';
   } else {
-    AppState.violations.push({
-      user: user,
-      count: 1,
-      lastItem: app || "unauthorized_app",
-      date: "Just now"
-    });
+    AppState.violations.push({ user, count: 1, lastItem: app, date: 'Just now' });
   }
+
   renderViolations();
   updateStats();
-  showToast(`Violation recorded for '${user}'`, 'warning');
+  closeModal();
+  showToast(`Recorded infraction for '${user}'`, 'warning');
 }
 
-// Render Labs
-function renderLabs() {
-  const tbody = document.getElementById('labBody');
-  if (!tbody) return;
-  tbody.innerHTML = '';
+// Git Push Trigger via Local Server API
+function setupGitPushButton() {
+  const btn = document.getElementById('btnGitPush');
+  if (!btn) return;
 
-  AppState.labs.forEach(lab => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td><strong>${lab.name}</strong></td>
-      <td><code>${lab.group}</code></td>
-      <td><code>${lab.prefix}</code></td>
-      <td><span style="color:var(--md-sys-color-on-surface-variant)">${lab.apps}</span></td>
+  btn.addEventListener('click', async () => {
+    const modal = document.getElementById('customModal');
+    const title = document.getElementById('modalTitle');
+    const body = document.getElementById('modalBody');
+    const footer = document.getElementById('modalFooter');
+
+    title.textContent = 'Commit & Push to GitHub';
+    body.innerHTML = `
+      <p style="color:var(--md-sys-color-on-surface-variant); font-size:14px; margin-bottom:14px;">
+        This will save all active changes to Git and execute <code>git push origin main</code> directly on this system.
+      </p>
+      <div class="m3-text-field">
+        <label for="gitCommitMsg">Commit Message</label>
+        <input type="text" id="gitCommitMsg" value="feat: update AD-DMS configurations via Control Center">
+      </div>
     `;
-    tbody.appendChild(tr);
+
+    footer.innerHTML = `
+      <button class="m3-button secondary" onclick="closeModal()">Cancel</button>
+      <button class="m3-button primary" id="btnConfirmGitPush" onclick="executeGitPush()">
+        <span class="material-symbols-rounded">cloud_upload</span> Push to Main
+      </button>
+    `;
+
+    modal.classList.add('show');
   });
 }
 
-// Siren Audio Preview
+async function executeGitPush() {
+  const msg = document.getElementById('gitCommitMsg')?.value.trim() || 'feat: update policies via Control Center';
+  closeModal();
+  showToast('Executing: git push origin main...', 'cloud_sync');
+
+  try {
+    const res = await fetch('/api/git-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commit_msg: msg })
+    });
+    const result = await res.json();
+    if (result.status === 'ok') {
+      showToast('Successfully pushed changes to GitHub repository!', 'cloud_done');
+    } else {
+      showToast(`Git Error: ${result.output}`, 'error');
+    }
+  } catch (err) {
+    showToast('Failed to connect to local git backend', 'error');
+  }
+}
+
+// Audio Siren Preview
 function setupAudioTest() {
   const btn = document.getElementById('btnTestSiren');
   const audio = document.getElementById('sirenAudio');
@@ -222,9 +449,9 @@ function setupAudioTest() {
       audio.volume = 1.0;
       audio.play().then(() => {
         btn.innerHTML = '<span class="material-symbols-rounded">stop_circle</span> <span>Stop Siren</span>';
-        showToast('Testing Siren.mp3 at 100% Volume', 'volume_up');
-      }).catch(err => {
-        showToast('Audio playback simulation initiated', 'volume_up');
+        showToast('Playing Siren.mp3 at 100% Volume', 'volume_up');
+      }).catch(() => {
+        showToast('Simulating Siren audio alert playback', 'volume_up');
       });
     } else {
       audio.pause();
@@ -234,60 +461,26 @@ function setupAudioTest() {
   });
 }
 
-// Save Domain Settings
-function saveDomainConfig() {
-  AppState.domain.DOMAIN_NAME = document.getElementById('confDomainName').value;
-  AppState.domain.REALM_NAME = document.getElementById('confRealmName').value;
-  AppState.domain.AD_DNS_IP = document.getElementById('confDnsIp').value;
-  AppState.domain.DOMAIN_USER = document.getElementById('confDomainUser').value;
-  AppState.domain.REFRESH_INTERVAL = document.getElementById('confRefreshInterval').value;
-  AppState.domain.SYSTEM_TIMEZONE = document.getElementById('confSystemTimezone').value;
-  AppState.domain.BLOCK_NOTIFICATION_TITLE = document.getElementById('confBlockNotifTitle').value;
-  AppState.domain.BLOCK_NOTIFICATION_MSG = document.getElementById('confBlockNotifMsg').value;
-  AppState.domain.ACADEMIC_WARNING_MSG = document.getElementById('confAcademicWarningMsg').value;
-
-  document.getElementById('timerCountdown').textContent = `Sync in: ~${AppState.domain.REFRESH_INTERVAL}`;
-  showToast('domain.conf parameters updated successfully', 'check_circle');
-}
-
-// Save Device Rules
-function saveDeviceRules() {
-  const bright = document.getElementById('switchBrightness').checked;
-  const vol = document.getElementById('switchVolume').checked;
-  AppState.deviceRules.LOCK_BRIGHTNESS_100 = bright ? "yes" : "no";
-  AppState.deviceRules.LOCK_VOLUME_100 = vol ? "yes" : "no";
-
-  showToast('Hardware Governance rules updated (100% lock enabled)', 'tune');
-}
-
-// Update Stats
+// Update Dashboard Statistics
 function updateStats() {
-  document.getElementById('statAllowedCount').textContent = 
-    AppState.policies.allowed.length + AppState.policies.compulsory.length;
-  document.getElementById('statBlockedCount').textContent = AppState.policies.blocked.length;
-  document.getElementById('statLabCount').textContent = AppState.labs.length;
+  const blockedCount = (AppState.blocked?.dnf?.length || 0) + (AppState.blocked?.flatpak?.length || 0);
+  const allowedCount = (AppState.allowed?.dnf?.length || 0) + (AppState.allowed?.flatpak?.length || 0) +
+                       (AppState.compulsory?.dnf?.length || 0) + (AppState.compulsory?.flatpak?.length || 0);
   
-  const totalViolations = AppState.violations.reduce((acc, curr) => acc + curr.count, 0);
+  document.getElementById('statAllowedCount').textContent = allowedCount;
+  document.getElementById('statBlockedCount').textContent = blockedCount;
+  document.getElementById('statLabCount').textContent = AppState.labs?.length || 0;
+
+  const totalViolations = (AppState.violations || []).reduce((acc, curr) => acc + curr.count, 0);
   document.getElementById('statViolationCount').textContent = totalViolations;
 }
 
-// Export Configuration ZIP / Plain text bundle
-document.getElementById('btnExportAll')?.addEventListener('click', () => {
-  const domainText = `# Active Directory Domain Configuration\nENABLE_PVPN="${AppState.domain.ENABLE_PVPN}"\nDOMAIN_NAME="${AppState.domain.DOMAIN_NAME}"\nREALM_NAME="${AppState.domain.REALM_NAME}"\nAD_DNS_IP="${AppState.domain.AD_DNS_IP}"\nDOMAIN_USER="${AppState.domain.DOMAIN_USER}"\nALLOW_SHORT_USERNAMES="${AppState.domain.ALLOW_SHORT_USERNAMES}"\nREFRESH_INTERVAL="${AppState.domain.REFRESH_INTERVAL}"\nSYSTEM_TIMEZONE="${AppState.domain.SYSTEM_TIMEZONE}"\nBLOCK_NOTIFICATION_TITLE="${AppState.domain.BLOCK_NOTIFICATION_TITLE}"\nBLOCK_NOTIFICATION_MSG="${AppState.domain.BLOCK_NOTIFICATION_MSG}"\nACADEMIC_WARNING_MSG="${AppState.domain.ACADEMIC_WARNING_MSG}"\n`;
+// Modal Helpers
+function closeModal() {
+  document.getElementById('customModal')?.classList.remove('show');
+}
 
-  const blob = new Blob([domainText], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'domain.conf';
-  a.click();
-  showToast('Exported domain.conf bundle', 'file_download');
-});
-
-document.getElementById('btnTriggerRefresh')?.addEventListener('click', () => {
-  showToast('Triggering policy synchronization: refresh', 'sync');
-});
-
-// Toast Notification Engine
+// Toast Notifications
 function showToast(message, icon = 'info') {
   const container = document.getElementById('toastContainer');
   if (!container) return;
@@ -302,7 +495,7 @@ function showToast(message, icon = 'info') {
     toast.style.transform = 'translateX(100%)';
     toast.style.transition = 'all 300ms ease';
     setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  }, 3200);
 }
 
 function copyInstallCmd() {
@@ -313,5 +506,6 @@ function copyInstallCmd() {
 }
 
 function capitalize(s) {
+  if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
