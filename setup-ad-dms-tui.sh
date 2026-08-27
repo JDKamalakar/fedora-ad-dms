@@ -96,12 +96,26 @@ fi
 # CONFIGURABLE INSTALLATION COMMANDS & VARIABLES
 # ==============================================================================
 DMS_INSTALL_CMD="${DMS_INSTALL_CMD:-curl -fsSL https://install.danklinux.com | sh}"
+TARGET_TIMEZONE="${SYSTEM_TIMEZONE:-Asia/Kolkata}"
 
 # ------------------------------------------------------------------------------
-# Phase 0: ProtonVPN (pVPN) Setup & Initial Connection
+# Phase 0: System Timezone & ProtonVPN (pVPN) Setup & Initial Connection
 # ------------------------------------------------------------------------------
-echo -e "${BOLD}${BLUE}[PHASE 0/7]${NC} ${BOLD}ProtonVPN (pVPN) Setup & Connection${NC}"
+echo -e "${BOLD}${BLUE}[PHASE 0/7]${NC} ${BOLD}System Timezone & ProtonVPN (pVPN) Setup${NC}"
 echo -e "${BLUE}======================================================================${NC}"
+
+# Synchronize System Timezone (Default: Asia/Kolkata / Indian Standard Time)
+if command -v timedatectl &>/dev/null; then
+  CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || echo "")
+  if [ "$CURRENT_TZ" != "$TARGET_TIMEZONE" ]; then
+    msg_info "Configuring system timezone to '${TARGET_TIMEZONE}'..."
+    timedatectl set-timezone "$TARGET_TIMEZONE" 2>/dev/null || true
+    timedatectl set-ntp true 2>/dev/null || true
+    msg_ok "System timezone set to ${TARGET_TIMEZONE} ($(date +'%Z %z'))."
+  else
+    msg_ok "System timezone is already set to ${TARGET_TIMEZONE}."
+  fi
+fi
 
 SHOULD_INSTALL_PVPN=false
 PVPN_MODE="$(echo "${ENABLE_PVPN:-ask}" | tr '[:upper:]' '[:lower:]')"
@@ -318,7 +332,7 @@ fi
 
 SHOULD_RUN_DMS_INSTALL=true
 if command -v dms &>/dev/null; then
-  CURRENT_DMS_VER=$(dms --version 2>/dev/null || echo "installed")
+  CURRENT_DMS_VER=$(dms version 2>/dev/null || rpm -q --qf '%{VERSION}-%{RELEASE}' dms 2>/dev/null || dms --version 2>/dev/null || echo "installed")
   msg_info "Detected existing Dank Material Shell version: ${CURRENT_DMS_VER}"
   if ! ask_yes_no "DMS is already installed. Re-run installation command?" "N"; then
     SHOULD_RUN_DMS_INSTALL=false

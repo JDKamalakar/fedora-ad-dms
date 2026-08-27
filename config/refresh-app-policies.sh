@@ -234,7 +234,11 @@ if [ -f "${CONF_DIR}/group-apps.conf" ]; then
       packages=$(echo "$line" | cut -d':' -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
       if [ -n "$pattern" ] && [[ "$SYS_HOST_UPPER" == *"$pattern"* ]]; then
-        echo -e "  -> ${YELLOW}[MATCH FOUND]${NC} Hostname matches lab pattern: ${BOLD}${pattern}${NC}"
+        if [ "$mode" = "dnf" ]; then
+          echo -e "  -> ${YELLOW}[DNF GROUP MATCH]${NC} Hostname matches lab pattern: ${BOLD}${pattern}${NC}"
+        else
+          echo -e "  -> ${YELLOW}[FLATPAK GROUP MATCH]${NC} Hostname matches lab pattern: ${BOLD}${pattern}${NC}"
+        fi
 
         for pkg in $packages; do
           if [ "$mode" = "dnf" ]; then
