@@ -261,11 +261,28 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 TARGET_USER="${1:-nobody}"
-VIOLATION_ITEM="${2:-unknown}"
+ACTION_OR_ITEM="${2:-unknown}"
 REASON="${3:-policy_violation}"
 
 TRACK_FILE="/var/log/ad-dms-violations/${TARGET_USER}.count"
 LOG_FILE="/var/log/ad-dms-violations/audit.log"
+
+# Administrative manual adjustment of violation counter (e.g., ad-dms-record-violation user --set 0)
+if [ "${2:-}" = "--set" ] || [ "${2:-}" = "set" ]; then
+  new_val="${3:-0}"
+  echo "$new_val" > "$TRACK_FILE"
+  chmod 0644 "$TRACK_FILE"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ADMIN RESET | User: ${TARGET_USER} | Reset to: ${new_val}" >> "$LOG_FILE"
+  echo "Violation count for '${TARGET_USER}' updated to: ${new_val}"
+  exit 0
+fi
+
+if [ "${2:-}" = "--get" ] || [ "${2:-}" = "get" ]; then
+  count=0
+  [ -f "$TRACK_FILE" ] && count=$(cat "$TRACK_FILE" 2>/dev/null || echo 0)
+  echo "$count"
+  exit 0
+fi
 
 count=0
 [ -f "$TRACK_FILE" ] && count=$(cat "$TRACK_FILE" 2>/dev/null || echo 0)
@@ -273,25 +290,44 @@ count=$((count + 1))
 echo "$count" > "$TRACK_FILE"
 chmod 0644 "$TRACK_FILE"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] User: ${TARGET_USER} | Count: ${count} | Item: ${VIOLATION_ITEM} | Reason: ${REASON}" >> "$LOG_FILE"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] User: ${TARGET_USER} | Count: ${count} | Item: ${ACTION_OR_ITEM} | Reason: ${REASON}" >> "$LOG_FILE"
 
-# Sound alert: if user has violated policy > 3 times, sound loud alarm
+# Sound alert: if user has violated policy > 3 times, play Siren.mp3 at 100% volume
 if [ "$count" -gt 3 ]; then
   (
-    # Play multiple loud PC-speaker/soundcard beeps via speaker-test / paplay / aplay / console beep
+    # Set volume to 100% (PipeWire / ALSA)
+    if command -v wpctl &>/dev/null; then
+      wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0 2>/dev/null || true
+      wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null || true
+    fi
+    if command -v pactl &>/dev/null; then
+      pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null || true
+      pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
+    fi
+    if command -v amixer &>/dev/null; then
+      amixer set Master 100% unmute 2>/dev/null || true
+    fi
+
+    SIREN_FILE="/etc/ad-dms/assets/Siren.mp3"
+    [ ! -f "$SIREN_FILE" ] && SIREN_FILE="/home/jk/Projects/fedora-ad-dms/assets/Siren.mp3"
+    
+    if [ -f "$SIREN_FILE" ]; then
+      if command -v mpv &>/dev/null; then
+        timeout 8 mpv --no-video --volume=100 "$SIREN_FILE" &>/dev/null || true
+      elif command -v ffplay &>/dev/null; then
+        timeout 8 ffplay -nodisp -autoexit -volume 100 "$SIREN_FILE" &>/dev/null || true
+      elif command -v cvlc &>/dev/null; then
+        timeout 8 cvlc --play-and-exit --gain 1.0 "$SIREN_FILE" &>/dev/null || true
+      elif command -v gst-play-1.0 &>/dev/null; then
+        timeout 8 gst-play-1.0 --volume 1.0 "$SIREN_FILE" &>/dev/null || true
+      elif command -v paplay &>/dev/null; then
+        paplay "$SIREN_FILE" 2>/dev/null || true
+      fi
+    fi
+
+    # Fallback to loud sine tone beeper if no media player was available
     if command -v speaker-test &>/dev/null; then
-      timeout 2 speaker-test -t sine -f 1000 -l 3 &>/dev/null || true
-    elif command -v paplay &>/dev/null && [ -f /usr/share/sounds/freedesktop/stereo/dialog-warning.oga ]; then
-      for _ in 1 2 3 4 5; do
-        paplay /usr/share/sounds/freedesktop/stereo/dialog-warning.oga 2>/dev/null || true
-      done
-    elif command -v aplay &>/dev/null; then
-      ( speaker-test -t sine -f 880 )& pid=$!; sleep 1.5; kill -9 $pid 2>/dev/null || true
-    else
-      for _ in 1 2 3 4 5 6 7 8 9 10; do
-        echo -ne "\007" > /dev/tty 2>/dev/null || true
-        sleep 0.1
-      done
+      timeout 2 speaker-test -t sine -f 1200 -l 3 &>/dev/null || true
     fi
   ) &>/dev/null &
 fi
@@ -475,7 +511,26 @@ post_flatpak_scan_and_enforce() {
   done
 }
 
+# Check if current user is an administrator (root, wheel member, or Domain Admin)
+IS_ADMIN=false
+if [ "$EUID" -eq 0 ] || groups "$CURRENT_ACT_USER" 2>/dev/null | grep -q -E '(wheel|Domain Admins|domain admins)' || [ "$CURRENT_ACT_USER" = "root" ]; then
+  IS_ADMIN=true
+fi
+
 for pkg in "${PACKAGES[@]}"; do
+  # Administrators are exempted from academic restriction prompts & blocks
+  if [ "$IS_ADMIN" = true ]; then
+    draw_box_header "ADMINISTRATIVE INSTALLATION: ${pkg}" "$MAGENTA"
+    echo -e "  -> ${MAGENTA}[ADMIN BYPASS]${NC} Administrator privileges verified for '${CURRENT_ACT_USER}'."
+    if [ "$MODE" = "dnf" ]; then
+      sudo dnf install -y "$pkg"
+    else
+      flatpak install -y flathub "$pkg"
+    fi
+    echo -e "\n  ${GREEN}[SUCCESS]${NC} ${pkg} installed successfully.\n"
+    continue
+  fi
+
   is_blocked=false
   is_allowed=false
   is_compulsory=false
@@ -645,6 +700,91 @@ EOF
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable --now ad-dms-gui-scan.timer 2>/dev/null || true
 echo -e "  -> ${GREEN}[GUI GUARD]${NC} Automated background Flatpak GUI scanner guard active (2min timer)."
+
+# E2. Deploy Hardware & Device Policy Enforcement Daemon (/usr/local/bin/ad-dms-device-enforce)
+cat <<'EOF' > /usr/local/bin/ad-dms-device-enforce
+#!/usr/bin/env bash
+# AD-DMS Hardware Governance Daemon (Brightness 100% & Volume 100% Lock)
+set -euo pipefail
+
+CONF_DIR="/etc/ad-dms"
+RULE_FILE="${CONF_DIR}/device-rules.conf"
+
+LOCK_BRIGHTNESS="yes"
+LOCK_VOLUME="yes"
+
+if [ -f "$RULE_FILE" ]; then
+  # shellcheck source=/dev/null
+  source "$RULE_FILE" 2>/dev/null || true
+  LOCK_BRIGHTNESS="${LOCK_BRIGHTNESS_100:-yes}"
+  LOCK_VOLUME="${LOCK_VOLUME_100:-yes}"
+fi
+
+# 1. Enforce 100% Brightness
+if [ "$(echo "$LOCK_BRIGHTNESS" | tr '[:upper:]' '[:lower:]')" = "yes" ]; then
+  # Try sysfs backlight directly (requires root)
+  for b_dev in /sys/class/backlight/*; do
+    if [ -d "$b_dev" ] && [ -f "$b_dev/max_brightness" ] && [ -w "$b_dev/brightness" ]; then
+      cat "$b_dev/max_brightness" > "$b_dev/brightness" 2>/dev/null || true
+    fi
+  done
+
+  # Try brightnessctl if available
+  if command -v brightnessctl &>/dev/null; then
+    brightnessctl set 100% &>/dev/null || true
+  fi
+
+  # Try ddcutil for external monitors
+  if command -v ddcutil &>/dev/null; then
+    ddcutil setvcp 10 100 &>/dev/null || true
+  fi
+fi
+
+# 2. Enforce 100% Volume
+if [ "$(echo "$LOCK_VOLUME" | tr '[:upper:]' '[:lower:]')" = "yes" ]; then
+  if command -v wpctl &>/dev/null; then
+    wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0 &>/dev/null || true
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 &>/dev/null || true
+  fi
+  if command -v pactl &>/dev/null; then
+    pactl set-sink-mute @DEFAULT_SINK@ 0 &>/dev/null || true
+    pactl set-sink-volume @DEFAULT_SINK@ 100% &>/dev/null || true
+  fi
+  if command -v amixer &>/dev/null; then
+    amixer set Master 100% unmute &>/dev/null || true
+  fi
+fi
+EOF
+chmod +x /usr/local/bin/ad-dms-device-enforce
+
+# Deploy Device Enforcement Systemd Timer (Every 5 minutes)
+cat <<'EOF' > /etc/systemd/system/ad-dms-device-guard.service
+[Unit]
+Description=AD-DMS Device Hardware Governance Service (Brightness & Volume Lock)
+After=network.target sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ad-dms-device-enforce
+EOF
+
+cat <<'EOF' > /etc/systemd/system/ad-dms-device-guard.timer
+[Unit]
+Description=Run AD-DMS Hardware Policy Check Every 5 Minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now ad-dms-device-guard.timer 2>/dev/null || true
+/usr/local/bin/ad-dms-device-enforce 2>/dev/null || true
+echo -e "  -> ${GREEN}[DEVICE GUARD]${NC} Hardware policy guard active (Brightness 100% & Sound 100% locked every 5min)."
 
 # F. Deploy Interactive Shell Interceptors & Aliases (/etc/profile.d/99-ad-dms-aliases.sh)
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh

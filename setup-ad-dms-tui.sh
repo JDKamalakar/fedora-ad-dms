@@ -267,6 +267,7 @@ FILES=(
   "blocked-apps.conf"
   "compulsory-apps.conf"
   "group-apps.conf"
+  "device-rules.conf"
 )
 
 for file in "${FILES[@]}"; do
@@ -277,6 +278,17 @@ for file in "${FILES[@]}"; do
     [ -t 1 ] && echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
   fi
 done
+
+# Sync Siren alarm asset if missing or outdated
+mkdir -p "${CONF_DIR}/assets"
+if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
+  [ -t 1 ] && echo -n -e "  -> Downloading security asset: Siren.mp3... "
+  if curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
+    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
+  else
+    [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
+  fi
+fi
 
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
