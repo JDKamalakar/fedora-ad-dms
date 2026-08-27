@@ -230,6 +230,19 @@ cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Support checking remaining timer interval without root privileges
+if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
+  if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+    TIMER_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+    LEFT_TIME=$(echo "$TIMER_INFO" | awk '{print $3}' || echo "unknown")
+    NEXT_DATE=$(echo "$TIMER_INFO" | awk '{print $1, $2}' || echo "unknown")
+    echo -e "\033[1;36m[AD-DMS TIMER]\033[0m Next policy refresh scheduled in: \033[1;32m${LEFT_TIME}\033[0m (Next run: ${NEXT_DATE})"
+  else
+    echo -e "\033[1;33m[AD-DMS TIMER]\033[0m ad-dms-refresh.timer is currently inactive or not installed."
+  fi
+  exit 0
+fi
+
 REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
 CONF_DIR="/etc/ad-dms"
 
@@ -277,9 +290,30 @@ EOF
 chmod +x /usr/local/bin/refresh
 msg_ok "Deployed: /usr/local/bin/refresh"
 
-msg_info "Creating user alias 'refresh'..."
+msg_info "Creating user command redirections and aliases..."
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
+# AD-DMS Command Redirections & User Helpers
 alias refresh='sudo /usr/local/bin/refresh'
+
+dnf() {
+  if [ "${1:-}" = "install" ]; then
+    shift
+    echo -e "\033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall $*\033[0m"
+    /usr/local/bin/install "$@"
+  else
+    command dnf "$@"
+  fi
+}
+
+flatpak() {
+  if [ "${1:-}" = "install" ]; then
+    shift
+    echo -e "\033[1;33m[AD-DMS NOTICE]\033[0m Please use the managed command: \033[1;32minstall flatpak $*\033[0m"
+    /usr/local/bin/install flatpak "$@"
+  else
+    command flatpak "$@"
+  fi
+}
 EOF
 chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
 
@@ -332,7 +366,7 @@ fi
 
 SHOULD_RUN_DMS_INSTALL=true
 if command -v dms &>/dev/null; then
-  CURRENT_DMS_VER=$(dms version 2>/dev/null || rpm -q --qf '%{VERSION}-%{RELEASE}' dms 2>/dev/null || dms --version 2>/dev/null || echo "installed")
+  CURRENT_DMS_VER=$(dms version 2>/dev/null | sed -e 's/^dms[[:space:]]*//' || echo "installed")
   msg_info "Detected existing Dank Material Shell version: ${CURRENT_DMS_VER}"
   if ! ask_yes_no "DMS is already installed. Re-run installation command?" "N"; then
     SHOULD_RUN_DMS_INSTALL=false
@@ -711,27 +745,37 @@ fi
 # ------------------------------------------------------------------------------
 # Passwordless Privileges for Non-Admin / Non-Sudo Users (DNF & Refresh Command)
 # ------------------------------------------------------------------------------
-msg_info "Configuring passwordless package updates and refresh privileges for non-sudo users..."
+msg_info "Configuring passwordless package updates, refresh, and installation privileges for non-sudo users..."
+
+cat <<'EOF' > /usr/local/bin/ad-dms-backend-install
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$EUID" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+exec dnf install -y "$@"
+EOF
+chmod +x /usr/local/bin/ad-dms-backend-install
 
 cat <<'EOF' > /etc/sudoers.d/99-ad-dms-dnf-updates
-# Allow all authenticated users (including standard domain accounts) to run DNF updates and policy refresh
-ALL ALL=(ALL) NOPASSWD: /usr/local/bin/refresh, /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y, /usr/bin/pkexec /usr/bin/dnf *
+# Allow all authenticated users to run DNF updates, policy refresh, and verified backend install
+ALL ALL=(ALL) NOPASSWD: /usr/local/bin/refresh, /usr/bin/dnf update, /usr/bin/dnf update -y, /usr/bin/dnf upgrade, /usr/bin/dnf upgrade -y, /usr/bin/dnf5 update, /usr/bin/dnf5 update -y, /usr/bin/dnf5 upgrade, /usr/bin/dnf5 upgrade --refresh -y, /usr/bin/dnf5 upgrade -y, /usr/local/bin/ad-dms-backend-install *
 EOF
 chmod 0440 /etc/sudoers.d/99-ad-dms-dnf-updates
 
 mkdir -p /etc/polkit-1/rules.d
-cat <<'EOF' > /etc/polkit-1/rules.d/49-allow-dnf-updates.rules
-/* Allow standard non-admin users to update packages via PackageKit/Polkit */
+cat <<'EOF' > /etc/polkit-1/rules.d/45-ad-dms-flatpak-allowlist.rules
+/* Allow active users to install/manage user-level Flatpaks without root password */
 polkit.addRule(function(action, subject) {
-    if ((action.id == "org.freedesktop.packagekit.system-update" ||
-         action.id == "org.freedesktop.packagekit.system-sources-refresh" ||
-         action.id == "org.freedesktop.packagekit.package-install") &&
-        subject.active) {
+    if ((action.id == "org.freedesktop.Flatpak.app-install" ||
+         action.id == "org.freedesktop.Flatpak.runtime-install" ||
+         action.id == "org.freedesktop.Flatpak.app-uninstall" ||
+         action.id == "org.freedesktop.Flatpak.modify-repo") && subject.active) {
         return polkit.Result.YES;
     }
 });
 EOF
-msg_ok "Passwordless package update and policy refresh privileges granted to all active users."
+msg_ok "Passwordless package update, user Flatpaks, and verified install privileges granted to all active users."
 
 # ------------------------------------------------------------------------------
 # AD Account Diagnostics
