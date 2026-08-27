@@ -271,7 +271,7 @@ FILES=(
 
 for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Downloading remote file: ${file}... "
-  if curl -fsSL "${REPO_RAW_URL}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+  if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
     [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
   else
     [ -t 1 ] && echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
