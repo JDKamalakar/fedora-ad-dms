@@ -268,11 +268,14 @@ FILES=(
   "compulsory-apps.conf"
   "group-apps.conf"
   "device-rules.conf"
+  "domain.conf"
+  "lab.conf"
 )
 
 for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Downloading remote file: ${file}... "
-  if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+  # Try config/ subfolder first, then repo root fallback
+  if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
     [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
   else
     [ -t 1 ] && echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
@@ -287,6 +290,33 @@ if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
     [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
   else
     [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
+  fi
+fi
+
+# Dynamically synchronize ad-dms-refresh.timer interval if domain.conf was updated
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  RAW_INT="${REFRESH_INTERVAL:-1h}"
+  # Normalize human intervals (e.g. 1hrs -> 1h, 1hr -> 1h, 30mins -> 30m)
+  NORM_INT=$(echo "$RAW_INT" | sed -E -e 's/([0-9]+)[[:space:]]*(hrs|hr|hours|hour)/\1h/g' -e 's/([0-9]+)[[:space:]]*(mins|min|minutes|minute)/\1m/g' -e 's/([0-9]+)[[:space:]]*(secs|sec|seconds|second)/\1s/g')
+  
+  CURRENT_TIMER_INT=$(systemctl show ad-dms-refresh.timer --property=Unit -p AccuracySec 2>/dev/null | grep -i "OnUnitActiveSec" || true)
+  if [ -f /etc/systemd/system/ad-dms-refresh.timer ]; then
+    cat <<TIMER_EOF > /etc/systemd/system/ad-dms-refresh.timer
+[Unit]
+Description=Run AD-DMS Policy Refresh Periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${NORM_INT}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER_EOF
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart ad-dms-refresh.timer 2>/dev/null || true
   fi
 fi
 

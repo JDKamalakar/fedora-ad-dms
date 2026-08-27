@@ -950,6 +950,33 @@ else
   echo -e "  ${YELLOW}[SKIP] remote-tasks.sh not found.${NC}\n"
 fi
 
-echo -e "${BOLD}${GREEN}======================================================================${NC}"
+# Dynamically apply updated REFRESH_INTERVAL from domain.conf to systemd timer
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  RAW_INT="${REFRESH_INTERVAL:-1h}"
+  # Normalize human intervals (e.g. 1hrs -> 1h, 1hr -> 1h, 30mins -> 30m, 60s)
+  NORM_INT=$(echo "$RAW_INT" | sed -E -e 's/([0-9]+)[[:space:]]*(hrs|hr|hours|hour)/\1h/g' -e 's/([0-9]+)[[:space:]]*(mins|min|minutes|minute)/\1m/g' -e 's/([0-9]+)[[:space:]]*(secs|sec|seconds|second)/\1s/g')
+  
+  if [ -f /etc/systemd/system/ad-dms-refresh.timer ]; then
+    cat <<EOF > /etc/systemd/system/ad-dms-refresh.timer
+[Unit]
+Description=Run AD-DMS Policy Refresh Periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${NORM_INT}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart ad-dms-refresh.timer 2>/dev/null || true
+    echo -e "  -> ${GREEN}[TIMER SYNC]${NC} ad-dms-refresh.timer interval updated to: ${BOLD}${NORM_INT}${NC}"
+  fi
+fi
+
+echo -e "\n${BOLD}${GREEN}======================================================================${NC}"
 echo -e "${BOLD}${GREEN}         ALL SYSTEM & APP POLICIES SYNCHRONIZED SUCCESSFULLY          ${NC}"
 echo -e "${BOLD}${GREEN}======================================================================${NC}\n"
