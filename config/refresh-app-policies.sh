@@ -631,18 +631,55 @@ parse_list() {
 
 BLOCKED_FLATPAKS=($(parse_list "${CONF_DIR}/blocked-apps.conf") $(parse_list "${CONF_DIR}/.blocked-games-cache.conf"))
 
-CURRENT_INSTALLED=$(flatpak list --app --columns=application 2>/dev/null || true)
+# Helper to find currently active graphical login users
+get_active_sessions() {
+  loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1, $3}' || true
+}
+
+# Collect all installed Flatpaks across system and all user homes
+declare -A DETECTED_APPS
+
+# 1. Check system-wide Flatpaks
+SYS_APPS=$(flatpak list --system --app --columns=application 2>/dev/null || true)
+for sa in $SYS_APPS; do
+  DETECTED_APPS["$sa"]="system"
+done
+
+# 2. Check per-user flatpak installations for all active sessions / users in /home
+while read -r sess_id sess_user; do
+  [ -z "$sess_user" ] || [ "$sess_user" = "root" ] || [ "$sess_user" = "greeter" ] && continue
+  U_UID=$(id -u "$sess_user" 2>/dev/null || true)
+  [ -z "$U_UID" ] && continue
+  
+  USER_FLATPAKS=$(su - "$sess_user" -c "flatpak list --user --app --columns=application" 2>/dev/null || true)
+  for ua in $USER_FLATPAKS; do
+    DETECTED_APPS["$ua"]="$sess_user"
+  done
+done < <(get_active_sessions)
+
 for b_app in "${BLOCKED_FLATPAKS[@]}"; do
   [ -z "$b_app" ] && continue
-  if echo "$CURRENT_INSTALLED" | grep -q -i -E "^${b_app}$"; then
-    flatpak kill "$b_app" 2>/dev/null || true
-    flatpak uninstall -y --system "$b_app" 2>/dev/null || true
-    flatpak uninstall -y --user "$b_app" 2>/dev/null || true
-    
-    # Resolve human readable name
-    HUMAN_TITLE=$(python3 -c "
+  
+  # Check if blocked app is in DETECTED_APPS (or matching substring)
+  for installed_id in "${!DETECTED_APPS[@]}"; do
+    if [[ "$installed_id" == "$b_app" || "$installed_id" == *"$b_app"* || "$b_app" == *"$installed_id"* ]]; then
+      owner_user="${DETECTED_APPS[$installed_id]}"
+      [ "$owner_user" = "system" ] && owner_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 !~ /root|greeter/ {print $3; exit}' || echo "user")
+
+      # 1. Kill running instances
+      flatpak kill "$installed_id" 2>/dev/null || true
+      
+      # 2. Uninstall across all scopes
+      flatpak uninstall -y --system "$installed_id" 2>/dev/null || true
+      if [ -n "$owner_user" ] && [ "$owner_user" != "system" ]; then
+        su - "$owner_user" -c "flatpak uninstall -y --user $installed_id" 2>/dev/null || true
+      fi
+      flatpak uninstall -y --user "$installed_id" 2>/dev/null || true
+
+      # 3. Resolve human-readable application title
+      HUMAN_TITLE=$(python3 -c "
 import glob, xml.etree.ElementTree as ET
-target = '$b_app'.lower().removesuffix('.desktop')
+target = '$installed_id'.lower().removesuffix('.desktop')
 title = ''
 for path in glob.glob('/var/lib/flatpak/appstream/**/appstream.xml', recursive=True):
     try:
@@ -656,19 +693,24 @@ for path in glob.glob('/var/lib/flatpak/appstream/**/appstream.xml', recursive=T
                     break
         if title: break
     except Exception: pass
-print(title or '$b_app')
-" 2>/dev/null || echo "$b_app")
+print(title or '$installed_id')
+" 2>/dev/null || echo "$installed_id")
 
-    # Record and notify
-    ACTIVE_USER=$(who 2>/dev/null | awk '{print $1; exit}' || echo "user")
-    if [ -x /usr/local/bin/ad-dms-record-violation ]; then
-      /usr/local/bin/ad-dms-record-violation "$ACTIVE_USER" "$b_app" "gui_store_install" 2>/dev/null || true
-    fi
+      # 4. Record violation count and trigger siren if >3
+      if [ -x /usr/local/bin/ad-dms-record-violation ]; then
+        /usr/local/bin/ad-dms-record-violation "$owner_user" "$installed_id" "gui_store_install" 2>/dev/null || true
+      fi
 
-    if command -v notify-send &>/dev/null; then
-      notify-send -u critical -i dialog-error "Unauthorized Application Blocked" "Access Denied: ${HUMAN_TITLE} was removed per University IT Policy." 2>/dev/null || true
+      # 5. Broadcast desktop notification into active user Wayland/X11 session
+      if [ -n "$owner_user" ]; then
+        TARGET_UID=$(id -u "$owner_user" 2>/dev/null || echo 1000)
+        DBUS_PATH="/run/user/${TARGET_UID}/bus"
+        if [ -S "$DBUS_PATH" ]; then
+          DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" su - "$owner_user" -c "notify-send -u critical -i dialog-error 'Unauthorized Application Blocked' 'Access Denied: ${HUMAN_TITLE} was terminated and removed per University IT Policy.'" 2>/dev/null || true
+        fi
+      fi
     fi
-  fi
+  done
 done
 EOF
 chmod +x /usr/local/bin/ad-dms-gui-scan
