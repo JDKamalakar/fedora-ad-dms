@@ -104,34 +104,89 @@ if [ -f "${CONF_DIR}/blocked-apps.conf" ]; then
     BLOCK_ALL_FLATPAKS="true"
   fi
 
+  # Extract and block all packages belonging to the DNF 'games' group
+  echo -e "  -> ${CYAN}[DNF GROUP PARSE]${NC} Querying and blocking all packages from 'games' package group..."
+  GAMES_PKGS=$(dnf group info games 2>/dev/null | awk -F':' '/(Mandatory|Default|Optional) packages/ {flag=1; next} /^[A-Z][a-zA-Z0-9 ]*:/ {flag=0} flag && NF {print $NF}' | tr -d ' ' | sort -u || true)
+  for gpkg in $GAMES_PKGS; do
+    [ -z "$gpkg" ] && continue
+    dnf_apps+=("$gpkg")
+  done
+
+  # Remove duplicates across explicit config entries and parsed group packages
+  dnf_apps=($(echo "${dnf_apps[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
   EXCLUDE_LIST=""
   for pkg in "${dnf_apps[@]:-}"; do
     EXCLUDE_LIST="${EXCLUDE_LIST} ${pkg}"
     if rpm -qa "$pkg" 2>/dev/null | grep -q .; then
       echo -e "  -> ${RED}[DNF REMOVE]${NC} Removing blacklisted DNF package/pattern: ${BOLD}${pkg}${NC}"
       dnf remove -y "$pkg" 2>/dev/null || true
-    else
-      echo -e "  -> ${GREEN}[DNF VERIFIED]${NC} DNF package '${pkg}' is clean."
     fi
   done
 
   if [ -n "$EXCLUDE_LIST" ]; then
     sed -i '/^excludepkgs=/d' /etc/dnf/dnf.conf 2>/dev/null || true
     echo "excludepkgs=${EXCLUDE_LIST}" >> /etc/dnf/dnf.conf
-    echo -e "  -> ${GREEN}[DNF POLICY]${NC} Exclude list written to /etc/dnf/dnf.conf"
+    echo -e "  -> ${GREEN}[DNF POLICY]${NC} Exclude list written to /etc/dnf/dnf.conf (${#dnf_apps[@]} blocked DNF packages/patterns)."
   fi
 
+  # Query and extract game Flatpaks via flatpak search & AppStream XML metadata
+  echo -e "  -> ${CYAN}[FLATPAK SEARCH & APPSTREAM PARSE]${NC} Discovering all game Flatpak application IDs..."
+  
+  # 1. Parse Flatpaks from AppStream metadata XML (<category>Game</category>)
+  if command -v python3 &>/dev/null; then
+    DYNAMIC_FP_GAMES=$(python3 -c '
+import glob, xml.etree.ElementTree as ET
+games = set()
+for path in glob.glob("/var/lib/flatpak/appstream/**/appstream.xml", recursive=True):
+    try:
+        tree = ET.parse(path)
+        for comp in tree.getroot().findall("component"):
+            cats = [c.text for c in comp.findall("categories/category") if c.text]
+            if "Game" in cats or "Games" in cats:
+                app_id = comp.find("id")
+                if app_id is not None and app_id.text:
+                    games.add(app_id.text.removesuffix(".desktop"))
+    except Exception:
+        pass
+print("\n".join(games))
+' 2>/dev/null || true)
+    for fp_game in $DYNAMIC_FP_GAMES; do
+      [ -z "$fp_game" ] && continue
+      flatpak_apps+=("$fp_game")
+    done
+  fi
+
+  # 2. Parse Flatpaks from flatpak search
+  if command -v flatpak &>/dev/null; then
+    SEARCH_FP_GAMES=$(flatpak search game 2>/dev/null | awk -F'\t' '{print $3}' | grep -v '^$' || true)
+    for s_game in $SEARCH_FP_GAMES; do
+      [ -z "$s_game" ] && continue
+      flatpak_apps+=("$s_game")
+    done
+  fi
+
+  # Remove duplicates across explicit config entries and dynamically discovered game Flatpaks
+  flatpak_apps=($(echo "${flatpak_apps[@]:-}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+  # Uninstall blacklisted Flatpaks across system and user installations
   for app in "${flatpak_apps[@]:-}"; do
     if flatpak list --app --columns=application 2>/dev/null | grep -q -i -E "^${app}$"; then
       echo -e "  -> ${RED}[FLATPAK UNINSTALL]${NC} Uninstalling blacklisted Flatpak: ${BOLD}${app}${NC}"
       flatpak uninstall -y --system "$app" 2>/dev/null || true
       flatpak uninstall -y --user "$app" 2>/dev/null || true
-    else
-      echo -e "  -> ${GREEN}[FLATPAK VERIFIED]${NC} Flatpak '${app}' is clean."
     fi
   done
 
-  echo -e "  ${GREEN}[STATUS] blocked-apps.conf synced successfully (${#dnf_apps[@]} DNF, ${#flatpak_apps[@]} Flatpak).${NC}\n"
+  # Apply Flatpak Masking to block installation & auto-updates for all blocked Flatpaks
+  if command -v flatpak &>/dev/null && [ ${#flatpak_apps[@]} -gt 0 ]; then
+    echo -e "  -> ${GREEN}[FLATPAK MASK]${NC} Enforcing flatpak mask rules for ${#flatpak_apps[@]} blocked applications..."
+    for app in "${flatpak_apps[@]}"; do
+      flatpak mask --system "$app" 2>/dev/null || true
+    done
+  fi
+
+  echo -e "  ${GREEN}[STATUS] blocked-apps.conf synced successfully (${#dnf_apps[@]} DNF, ${#flatpak_apps[@]} Flatpak blocked & masked).${NC}\n"
 else
   echo -e "  ${YELLOW}[SKIP] blocked-apps.conf not found.${NC}\n"
 fi
