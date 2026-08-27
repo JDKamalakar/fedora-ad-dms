@@ -15,6 +15,10 @@ NC="\033[0m"
 
 CONF_DIR="/etc/ad-dms"
 
+if [ "$EUID" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
 echo -e "\n${BOLD}${CYAN}======================================================================${NC}"
 echo -e "${BOLD}${CYAN}            AD-DMS POLICY ENGINE SYSTEM SYNCHRONIZATION              ${NC}"
 echo -e "${BOLD}${CYAN}======================================================================${NC}\n"
@@ -515,6 +519,15 @@ if [ -f "${CONF_DIR}/group-apps.conf" ]; then
   echo -e "  ${GREEN}[STATUS] group-apps.conf synced successfully (${dnf_matched_count} DNF rules, ${flatpak_matched_count} Flatpak rules evaluated).${NC}\n"
 else
   echo -e "  ${YELLOW}[SKIP] group-apps.conf not found.${NC}\n"
+fi
+
+echo -e "${BOLD}${CYAN}[5/5] Processing remote tasks and administrative commands...${NC}"
+if [ -f "${CONF_DIR}/remote-tasks.sh" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/remote-tasks.sh" 2>/dev/null || true
+  echo -e "  ${GREEN}[STATUS] remote-tasks.sh executed successfully.${NC}\n"
+else
+  echo -e "  ${YELLOW}[SKIP] remote-tasks.sh not found.${NC}\n"
 fi
 
 echo -e "${BOLD}${GREEN}======================================================================${NC}"
