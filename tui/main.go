@@ -320,14 +320,31 @@ func triggerGitSync(repoDir string) tea.Cmd {
 // View Renderers (Full Window Responsive Containers)
 // ------------------------------------------------------------------------------
 func (m Model) View() string {
+	// 1. Terminal Window Size Guard (Minimum 80 cols x 20 lines)
+	minWidth := 80
+	minHeight := 20
+	if m.width < minWidth || m.height < minHeight {
+		warnTitle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(ColorError).
+			Render("⚠️  TERMINAL WINDOW SIZE TOO SMALL")
+
+		warnBody := lipgloss.NewStyle().
+			Foreground(ColorFg).
+			Render(fmt.Sprintf("\n  Current Size : %d columns × %d lines\n  Required Size: %d columns × %d lines\n\n  👉 Please maximize your terminal or expand the window to view the AD-DMS TUI.",
+				m.width, m.height, minWidth, minHeight))
+
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorError).
+			Padding(1, 2).
+			Render(warnTitle + "\n" + warnBody)
+
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	}
+
 	contentWidth := m.width - 4
-	if contentWidth < 40 {
-		contentWidth = 40
-	}
 	contentHeight := m.height - 4
-	if contentHeight < 15 {
-		contentHeight = 15
-	}
 
 	outerStyle := lipgloss.NewStyle().
 		Width(contentWidth).
@@ -343,7 +360,7 @@ func (m Model) View() string {
 	topBar := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorPrimary).
-		Render(fmt.Sprintf("🛡️  AD-DMS INTRANET CONTROL & MONITORING"))
+		Render("🛡️  AD-DMS INTRANET CONTROL & MONITORING")
 
 	metaBar := lipgloss.NewStyle().
 		Foreground(ColorFgMuted).
@@ -370,7 +387,7 @@ func (m Model) View() string {
 	// Bottom Navigation Bar
 	footerText := lipgloss.NewStyle().
 		Foreground(ColorFgMuted).
-		Render("[↑/↓/j/k] Navigate  •  [Enter] Select  •  [r] Refresh  •  [esc/b] Back  •  [q] Quit")
+		Render("[↑/↓/←/→] Navigate  •  [Enter] Select  •  [r] Refresh  •  [esc/b] Back  •  [q] Quit")
 
 	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, b.String(), "\n"+footerText))
 }
@@ -383,19 +400,17 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		Render("MODULE SELECTOR:")
 	b.WriteString(title + "\n\n")
 
-	// Calculate number of columns based on available terminal width
-	buttonMinWidth := 28
-	numCols := totalWidth / buttonMinWidth
-	if numCols < 1 {
-		numCols = 1
-	}
-	if numCols > 4 {
-		numCols = 4
+	// Calculate optimal columns (2 or 3 columns to prevent ugly line breaks)
+	numCols := 2
+	if totalWidth >= 110 {
+		numCols = 3
 	}
 
-	btnWidth := (totalWidth - (numCols * 2)) / numCols
-	if btnWidth < 22 {
-		btnWidth = 22
+	// Each button width accounting for borders (2px) and margins
+	spacing := 2
+	btnWidth := (totalWidth - (numCols-1)*spacing - 2) / numCols
+	if btnWidth < 32 {
+		btnWidth = 32
 	}
 
 	var renderedButtons []string
@@ -433,7 +448,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
 	}
 
-	// Render buttons into dynamic multi-column rows
+	// Render buttons into dynamic multi-column rows with clean spacing
 	for i := 0; i < len(renderedButtons); i += numCols {
 		end := i + numCols
 		if end > len(renderedButtons) {
@@ -444,7 +459,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		for j := i; j < end; j++ {
 			rowItems = append(rowItems, renderedButtons[j])
 			if j < end-1 {
-				rowItems = append(rowItems, " ")
+				rowItems = append(rowItems, "  ")
 			}
 		}
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, rowItems...) + "\n")
