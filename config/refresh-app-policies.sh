@@ -874,6 +874,33 @@ flatpak() {
 EOF
 chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
 echo -e "  -> ${GREEN}[ALIASES CONFIGURED]${NC} Premium CLI interceptors configured in /etc/profile.d/99-ad-dms-aliases.sh"
+
+# Ensure DMS auto-starts for any user in Niri (both in /etc/skel and all user profiles)
+for user_home in /etc/skel /home/*; do
+  [ -d "$user_home" ] || continue
+  niri_kdl="${user_home}/.config/niri/config.kdl"
+  if [ -f "$niri_kdl" ]; then
+    if ! grep -q 'spawn-at-startup "dms"' "$niri_kdl" && ! grep -q "spawn-at-startup \"dms\"" "$niri_kdl"; then
+      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_kdl"
+    fi
+  fi
+  # Autostart fallback desktop entry
+  mkdir -p "${user_home}/.config/autostart"
+  cat <<'DMS_AUTOS_EOF' > "${user_home}/.config/autostart/dms.desktop"
+[Desktop Entry]
+Type=Application
+Name=Dank Material Shell
+Exec=dms run
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+DMS_AUTOS_EOF
+  if [ "$user_home" != "/etc/skel" ]; then
+    u_name=$(basename "$user_home")
+    chown -R "${u_name}:" "${user_home}/.config/autostart" 2>/dev/null || true
+  fi
+done
+echo -e "  -> ${GREEN}[DMS AUTOSTART]${NC} Verified Dank Material Shell auto-launch configuration across all users & templates."
 echo -e "  ${GREEN}[STATUS] allowed-apps.conf synced successfully.${NC}\n"
 
 # ------------------------------------------------------------------------------

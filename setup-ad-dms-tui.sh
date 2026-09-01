@@ -471,6 +471,27 @@ deploy_presets() {
   rm -f "${target_home}/.config/niri/dms/outputs.kdl"
   rm -f "${target_home}/.config/niri/config.kdl.backup"*
 
+  # Ensure Niri automatically spawns DMS on session start for any user
+  local niri_conf="${target_home}/.config/niri/config.kdl"
+  if [ -f "$niri_conf" ]; then
+    if ! grep -q 'spawn-at-startup "dms"' "$niri_conf" && ! grep -q "spawn-at-startup \"dms\"" "$niri_conf"; then
+      # Add DMS autostart spawn line to niri config
+      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_conf"
+    fi
+  fi
+
+  # Also provide standard XDG desktop autostart entry for DMS as additional safeguard
+  mkdir -p "${target_home}/.config/autostart"
+  cat <<'AUTOS_EOF' > "${target_home}/.config/autostart/dms.desktop"
+[Desktop Entry]
+Type=Application
+Name=Dank Material Shell
+Exec=dms run
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+AUTOS_EOF
+
   if [ ! -d "${target_home}/.config/DankMaterialShell" ] && command -v dms &>/dev/null; then
     if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
       sudo -u "$target_user" dms setup 2>/dev/null || true
