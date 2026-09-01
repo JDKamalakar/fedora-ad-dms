@@ -942,6 +942,37 @@ else
 fi
 
 echo -e "${BOLD}${CYAN}[5/5] Processing remote tasks and administrative commands...${NC}"
+# Helper function for remote tasks execution with idempotency & hostname targeting
+TASK_LOG_DIR="/var/log/ad-dms-tasks"
+mkdir -p "$TASK_LOG_DIR"
+
+target_exec() {
+  local task_id="${1:-}"
+  local host_pattern="${2:-ALL}"
+  local task_cmd="${3:-}"
+
+  [ -z "$task_id" ] || [ -z "$task_cmd" ] && return 0
+
+  local task_marker="${TASK_LOG_DIR}/${task_id}.done"
+  if [ -f "$task_marker" ]; then
+    return 0
+  fi
+
+  local current_host
+  current_host=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "localhost")
+
+  # Host matching logic (case-insensitive substring or 'ALL')
+  if [ "$host_pattern" = "ALL" ] || echo "$current_host" | grep -qi -E "${host_pattern}"; then
+    echo -e "  -> ${YELLOW}[REMOTE TASK]${NC} Executing Task '${BOLD}${task_id}${NC}' on host '${current_host}'..."
+    if eval "$task_cmd"; then
+      touch "$task_marker"
+      echo -e "  -> ${GREEN}[TASK DONE]${NC} Task '${task_id}' executed and marked completed."
+    else
+      echo -e "  -> ${RED}[TASK FAILED]${NC} Task '${task_id}' failed with exit status $?."
+    fi
+  fi
+}
+
 if [ -f "${CONF_DIR}/remote-tasks.sh" ]; then
   # shellcheck source=/dev/null
   source "${CONF_DIR}/remote-tasks.sh" 2>/dev/null || true
