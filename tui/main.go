@@ -271,7 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, fetchClientsCmd(m.apiURL)
 
 		case "up", "k":
-			if m.view == ViewMain {
+			if m.view == ViewMain || m.view == ViewSafeEditor {
 				numCols := 2
 				if m.width >= 120 {
 					numCols = 3
@@ -284,22 +284,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
-			if m.view == ViewMain {
+			if m.view == ViewMain || m.view == ViewSafeEditor {
 				numCols := 2
 				if m.width >= 120 {
 					numCols = 3
 				}
-				if m.cursor+numCols < len(m.menuItems) {
+				maxItems := len(m.menuItems)
+				if m.view == ViewSafeEditor {
+					maxItems = 7
+				}
+				if m.cursor+numCols < maxItems {
 					m.cursor += numCols
-				} else if m.cursor < len(m.menuItems)-1 {
-					m.cursor = len(m.menuItems) - 1
+				} else if m.cursor < maxItems-1 {
+					m.cursor = maxItems - 1
 				}
 			} else {
 				maxIndex := len(m.menuItems) - 1
 				if m.view == ViewMonitor {
 					maxIndex = 2
-				} else if m.view == ViewSafeEditor {
-					maxIndex = 6
 				}
 				if m.cursor < maxIndex {
 					m.cursor++
@@ -307,12 +309,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "left", "h":
-			if m.view == ViewMain && m.cursor > 0 {
+			if (m.view == ViewMain || m.view == ViewSafeEditor || m.view == ViewMonitor) && m.cursor > 0 {
 				m.cursor--
 			}
 
 		case "right", "l":
 			if m.view == ViewMain && m.cursor < len(m.menuItems)-1 {
+				m.cursor++
+			} else if m.view == ViewSafeEditor && m.cursor < 6 {
+				m.cursor++
+			} else if m.view == ViewMonitor && m.cursor < 2 {
 				m.cursor++
 			}
 
@@ -487,7 +493,7 @@ func (m Model) View() string {
 	var descText string
 	if m.view == ViewMain {
 		cur := m.menuItems[m.cursor]
-		descText = fmt.Sprintf("ℹ️  %s %s  —  %s", cur.Icon, cur.Name, cur.Desc)
+		descText = cur.Desc
 	} else if m.view == ViewSafeEditor {
 		editorFiles := []struct {
 			name string
@@ -503,18 +509,18 @@ func (m Model) View() string {
 		}
 		if m.cursor >= 0 && m.cursor < len(editorFiles) {
 			f := editorFiles[m.cursor]
-			descText = fmt.Sprintf("📝 %s  —  %s (Auto 20-backup / 7-day retention on save)", f.name, f.desc)
+			descText = fmt.Sprintf("%s (Auto 20-backup / 7-day retention engine active)", f.desc)
 		} else {
-			descText = "📝 Safe Configuration Editor: Auto-creates backups before editing files"
+			descText = "Auto-creates timestamped backups before editing files"
 		}
 	} else if m.view == ViewMonitor {
-		descText = "📊 Workstation Telemetry: Press [r] to refresh ping status • Active filter is highlighted"
+		descText = "Workstation Telemetry: Press [r] to refresh ping status • Active filter is highlighted"
 	} else if m.view == ViewScreenshot {
-		descText = "📸 Screen Capture: Grabs live display without notifying student and displays on host"
+		descText = "Screen Capture: Grabs live display without notifying student and displays on host"
 	} else if m.view == ViewHistory {
-		descText = "📜 Enrollment Audit: Chronological history of all workstations registered in domain"
+		descText = "Enrollment Audit: Chronological history of all workstations registered in domain"
 	} else {
-		descText = "⚡ Remote Tasks: Dispatch bash scripts or management tasks across network nodes"
+		descText = "Remote Tasks: Dispatch bash scripts or management tasks across network nodes"
 	}
 
 	descBox := lipgloss.NewStyle().
@@ -617,34 +623,41 @@ func (m Model) renderMainMenu(totalWidth int) string {
 func (m Model) renderMonitorView(totalWidth int) string {
 	var b strings.Builder
 
-	filterTitle := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).Render("WORKSTATION STATUS: ")
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(m.theme.Primary).
+		Render("WORKSTATION TELEMETRY & LAB MATRIX")
+	b.WriteString(title + "\n\n")
+
 	filters := []string{"[1] All Devices", "[2] Active Only", "[3] Inactive Only"}
 	var filterBadges []string
 
 	for i, f := range filters {
-		isActive := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
-		if isActive {
+		isSelected := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
+		if isSelected {
 			badge := lipgloss.NewStyle().
+				Width(24).
 				Bold(true).
 				Foreground(m.theme.Accent).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(m.theme.Accent).
-				Padding(0, 1).
+				Align(lipgloss.Center).
 				Render("► " + f + " ◄")
 			filterBadges = append(filterBadges, badge)
 		} else {
 			badge := lipgloss.NewStyle().
+				Width(24).
 				Foreground(m.theme.Primary).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(m.theme.Border).
-				Padding(0, 1).
+				Align(lipgloss.Center).
 				Render(f)
 			filterBadges = append(filterBadges, badge)
 		}
 	}
 
-	filterBar := filterTitle + strings.Join(filterBadges, "   ")
-	b.WriteString(filterBar + "\n\n")
+	filterRow := lipgloss.JoinHorizontal(lipgloss.Top, filterBadges...)
+	b.WriteString(filterRow + "\n\n")
 
 	// Table Header
 	tblHeader := fmt.Sprintf("┌──────────────────┬─────────────────┬──────────────────────┬─────────────┬─────────────────────┐\n"+
