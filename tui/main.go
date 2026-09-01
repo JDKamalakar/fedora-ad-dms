@@ -181,18 +181,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, fetchClientsCmd(m.apiURL)
 
 		case "up", "k":
-			if m.cursor > 0 {
+			if m.view == ViewMain {
+				if m.cursor >= 2 {
+					m.cursor -= 2
+				}
+			} else if m.cursor > 0 {
 				m.cursor--
 			}
 
 		case "down", "j":
-			maxIndex := len(m.menuItems) - 1
-			if m.view == ViewMonitor {
-				maxIndex = 2
-			} else if m.view == ViewSafeEditor {
-				maxIndex = 6
+			if m.view == ViewMain {
+				if m.cursor+2 < len(m.menuItems) {
+					m.cursor += 2
+				} else if m.cursor < len(m.menuItems)-1 {
+					m.cursor = len(m.menuItems) - 1
+				}
+			} else {
+				maxIndex := len(m.menuItems) - 1
+				if m.view == ViewMonitor {
+					maxIndex = 2
+				} else if m.view == ViewSafeEditor {
+					maxIndex = 6
+				}
+				if m.cursor < maxIndex {
+					m.cursor++
+				}
 			}
-			if m.cursor < maxIndex {
+
+		case "left", "h":
+			if m.view == ViewMain && m.cursor > 0 {
+				m.cursor--
+			}
+
+		case "right", "l":
+			if m.view == ViewMain && m.cursor < len(m.menuItems)-1 {
 				m.cursor++
 			}
 
@@ -354,11 +376,6 @@ func (m Model) View() string {
 }
 
 func (m Model) renderMainMenu(totalWidth int) string {
-	cardWidth := totalWidth - 4
-	if cardWidth < 30 {
-		cardWidth = 30
-	}
-
 	var b strings.Builder
 	title := lipgloss.NewStyle().
 		Bold(true).
@@ -366,27 +383,35 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		Render("SELECT MANAGEMENT MODULE:")
 	b.WriteString(title + "\n\n")
 
+	// Calculate 2-column card width
+	colWidth := (totalWidth - 6) / 2
+	if colWidth < 30 {
+		colWidth = 30
+	}
+
+	var renderedCards []string
+
 	for i, item := range m.menuItems {
 		isSelected := m.cursor == i
 
-		// Container Button Style
-		var boxStyle lipgloss.Style
+		var cardStyle lipgloss.Style
 		if isSelected {
-			boxStyle = lipgloss.NewStyle().
-				Width(cardWidth).
+			cardStyle = lipgloss.NewStyle().
+				Width(colWidth).
+				Height(4).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorAccent).
 				Padding(0, 1).
 				Bold(true)
 		} else {
-			boxStyle = lipgloss.NewStyle().
-				Width(cardWidth).
-				Border(lipgloss.NormalBorder()).
+			cardStyle = lipgloss.NewStyle().
+				Width(colWidth).
+				Height(4).
+				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1)
 		}
 
-		icon := item.Icon
 		keyBadge := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorPrimary).
@@ -396,14 +421,31 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		if isSelected {
 			nameStyle = nameStyle.Foreground(ColorAccent)
 		}
-		nameStr := nameStyle.Render(item.Name)
+		titleLine := fmt.Sprintf("%s %s %s", keyBadge, item.Icon, nameStyle.Render(item.Name))
 
-		descStr := lipgloss.NewStyle().
-			Foreground(ColorFgMuted).
-			Render(item.Desc)
+		var descLine string
+		if isSelected {
+			descLine = lipgloss.NewStyle().
+				Foreground(ColorFgMuted).
+				Render("↳ " + item.Desc)
+		} else {
+			descLine = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("8")).
+				Render("  " + item.Desc)
+		}
 
-		lineContent := fmt.Sprintf("%s %s %s  -  %s", keyBadge, icon, nameStr, descStr)
-		b.WriteString(boxStyle.Render(lineContent) + "\n")
+		cardContent := fmt.Sprintf("%s\n%s", titleLine, descLine)
+		renderedCards = append(renderedCards, cardStyle.Render(cardContent))
+	}
+
+	// Pair cards into 2-column rows
+	for i := 0; i < len(renderedCards); i += 2 {
+		if i+1 < len(renderedCards) {
+			row := lipgloss.JoinHorizontal(lipgloss.Top, renderedCards[i], "  ", renderedCards[i+1])
+			b.WriteString(row + "\n")
+		} else {
+			b.WriteString(renderedCards[i] + "\n")
+		}
 	}
 
 	return b.String()
