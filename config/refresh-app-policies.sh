@@ -942,9 +942,72 @@ else
 fi
 
 echo -e "${BOLD}${CYAN}[5/5] Processing remote tasks and administrative commands...${NC}"
-# Helper function for remote tasks execution with idempotency & hostname targeting
-TASK_LOG_DIR="/var/log/ad-dms-tasks"
-mkdir -p "$TASK_LOG_DIR"
+# Built-in High-Level Helper Functions for Simple One-Line Remote Tasks
+remove_software() {
+  for item in "$@"; do
+    echo "  -> [REMOTE] Uninstalling: $item"
+    dnf remove -y "$item" 2>/dev/null || true
+    flatpak uninstall -y --system "$item" 2>/dev/null || true
+    for udir in /home/*; do
+      [ -d "$udir" ] || continue
+      local uname
+      uname=$(basename "$udir")
+      su - "$uname" -c "flatpak uninstall -y --user '$item'" 2>/dev/null || true
+    done
+  done
+}
+
+delete_folder() {
+  local target_subpath="$1"
+  for udir in /home/* /root; do
+    [ -d "$udir" ] || continue
+    local full_target="${udir}/${target_subpath#/}"
+    if [ -e "$full_target" ]; then
+      echo "  -> [REMOTE] Deleting: $full_target"
+      rm -rf "$full_target" 2>/dev/null || true
+    fi
+  done
+}
+
+clean_user_homes() {
+  local pattern="${1:-lab}"
+  for udir in /home/*; do
+    [ -d "$udir" ] || continue
+    local uname
+    uname=$(basename "$udir")
+    if echo "$uname" | grep -iq -E "$pattern"; then
+      echo "  -> [REMOTE] Wiping home files for: $udir"
+      rm -rf "${udir:?}"/* "${udir:?}"/.[!.]* 2>/dev/null || true
+    fi
+  done
+}
+
+delete_non_admin_users() {
+  echo "  -> [REMOTE] Purging non-admin cached users and home directories..."
+  for udir in /home/*; do
+    [ -d "$udir" ] || continue
+    local uname
+    uname=$(basename "$udir")
+    # Preserve local admins, root, and Domain Admins
+    if [ "$uname" = "root" ] || [ "$uname" = "admin" ] || id -nG "$uname" 2>/dev/null | grep -q -E '(wheel|Domain Admins|domain admins)'; then
+      echo "  -> [PRESERVED ADMIN] Skipping: $uname"
+      continue
+    fi
+    echo "  -> [USER PURGE] Deleting non-admin user & data: $uname"
+    userdel -r -f "$uname" 2>/dev/null || rm -rf "$udir" 2>/dev/null || true
+  done
+  # Clear SSSD cache
+  if command -v sss_cache &>/dev/null; then
+    sss_cache -E 2>/dev/null || true
+  fi
+}
+
+restart_services() {
+  for s in "$@"; do
+    echo "  -> [REMOTE] Restarting service: $s"
+    systemctl restart "$s" 2>/dev/null || true
+  done
+}
 
 target_exec() {
   local task_id="${1:-}"

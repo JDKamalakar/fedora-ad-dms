@@ -1,68 +1,62 @@
 #!/usr/bin/env bash
-# Remote Task Engine
-# Usage: target_exec "TASK_UNIQUE_ID" "HOSTNAME_PATTERN_OR_ALL" "COMMAND_TO_RUN"
+# ==============================================================================
+# AD-DMS Automated Remote Task Engine (config/remote-tasks.sh)
+# ==============================================================================
+# This script is executed during policy refresh (via 'refresh' or background timer).
+#
+# QUICK SYNTAX:
+#   target_exec "UNIQUE_TASK_ID" "HOSTNAME_PATTERN_OR_ALL" 'COMMAND_OR_HELPER'
+#
+# AVAILABLE BUILT-IN SIMPLE HELPERS:
+#   1. delete_folder ".config/DankMaterialShell/plugins/protonVPN"
+#      -> Deletes the specified path from ALL user home directories & root.
+#
+#   2. remove_software "protonvpn-gui" "com.protonvpn.www" "steam"
+#      -> Uninstalls DNF RPMs, system flatpaks, and per-user flatpaks in 1 call.
+#
+#   3. delete_non_admin_users
+#      -> Safely removes all cached lab users and wipes their home data,
+#         preserving 'root', 'admin', 'wheel', and 'Domain Admins' accounts.
+#
+#   4. clean_user_homes "lab"
+#      -> Wipes files in /home/<user> for users whose names contain "lab"
+#
+#   5. restart_services "sssd" "greetd"
+#      -> Restarts specified systemd services cleanly.
+# ==============================================================================
+
 
 # ==============================================================================
-# EXAMPLE 1: Target ALL Lab Hosts (Matches any hostname containing "LAB")
-# Cleans temp files & wipes home folders of local/cached users containing "LAB"
+# EXAMPLES & TEMPLATES (Uncomment any task below to activate it)
 # ==============================================================================
-# target_exec "task_2026_08_01_clean_all_labs" "LAB" '
-#   echo "Running global lab cleanup on $(hostname)..."
-  
-#   # 1. Clear temp directories
+
+# --- Example 1: Remove DMS protonVPN plugin & uninstall ProtonVPN on ALL computers
+# target_exec "task_2026_09_01_purge_pvpn" "ALL" '
+#   delete_folder ".config/DankMaterialShell/plugins/protonVPN"
+#   remove_software "proton-vpn-gnome-desktop" "protonvpn-cli" "com.protonvpn.www"
+# '
+
+# --- Example 2: Wipe all non-admin user accounts across ALL LAB computers
+# target_exec "task_2026_09_01_wipe_all_lab_users" "LAB" '
+#   delete_non_admin_users
+# '
+
+# --- Example 3: Wipe all non-admin user accounts on a SPECIFIC LAB (OS Lab only)
+# target_exec "task_2026_09_01_wipe_oslab_users" "GSFCUOSLAB" '
+#   delete_non_admin_users
+# '
+
+# --- Example 4: Wipe temporary files across ALL machines
+# target_exec "task_2026_09_01_clean_temp" "ALL" '
 #   rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
-
-#   # 2. Find and clean user home folders containing "lab" (case-insensitive)
-#   for user_dir in /home/*; do
-#     dir_name=$(basename "$user_dir")
-#     if echo "$dir_name" | grep -iq "lab"; then
-#       echo "Cleaning lab user directory: $user_dir"
-#       rm -rf "${user_dir:?}"/* "${user_dir:?}"/.* 2>/dev/null || true
-#     fi
-#   done
 # '
 
-# ==============================================================================
-# EXAMPLE 2: Target a SINGLE Specific Lab (e.g., Operating Systems Lab ONLY)
-# Runs maintenance exclusively on machines with "GSFCUOSLAB" in their hostname
-# ==============================================================================
-# target_exec "task_2026_08_02_clean_oslab_only" "GSFCUOSLAB" '
-#   echo "Running OS Lab specific maintenance on $(hostname)..."
-  
-#   # Example: Clear greeter caches and reboot SSSD on OS Lab machines
-#   rm -rf /var/cache/dms-greeter/*
-#   systemctl restart sssd
+# --- Example 5: Restart SSSD and reload auth on AI Lab computers
+# target_exec "task_2026_09_01_reload_sssd_ailab" "GSFCUAILAB" '
+#   restart_services sssd
 # '
 
-# ==============================================================================
-# ACTIVE TASK: Remove protonVPN Plugin & Uninstall ProtonVPN across ALL Hosts
-# ==============================================================================
-target_exec "task_2026_09_01_purge_pvpn" "ALL" '
-  echo "Executing ProtonVPN removal and plugin purge on $(hostname)..."
-
-  # 1. Kill any active protonvpn processes
-  pkill -f -9 protonvpn 2>/dev/null || true
-  pkill -f -9 proton-vpn 2>/dev/null || true
-
-  # 2. Remove DMS protonVPN plugin directory across ALL user home folders and root
-  for user_dir in /home/* /root; do
-    if [ -d "$user_dir/.config/DankMaterialShell/plugins/protonVPN" ]; then
-      echo "  -> Removing plugin from: $user_dir/.config/DankMaterialShell/plugins/protonVPN"
-      rm -rf "$user_dir/.config/DankMaterialShell/plugins/protonVPN"
-    fi
-  done
-
-  # 3. Uninstall native ProtonVPN RPMs / DNF packages if present
-  echo "  -> Purging native ProtonVPN DNF packages..."
-  dnf remove -y proton-vpn-gnome-desktop protonvpn-cli protonvpn-gui "protonvpn*" 2>/dev/null || true
-
-  # 4. Uninstall ProtonVPN Flatpaks if installed (system & user scopes)
-  echo "  -> Purging ProtonVPN Flatpaks..."
-  flatpak uninstall -y --system com.protonvpn.www 2>/dev/null || true
-  for user_dir in /home/*; do
-    username=$(basename "$user_dir")
-    su - "$username" -c "flatpak uninstall -y --user com.protonvpn.www" 2>/dev/null || true
-  done
-
-  echo "  -> [SUCCESS] ProtonVPN packages and DMS plugin purged."
-'
+# --- Example 6: Clean files for a specific student account on PL Lab
+# target_exec "task_2026_09_01_clean_student_23" "GSFCUPLLAB" '
+#   rm -rf /home/23bca032/* /home/23bca032/.[!.]* 2>/dev/null || true
+# '
