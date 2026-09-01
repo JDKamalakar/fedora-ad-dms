@@ -571,24 +571,23 @@ func (m Model) View() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, fullUI)
 }
 
-func (m Model) renderMainMenu(totalWidth int) string {
+func (m Model) renderMainMenu(contentWidth int) string {
 	var b strings.Builder
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(m.theme.Primary).
 		Render("MODULE SELECTOR")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
+	b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(title) + "\n\n")
 
-	// Calculate 2 or 3 columns
+	// Calculate 2 or 3 columns with fixed button sizes
 	numCols := 2
-	if totalWidth >= 120 {
+	if contentWidth >= 115 {
 		numCols = 3
 	}
 
-	// Calculate fixed button width to avoid border distortion
-	btnWidth := (totalWidth - 6 - (numCols-1)*2) / numCols
-	if btnWidth < 34 {
-		btnWidth = 34
+	btnWidth := 34
+	if contentWidth >= 115 {
+		btnWidth = 33
 	}
 
 	var renderedButtons []string
@@ -625,7 +624,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
 	}
 
-	// Render buttons in clean rows centered
+	// Render buttons in centered rows
 	for i := 0; i < len(renderedButtons); i += numCols {
 		end := i + numCols
 		if end > len(renderedButtons) {
@@ -640,7 +639,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 			}
 		}
 		rowStr := lipgloss.JoinHorizontal(lipgloss.Top, rowItems...)
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(rowStr) + "\n")
+		b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(rowStr) + "\n")
 	}
 
 	return b.String()
@@ -812,13 +811,13 @@ func (m Model) renderScreenshotView(totalWidth int) string {
 	return b.String()
 }
 
-func (m Model) renderSafeEditorView(totalWidth int) string {
+func (m Model) renderSafeEditorView(contentWidth int) string {
 	var b strings.Builder
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(m.theme.Primary).
 		Render("SAFE CONFIGURATION EDITOR")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
+	b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(title) + "\n\n")
 
 	files := []struct {
 		name string
@@ -834,13 +833,13 @@ func (m Model) renderSafeEditorView(totalWidth int) string {
 	}
 
 	numCols := 2
-	if totalWidth >= 120 {
+	if contentWidth >= 115 {
 		numCols = 3
 	}
 
-	btnWidth := (totalWidth - 6 - (numCols-1)*2) / numCols
-	if btnWidth < 34 {
-		btnWidth = 34
+	btnWidth := 34
+	if contentWidth >= 115 {
+		btnWidth = 33
 	}
 
 	var renderedButtons []string
@@ -891,7 +890,7 @@ func (m Model) renderSafeEditorView(totalWidth int) string {
 			}
 		}
 		rowStr := lipgloss.JoinHorizontal(lipgloss.Top, rowItems...)
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(rowStr) + "\n")
+		b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(rowStr) + "\n")
 	}
 
 	return b.String()
