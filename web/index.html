@@ -56,6 +56,12 @@
           <span class="nav-label">Hardware Locks</span>
         </button>
 
+        <button class="m3-nav-item" data-tab="workstations" id="navWorkstations">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">screen_share</span>
+          <span class="nav-label">Lab Monitor</span>
+        </button>
+
         <button class="m3-nav-item" data-tab="groupapps" id="navGroupApps">
           <div class="nav-state-layer"></div>
           <span class="material-symbols-rounded nav-icon">apps</span>
@@ -409,6 +415,42 @@
               <span class="material-symbols-rounded">play_circle</span>
               <span>Test Audio Playback</span>
             </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: WORKSTATIONS & SCREEN MONITOR -->
+      <section class="tab-pane" id="pane-workstations">
+        <div class="m3-card table-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">monitor</span>
+              <h3>Intranet Workstations & Live Screen Capture</h3>
+            </div>
+            <div class="table-actions">
+              <button class="m3-button secondary small" onclick="loadLiveConfigs()">
+                <span class="material-symbols-rounded">refresh</span> Refresh List
+              </button>
+            </div>
+          </div>
+
+          <div class="m3-table-wrapper">
+            <table class="m3-table" id="workstationsTable">
+              <thead>
+                <tr>
+                  <th>Hostname</th>
+                  <th>IP Address</th>
+                  <th>Active User</th>
+                  <th>Session Type</th>
+                  <th>Status</th>
+                  <th>Last Seen</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="workstationsBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
           </div>
         </div>
       </section>

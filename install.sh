@@ -18,11 +18,16 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-PRIMARY_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main"
 API_PRESETS_URL="https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
 WORK_DIR="/tmp/fedora-ad-dms"
 
-echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V3.0...${NC}"
+# Intranet Host Discovery (Hostname/mDNS first, then fallback IP)
+INTRANET_HOST="${INTRANET_HOST:-GSFCUPLLAB203}"
+INTRANET_IP="${INTRANET_IP:-10.205.18.253}"
+INTRANET_PORT="${INTRANET_PORT:-8080}"
+
+echo -e "${CYAN}🚀 Initializing AD-DMS Installer Bootstrapper V3.0 (Intranet & Cloud Hybrid)...${NC}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/presets" "$WORK_DIR/config"
 cd "$WORK_DIR"
@@ -31,21 +36,34 @@ fetch_file() {
   local file="$1"
   local required="${2:-true}"
   
-  # Ensure target local sub-directory exists before curl writes
   mkdir -p "$(dirname "${file}")"
+  echo -n -e "  -> Fetching ${file}... "
 
-  echo -n -e "  -> Downloading ${file}... "
-  if curl -fsSL "${PRIMARY_URL}/${file}" -o "${file}" 2>/dev/null; then
-    echo -e "${GREEN}[OK]${NC}"
+  # 1. Try Intranet Host via Hostname / mDNS
+  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/${file}" -o "${file}" 2>/dev/null; then
+    echo -e "${GREEN}[OK] (Intranet Host: ${INTRANET_HOST})${NC}"
+    return 0
+  fi
+
+  # 2. Try Intranet Host via Backup IP
+  if [ -n "$INTRANET_IP" ] && curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${file}" 2>/dev/null; then
+    echo -e "${GREEN}[OK] (Intranet IP: ${INTRANET_IP})${NC}"
+    return 0
+  fi
+
+  # 3. Fallback to GitHub Raw CDN
+  if curl -fsSL "${GITHUB_RAW_URL}/${file}?$(date +%s)" -o "${file}" 2>/dev/null; then
+    echo -e "${GREEN}[OK] (GitHub Cloud)${NC}"
+    return 0
+  fi
+
+  if [ "$required" = "true" ]; then
+    echo -e "${RED}[FAILED]${NC}"
+    echo -e "${RED}[ERROR] Critical file missing: '${file}'${NC}" >&2
+    exit 1
   else
-    if [ "$required" = "true" ]; then
-      echo -e "${RED}[FAILED]${NC}"
-      echo -e "${RED}[ERROR] Critical file missing: '${file}'${NC}" >&2
-      exit 1
-    else
-      echo -e "${YELLOW}[SKIP] (Optional component missing)${NC}"
-      rm -f "${file}" 2>/dev/null || true
-    fi
+    echo -e "${YELLOW}[SKIP] (Optional)${NC}"
+    rm -f "${file}" 2>/dev/null || true
   fi
 }
 
@@ -95,4 +113,14 @@ chmod +x setup-ad-dms-tui.sh
 [ -f config/remote-tasks.sh ] && chmod +x config/remote-tasks.sh
 
 echo -e "${GREEN}[OK] Handing over execution to setup-ad-dms-tui.sh...${NC}\n"
+
+# Report installation event to Intranet Host (if reachable)
+(
+  CUR_HOST=$(hostname -s 2>/dev/null || echo "FEDORA-NODE")
+  CUR_USER="${SUDO_USER:-root}"
+  curl -s -m 2 -X POST "http://${INTRANET_HOST}:${INTRANET_PORT}/api/register-install" \
+    -H "Content-Type: application/json" \
+    -d "{\"hostname\": \"${CUR_HOST}\", \"user\": \"${CUR_USER}\"}" &>/dev/null || true
+) &>/dev/null || true
+
 exec ./setup-ad-dms-tui.sh "$@"

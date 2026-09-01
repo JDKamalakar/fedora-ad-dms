@@ -53,6 +53,10 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 
 | Feature | Description |
 | :--- | :--- |
+| **🌐 Intranet Primary Server** | Prioritizes local intranet host (`GSFCUPLLAB203` / `10.205.18.253`) for instant updates with automated GitHub fallback. |
+| **📟 Interactive 'remote' TUI** | pVPN-inspired terminal monitor for lab filtering, live status, instant screen capture, and safe file edits. |
+| **📸 Instant Screen Capture** | Grabs client screenshot over intranet via DMS/Plasma (`dms screenshot full ...` / `spectacle`). |
+| **💾 20-Backup Retention Engine** | Automatically creates backups on edit (max 20 over 7 days, retains last 3 if older than 15 days). |
 | **🚀 Automated Bootstrapper** | Downloads and provisions domain configs, scripts, presets, and dependencies via a single command. |
 | **🏢 Zero-Touch AD Join** | Configures NetworkManager DNS, Kerberos (`krb5.conf`), and SSSD for institutional domains (`gsfcu.local`). |
 | **🎨 DMS Presets & Custom Themes** | Auto-unpacks and configures Dank Material Shell, Niri, Kitty terminal, and custom desktop sessions. |
@@ -62,17 +66,43 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 | **🔊 Siren Alarm & Volume Lock** | Plays `Siren.mp3` at **100% Volume** when user policy violations exceed 3 infractions. |
 | **💡 Hardware Governance** | Background timer forces **100% Brightness** and **100% Sound** every 5 minutes (`device-rules.conf`). |
 | **📊 User Infraction Tracker** | Secure per-user tracking via `violation <user> --get` and `violation <user> --set <n>`. |
-| **🔄 Self-Updating Policy Engine** | Running `refresh` updates rules, timer intervals, and remote tasks directly from GitHub. |
+| **🔄 Self-Updating Policy Engine** | Running `refresh` updates rules, timer intervals, and remote tasks directly from host/GitHub. |
 | **🌐 Material 3 Web Dashboard** | Local animated web dashboard adhering to Google Material 3 Expressive guidelines. |
 | **🔑 Domain Admin Polkit Auth** | Allows AD `Domain Admins` to authenticate against GUI elevation dialogs alongside local `wheel` admins. |
 
 ---
 
-## 🌐 Material 3 Expressive Web Control Center
+## 📟 Interactive Remote & Monitoring TUI (`remote`)
 
-A modern, animated, Google Material 3 Expressive web application is included to manage domain configurations, policy lists, hardware locks, and violation records locally.
+The repository includes a dedicated interactive terminal utility inspired by the **pVPN TUI** interface:
 
-### Launching the Dashboard:
+```bash
+# Launch the Interactive Monitoring & Governance TUI
+./remote
+```
+
+### Key Capabilities:
+* **📊 Live Workstation Scanner & Lab Filtering**:
+  * Filter views: `[1] All Registered Devices`, `[2] Active (Online) Devices`, `[3] Inactive (Offline) Devices`.
+  * Groups devices by academic lab prefix (`GSFCUOSLAB`, `GSFCUPLLAB`, `GSFCUDSLAB`, etc.).
+  * Shows hostname, IP address, logged-in user, session type, online status, and timestamp.
+  * Live refresh without exiting by pressing `r`.
+* **📸 Instant Screen Capture**:
+  * Select any target workstation to take a screenshot of the user's active session (`dms screenshot full --no-notify --no-clipboard --no-file` on Wayland/Niri or `spectacle` on Plasma) and display it directly on the host.
+* **📝 Safe Configuration Editor with Automated Backups**:
+  * Safely edit `domain.conf`, `blocked-apps.conf`, `allowed-apps.conf`, `compulsory-apps.conf`, `group-apps.conf`, `device-rules.conf`, and `remote-tasks.sh`.
+  * **Backup Retention Rule**: Automatically preserves up to 20 backups over 7 days in `~/.ad-dms-backups/` and prunes older versions (retaining 3 backups if $>15$ days).
+  * Validates script syntax on save.
+* **⚡ Targeted Remote Command Execution**:
+  * Dispatch commands to single machines, entire lab groups, or all workstations.
+
+---
+
+## 🌐 Intranet Primary Server & Web Control Center
+
+A modern, animated, Google Material 3 Expressive web application is included to manage domain configurations, policy lists, hardware locks, live device telemetry, and violation records locally.
+
+### Launching the Host Server:
 ```bash
 ./start-dashboard.sh
 ```

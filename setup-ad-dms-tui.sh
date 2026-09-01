@@ -246,6 +246,21 @@ fi
 REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
 CONF_DIR="/etc/ad-dms"
 
+# Load local domain configuration if present to discover intranet host
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
 fi
@@ -255,7 +270,7 @@ if [ ! -t 1 ]; then
   exec >> /var/log/ad-dms-refresh.log 2>&1
   echo "=== Policy Sync Started: $(date) ==="
 else
-  echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files from GitHub...\033[0m"
+  echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files (Intranet First & GitHub Fallback)...\033[0m"
 fi
 
 mkdir -p "$CONF_DIR"
@@ -273,12 +288,25 @@ FILES=(
 )
 
 for file in "${FILES[@]}"; do
-  [ -t 1 ] && echo -n -e "  -> Downloading remote file: ${file}... "
-  # Try config/ subfolder first, then repo root fallback
-  if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
-  else
-    [ -t 1 ] && echo -e "\033[1;33m[SKIP / UNCHANGED]\033[0m"
+  [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
+  fetched=false
+
+  # 1. Try Intranet Host via Hostname
+  if [ "$USE_INTRANET" = "yes" ] && curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+    [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host)\033[0m"
+    fetched=true
+  # 2. Try Intranet Host via Fallback IP
+  elif [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ] && (curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null); then
+    [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP)\033[0m"
+    fetched=true
+  # 3. Fallback to GitHub Cloud CDN
+  elif curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+    [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+    fetched=true
+  fi
+
+  if [ "$fetched" = false ]; then
+    [ -t 1 ] && echo -e "\033[1;33m[UNCHANGED / OFFLINE]\033[0m"
   fi
 done
 
@@ -286,7 +314,7 @@ done
 mkdir -p "${CONF_DIR}/assets"
 if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
   [ -t 1 ] && echo -n -e "  -> Downloading security asset: Siren.mp3... "
-  if curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
+  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
     [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
   else
     [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"

@@ -1,31 +1,61 @@
 #!/usr/bin/env python3
 """
-AD-DMS Web Server & Configuration API Backend
-Serves Material 3 Expressive UI and provides direct read/write REST endpoints
-for live configuration files and git operations.
+AD-DMS Intranet Host Server & Monitoring Backend
+- Serves repository configs, scripts, and preset archives over intranet HTTP.
+- Provides Heartbeat Telemetry & Auto-Registration (/api/heartbeat, /api/register-install).
+- Manages Remote Commands & Instant Screen Capture queue (/api/command/poll, /api/screenshot/upload).
+- Powers the Material 3 Web Control Center & CLI TUI backend.
 """
 
 import http.server
 import json
 import os
 import subprocess
+import time
 import urllib.parse
+from datetime import datetime
 from pathlib import Path
 
 PORT = 8080
 REPO_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = REPO_DIR / "config"
 WEB_DIR = REPO_DIR / "web"
+LOGS_DIR = REPO_DIR / "data"
+LOGS_DIR.mkdir(exist_ok=True)
+
+CLIENTS_FILE = LOGS_DIR / "clients.json"
+COMMANDS_FILE = LOGS_DIR / "pending_commands.json"
+SCREENSHOTS_DIR = LOGS_DIR / "screenshots"
+SCREENSHOTS_DIR.mkdir(exist_ok=True)
+
+def load_clients():
+    if CLIENTS_FILE.exists():
+        try:
+            return json.loads(CLIENTS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_clients(data):
+    CLIENTS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+def load_commands():
+    if COMMANDS_FILE.exists():
+        try:
+            return json.loads(COMMANDS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_commands(data):
+    COMMANDS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def parse_split_conf(file_path):
-    """Parses a conf file with DNF (top) and Flatpak (bottom) sections."""
     dnf_list = []
     flatpak_list = []
     mode = "dnf"
-    
     if not file_path.exists():
         return {"dnf": dnf_list, "flatpak": flatpak_list}
-        
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -38,11 +68,9 @@ def parse_split_conf(file_path):
                 dnf_list.append(line)
             else:
                 flatpak_list.append(line)
-                
     return {"dnf": dnf_list, "flatpak": flatpak_list}
 
 def save_split_conf(file_path, dnf_list, flatpak_list, top_header):
-    """Writes back DNF and Flatpak sections to a conf file."""
     lines = [
         "# ==============================================================================",
         f"# {top_header} (Top Section)",
@@ -64,7 +92,6 @@ def save_split_conf(file_path, dnf_list, flatpak_list, top_header):
         if f.strip():
             lines.append(f.strip())
     lines.append("")
-    
     with open(file_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -103,6 +130,12 @@ def save_domain_conf(data):
         '',
         f'# System Timezone',
         f'SYSTEM_TIMEZONE="{data.get("SYSTEM_TIMEZONE", "Asia/Kolkata")}"',
+        '',
+        f'# Intranet Primary Server Configuration',
+        f'USE_INTRANET_FIRST="{data.get("USE_INTRANET_FIRST", "yes")}"',
+        f'INTRANET_HOST_NAME="{data.get("INTRANET_HOST_NAME", "GSFCUPLLAB203")}"',
+        f'INTRANET_FALLBACK_IP="{data.get("INTRANET_FALLBACK_IP", "10.205.18.253")}"',
+        f'INTRANET_PORT="{data.get("INTRANET_PORT", "8080")}"',
         '',
         f'# Blocked Software Notification Message',
         f'BLOCK_NOTIFICATION_TITLE="{data.get("BLOCK_NOTIFICATION_TITLE", "Unauthorized Application Blocked")}"',
@@ -218,18 +251,72 @@ def get_violations():
             records.append({"user": user, "count": count, "date": "Recorded on system"})
     return records
 
-class AD_DMS_Handler(http.server.SimpleHTTPRequestHandler):
+class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(WEB_DIR), **kwargs)
+        # Serve from REPO_DIR so intranet clients can fetch /config/*, /presets/*, /install.sh, etc.
+        super().__init__(*args, directory=str(REPO_DIR), **kwargs)
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
-        if url.path == "/api/all-data":
+        params = urllib.parse.parse_qs(url.query)
+
+        # 1. UI Root (redirects / or /index.html to /web/index.html)
+        if url.path in ["/", "/index.html"]:
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            
+            index_file = WEB_DIR / "index.html"
+            self.wfile.write(index_file.read_bytes())
+            return
+
+        # 2. Web UI static assets
+        if url.path.startswith("/web/") or url.path in ["/styles.css", "/app.js"]:
+            rel_name = url.path.replace("/web/", "").lstrip("/")
+            asset_path = WEB_DIR / rel_name
+            if asset_path.exists():
+                ctype = "text/css" if str(asset_path).endswith(".css") else "application/javascript" if str(asset_path).endswith(".js") else "text/html"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.end_headers()
+                self.wfile.write(asset_path.read_bytes())
+                return
+
+        # 3. Client Telemetry & Monitoring API
+        if url.path == "/api/clients":
+            clients = load_clients()
+            now = time.time()
+            # Mark active if heartbeat was within last 180 seconds (3 mins)
+            client_list = []
+            for hostname, info in clients.items():
+                last_seen = info.get("last_seen_ts", 0)
+                info["is_active"] = (now - last_seen) < 180
+                client_list.append(info)
+            self.send_json_response({"clients": client_list})
+            return
+
+        # 4. Client Poll for Remote Command or Screenshot Request
+        if url.path == "/api/command/poll":
+            hostname = params.get("host", [""])[0].upper()
+            commands = load_commands()
+            cmd_to_run = commands.pop(hostname, None)
+            if not cmd_to_run:
+                # Check wildcard 'ALL' or matching lab prefix
+                for target_pat, cmd in list(commands.items()):
+                    if target_pat == "ALL" or target_pat in hostname:
+                        cmd_to_run = cmd
+                        break
+            if cmd_to_run:
+                save_commands(commands)
+                self.send_json_response({"has_command": True, "command": cmd_to_run})
+            else:
+                self.send_json_response({"has_command": False})
+            return
+
+        # 5. Full Data for Web UI & TUI
+        if url.path == "/api/all-data":
+            clients = load_clients()
+            now = time.time()
+            active_count = sum(1 for c in clients.values() if (now - c.get("last_seen_ts", 0)) < 180)
             data = {
                 "domain": parse_domain_conf(),
                 "deviceRules": parse_device_rules(),
@@ -238,22 +325,103 @@ class AD_DMS_Handler(http.server.SimpleHTTPRequestHandler):
                 "compulsory": parse_split_conf(CONFIG_DIR / "compulsory-apps.conf"),
                 "labs": parse_lab_conf(),
                 "groupApps": parse_group_apps(),
-                "violations": get_violations()
+                "violations": get_violations(),
+                "clients_count": len(clients),
+                "active_clients_count": active_count
             }
-            self.wfile.write(json.dumps(data).encode("utf-8"))
+            self.send_json_response(data)
             return
 
+        # Fallback to standard file server for /config/*, /presets/*, /install.sh, /assets/*
         super().do_GET()
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else "{}"
+        body = self.rfile.read(content_length).decode("utf-8", errors="ignore") if content_length > 0 else "{}"
         try:
             req_data = json.loads(body)
         except Exception:
             req_data = {}
 
+        # 1. Client Heartbeat Telemetry
+        if url.path == "/api/heartbeat":
+            hostname = req_data.get("hostname", "UNKNOWN").upper()
+            ip = self.client_address[0]
+            clients = load_clients()
+            
+            clients[hostname] = {
+                "hostname": hostname,
+                "ip": req_data.get("ip", ip),
+                "active_user": req_data.get("active_user", "none"),
+                "session_type": req_data.get("session_type", "niri"),
+                "uptime": req_data.get("uptime", "unknown"),
+                "dms_version": req_data.get("dms_version", "installed"),
+                "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "last_seen_ts": time.time(),
+                "first_registered": clients.get(hostname, {}).get("first_registered", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            }
+            save_clients(clients)
+            self.send_json_response({"status": "ok", "ack": True})
+            return
+
+        # 2. Client Fresh Installation Registration & Notification
+        if url.path == "/api/register-install":
+            hostname = req_data.get("hostname", "UNKNOWN").upper()
+            ip = self.client_address[0]
+            user = req_data.get("user", "admin")
+            
+            clients = load_clients()
+            clients[hostname] = {
+                "hostname": hostname,
+                "ip": req_data.get("ip", ip),
+                "active_user": user,
+                "session_type": "niri",
+                "uptime": "0 min",
+                "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "last_seen_ts": time.time(),
+                "first_registered": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            save_clients(clients)
+
+            # Trigger host desktop notification if running in desktop environment
+            try:
+                subprocess.run([
+                    "notify-send", "-a", "AD-DMS Intranet", "-u", "normal",
+                    "🚀 New Workstation Enrolled",
+                    f"Host: {hostname}\nIP: {ip}\nUser: {user}"
+                ], check=False)
+            except Exception:
+                pass
+
+            self.send_json_response({"status": "ok", "registered": True})
+            return
+
+        # 3. Client Screenshot Upload
+        if url.path == "/api/screenshot/upload":
+            hostname = req_data.get("hostname", "unknown").upper()
+            img_b64 = req_data.get("image_base64", "")
+            if img_b64:
+                import base64
+                img_data = base64.b64decode(img_b64)
+                shot_path = SCREENSHOTS_DIR / f"{hostname}_latest.png"
+                shot_path.write_bytes(img_data)
+                self.send_json_response({"status": "ok", "saved_to": str(shot_path)})
+            else:
+                self.send_json_response({"status": "error", "message": "Missing image_base64"})
+            return
+
+        # 4. Schedule Remote Command / Screenshot Request from Host
+        if url.path == "/api/command/dispatch":
+            target = req_data.get("target", "ALL").upper()
+            action = req_data.get("action", "")
+            commands = load_commands()
+            commands[target] = req_data
+            save_commands(commands)
+            self.send_json_response({"status": "ok", "dispatched_to": target})
+            return
+
+        # 5. Configuration Saving Endpoints
         if url.path == "/api/save-domain":
             save_domain_conf(req_data)
             self.send_json_response({"status": "ok", "message": "domain.conf updated successfully"})
@@ -304,14 +472,14 @@ class AD_DMS_Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
 def main():
-    print("=" * 70)
-    print("  AD-DMS CONTROL CENTER | MATERIAL 3 EXPRESSIVE BACKEND & UI")
-    print("=" * 70)
-    print(f"  -> Serving live repository configs from: {REPO_DIR}")
-    print(f"  -> Access Control Center at: http://localhost:{PORT}")
-    print(f"  -> Press Ctrl+C to stop server.\n")
+    print("=" * 75)
+    print("  AD-DMS INTRANET HOST SERVER & MONITORING BACKEND")
+    print("=" * 75)
+    print(f"  -> Serving Intranet Repository: {REPO_DIR}")
+    print(f"  -> Control Center & API Port:   {PORT}")
+    print(f"  -> Host Server Ready for Intranet Client Nodes & 'remote' TUI.\n")
     
-    server = http.server.ThreadingHTTPServer(("", PORT), AD_DMS_Handler)
+    server = http.server.ThreadingHTTPServer(("", PORT), AD_DMS_ServerHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

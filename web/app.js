@@ -36,6 +36,7 @@ async function loadLiveConfigs() {
     renderPolicyChips();
     renderGroupApps();
     renderViolations();
+    renderWorkstations();
     updateStats();
     showToast('Loaded active repository configurations', 'cloud_done');
   } catch (err) {
@@ -299,7 +300,59 @@ async function saveGroupApps() {
   }
 }
 
-// Render Violations Table
+// Render Intranet Workstations
+async function renderWorkstations() {
+  const tbody = document.getElementById('workstationsBody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">Loading active nodes...</td></tr>';
+
+  try {
+    const res = await fetch('/api/clients');
+    const data = await res.json();
+    const clients = data.clients || [];
+
+    if (clients.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--md-sys-color-outline);">No intranet workstations registered yet.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '';
+    clients.forEach(c => {
+      const tr = document.createElement('tr');
+      const active = c.is_active;
+      tr.innerHTML = `
+        <td><strong>${c.hostname}</strong></td>
+        <td><code>${c.ip}</code></td>
+        <td><span style="font-weight:700; color:var(--md-sys-color-primary);">${c.active_user || 'none'}</span></td>
+        <td><code>${c.session_type || 'niri'}</code></td>
+        <td><span class="m3-badge ${active ? 'success' : 'border-error color-error'}">${active ? 'ONLINE' : 'OFFLINE'}</span></td>
+        <td><span style="font-size:12px; color:var(--md-sys-color-outline);">${c.last_seen || ''}</span></td>
+        <td>
+          <button class="m3-button primary small" onclick="requestClientScreenshot('${c.hostname}')">
+            <span class="material-symbols-rounded">screenshot</span> Capture
+          </button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--md-sys-color-error);">Failed to fetch client nodes.</td></tr>';
+  }
+}
+
+async function requestClientScreenshot(hostname) {
+  showToast(`Requesting screenshot from '${hostname}'...`, 'screenshot');
+  try {
+    await fetch('/api/command/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: hostname, action: 'screenshot' })
+    });
+    showToast(`Dispatched capture signal to ${hostname}. Checking for upload...`, 'hourglass_top');
+  } catch (err) {
+    showToast('Failed to dispatch screenshot signal', 'error');
+  }
+}
 function renderViolations() {
   const tbody = document.getElementById('violationsBody');
   if (!tbody) return;
