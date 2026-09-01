@@ -527,18 +527,18 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		Bold(true).
 		Foreground(m.theme.Primary).
 		Render("MODULE SELECTOR")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
+	b.WriteString(title + "\n\n")
 
-	// Calculate 2-column or 3-column button sizes
+	// Calculate 2 or 3 columns
 	numCols := 2
-	if totalWidth >= 115 {
+	if totalWidth >= 120 {
 		numCols = 3
 	}
 
-	spacing := 2
-	btnWidth := (totalWidth - (numCols-1)*spacing - 8) / numCols
-	if btnWidth < 30 {
-		btnWidth = 30
+	// Calculate fixed button width to avoid border distortion
+	btnWidth := (totalWidth - 6 - (numCols-1)*2) / numCols
+	if btnWidth < 34 {
+		btnWidth = 34
 	}
 
 	var renderedButtons []string
@@ -552,7 +552,6 @@ func (m Model) renderMainMenu(totalWidth int) string {
 				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(m.theme.Accent).
-				Padding(0, 1).
 				Bold(true).
 				Align(lipgloss.Center)
 		} else {
@@ -560,7 +559,6 @@ func (m Model) renderMainMenu(totalWidth int) string {
 				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(m.theme.Border).
-				Padding(0, 1).
 				Align(lipgloss.Center)
 		}
 
@@ -577,22 +575,15 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
 	}
 
-	// Render buttons into centered multi-column rows
+	// Render buttons in clean rows
 	for i := 0; i < len(renderedButtons); i += numCols {
 		end := i + numCols
 		if end > len(renderedButtons) {
 			end = len(renderedButtons)
 		}
 
-		var rowItems []string
-		for j := i; j < end; j++ {
-			rowItems = append(rowItems, renderedButtons[j])
-			if j < end-1 {
-				rowItems = append(rowItems, "  ")
-			}
-		}
-		rowStr := lipgloss.JoinHorizontal(lipgloss.Top, rowItems...)
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(rowStr) + "\n")
+		row := lipgloss.JoinHorizontal(lipgloss.Top, renderedButtons[i:end]...)
+		b.WriteString(row + "\n")
 	}
 
 	return b.String()
@@ -628,14 +619,14 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	}
 
 	filterBar := filterTitle + strings.Join(filterBadges, "   ")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(filterBar) + "\n\n")
+	b.WriteString(filterBar + "\n\n")
 
 	// Table Header
 	tblHeader := fmt.Sprintf("┌──────────────────┬─────────────────┬──────────────────────┬─────────────┬─────────────────────┐\n"+
 		"│ %-16s │ %-15s │ %-20s │ %-11s │ %-19s │\n"+
 		"├──────────────────┼─────────────────┼──────────────────────┼─────────────┼─────────────────────┤",
 		"HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(tblHeader) + "\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(m.theme.Primary).Render(tblHeader) + "\n")
 
 	totalShown := 0
 	matchedHosts := make(map[string]bool)
@@ -659,7 +650,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		if len(labClients) > 0 {
 			headerStr := fmt.Sprintf("► LAB: %s (%s)", lab.Name, lab.Prefix)
 			labHeaderLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Warning).Render(fmt.Sprintf("│ %-81s│", headerStr))
-			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(labHeaderLine) + "\n")
+			b.WriteString(labHeaderLine + "\n")
 
 			for _, c := range labClients {
 				totalShown++
@@ -670,7 +661,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
 				row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
 					c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
-				b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(row) + "\n")
+				b.WriteString(row + "\n")
 			}
 		}
 	}
@@ -691,7 +682,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 
 	if len(otherClients) > 0 {
 		unassignedLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Secondary).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                             │")
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(unassignedLine) + "\n")
+		b.WriteString(unassignedLine + "\n")
 		for _, c := range otherClients {
 			totalShown++
 			stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("ONLINE")
@@ -701,17 +692,17 @@ func (m Model) renderMonitorView(totalWidth int) string {
 			userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
 			row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
 				c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
-			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(row) + "\n")
+			b.WriteString(row + "\n")
 		}
 	}
 
 	if totalShown == 0 {
 		emptyRow := fmt.Sprintf("│  %-78s│", "No matching workstations found in this filter.")
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(emptyRow) + "\n")
+		b.WriteString(emptyRow + "\n")
 	}
 
 	tblFooter := "└──────────────────┴─────────────────┴──────────────────────┴─────────────┴─────────────────────┘"
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(tblFooter) + "\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(m.theme.Primary).Render(tblFooter) + "\n")
 	return b.String()
 }
 
