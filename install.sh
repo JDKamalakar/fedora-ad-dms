@@ -39,13 +39,15 @@ fetch_file() {
   mkdir -p "$(dirname "${file}")"
   echo -n -e "  -> Fetching ${file}... "
 
-  # 1. Try Intranet Host via Hostname / mDNS
-  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/${file}" -o "${file}" 2>/dev/null; then
-    echo -e "${GREEN}[OK] (Intranet Host: ${INTRANET_HOST})${NC}"
-    return 0
-  fi
+  # 1. Try Intranet Host via Hostname (Plain, .local mDNS, and FQDN)
+  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+    if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${file}" 2>/dev/null; then
+      echo -e "${GREEN}[OK] (Intranet Host: ${host_target})${NC}"
+      return 0
+    fi
+  done
 
-  # 2. Try Intranet Host via Backup IP
+  # 2. Try Intranet Host via Fallback IP
   if [ -n "$INTRANET_IP" ] && curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${file}" 2>/dev/null; then
     echo -e "${GREEN}[OK] (Intranet IP: ${INTRANET_IP})${NC}"
     return 0

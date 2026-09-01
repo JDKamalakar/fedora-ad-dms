@@ -291,18 +291,31 @@ for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
   fetched=false
 
-  # 1. Try Intranet Host via Hostname
-  if [ "$USE_INTRANET" = "yes" ] && curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-    [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host)\033[0m"
-    fetched=true
+  # 1. Try Intranet Host via Hostname (Plain, .local, and FQDN)
+  if [ "$USE_INTRANET" = "yes" ]; then
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
+        fetched=true
+        break
+      fi
+    done
+  fi
+
   # 2. Try Intranet Host via Fallback IP
-  elif [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ] && (curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null); then
-    [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP)\033[0m"
-    fetched=true
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ]; then
+    if curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP: ${INTRANET_IP})\033[0m"
+      fetched=true
+    fi
+  fi
+
   # 3. Fallback to GitHub Cloud CDN
-  elif curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-    [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
-    fetched=true
+  if [ "$fetched" = false ]; then
+    if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      fetched=true
+    fi
   fi
 
   if [ "$fetched" = false ]; then

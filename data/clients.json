@@ -2,12 +2,12 @@
   "GSFCUOSLAB172": {
     "hostname": "GSFCUOSLAB172",
     "ip": "10.205.18.230",
-    "active_user": "oslab",
-    "session_type": "wayland",
-    "uptime": "up 4 hours, 29 minutes",
+    "active_user": "24bt04d217",
+    "session_type": "unspecified",
+    "uptime": "up 5 hours, 31 minutes",
     "dms_version": "installed",
-    "last_seen": "2026-09-01 13:22:54",
-    "last_seen_ts": 1788249174.538048,
+    "last_seen": "2026-09-01 14:24:58",
+    "last_seen_ts": 1788252898.6446772,
     "first_registered": "2026-09-01 13:00:53"
   }
 }
