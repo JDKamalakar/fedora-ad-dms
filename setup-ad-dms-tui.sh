@@ -243,6 +243,61 @@ if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "
   exit 0
 fi
 
+# Support checking which service/source is active without root privileges
+if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ]; then
+  echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+  echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & INTRANET STATUS\033[0m                  \033[1;36m║\033[0m"
+  echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
+
+  CONF_DIR="/etc/ad-dms"
+  SOURCE_LOG="${CONF_DIR}/.last_source"
+  
+  if [ -f "$SOURCE_LOG" ]; then
+    echo -e "  \033[1;36m[LAST SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
+  else
+    echo -e "  \033[1;36m[LAST SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
+  fi
+
+  # Live check connectivity
+  INTRANET_HOST="GSFCUPLLAB203"
+  INTRANET_IP="10.205.18.253"
+  INTRANET_PORT="8080"
+  if [ -f "${CONF_DIR}/domain.conf" ]; then
+    # shellcheck source=/dev/null
+    source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+    INTRANET_PORT="${INTRANET_PORT:-8080}"
+  fi
+
+  echo -e "\n  \033[1;36m[LIVE PROBE]\033[0m Testing reachable upstream service..."
+  live_found=false
+  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+    if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
+      live_found=true
+      break
+    fi
+  done
+
+  if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
+    if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
+      live_found=true
+    fi
+  fi
+
+  if [ "$live_found" = false ]; then
+    if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;33m● GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)"
+    else
+      echo -e "    -> \033[1;31m● ALL SOURCES OFFLINE\033[0m (No intranet or internet connectivity)"
+    fi
+  fi
+  echo ""
+  exit 0
+fi
+
 REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
 CONF_DIR="/etc/ad-dms"
 
@@ -296,6 +351,8 @@ for file in "${FILES[@]}"; do
     for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
       if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
         [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
+        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
         fetched=true
         break
       fi
@@ -306,6 +363,8 @@ for file in "${FILES[@]}"; do
   if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ]; then
     if curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
       [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP: ${INTRANET_IP})\033[0m"
+      echo "Intranet IP (${INTRANET_IP}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
       fetched=true
     fi
   fi
@@ -314,6 +373,8 @@ for file in "${FILES[@]}"; do
   if [ "$fetched" = false ]; then
     if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
       [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      echo "GitHub Cloud (github.com/JDKamalakar/fedora-ad-dms) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
       fetched=true
     fi
   fi
