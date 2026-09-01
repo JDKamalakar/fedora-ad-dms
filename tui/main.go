@@ -16,64 +16,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Adaptive System / Terminal Colors (Inherits terminal theme: Dark/Light/Custom)
+// ANSI System Colors (Adapt dynamically to terminal dark/light themes)
 var (
-	ColorPrimary   = lipgloss.Color("6")  // Cyan (ANSI 6)
-	ColorSecondary = lipgloss.Color("4")  // Blue (ANSI 4)
-	ColorAccent    = lipgloss.Color("2")  // Green (ANSI 2)
-	ColorSuccess   = lipgloss.Color("2")  // Green (ANSI 2)
-	ColorWarning   = lipgloss.Color("3")  // Yellow (ANSI 3)
-	ColorError     = lipgloss.Color("1")  // Red (ANSI 1)
-	ColorMuted     = lipgloss.Color("8")  // Bright Black / Gray (ANSI 8)
-	ColorFg        = lipgloss.Color("7")  // White / Default Foreground (ANSI 7)
-	ColorFgDim     = lipgloss.Color("8")  // Dim / Gray (ANSI 8)
-	ColorBorder    = lipgloss.Color("6")  // Cyan / System border
-)
-
-const (
-	Bold   = "\033[1m"
-	Dim    = "\033[2m"
-	Yellow = "\033[1;33m"
-	Blue   = "\033[1;34m"
-	Reset  = "\033[0m"
-)
-
-// Lipgloss Styles using terminal native backgrounds & colors
-var (
-	styleBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorBorder).
-			Padding(1, 2)
-
-	styleTitle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(ColorPrimary).
-			MarginBottom(1)
-
-	styleSubTitle = lipgloss.NewStyle().
-			Foreground(ColorPrimary).
-			Bold(true)
-
-	styleSelected = lipgloss.NewStyle().
-			Foreground(ColorAccent).
-			Bold(true)
-
-	styleNormal = lipgloss.NewStyle()
-
-	styleDim = lipgloss.NewStyle().
-			Foreground(ColorFgDim)
-
-	styleSuccess = lipgloss.NewStyle().
-			Foreground(ColorSuccess).
-			Bold(true)
-
-	styleError = lipgloss.NewStyle().
-			Foreground(ColorError).
-			Bold(true)
-
-	styleBadge = lipgloss.NewStyle().
-			Foreground(ColorAccent).
-			Bold(true)
+	ColorPrimary   = lipgloss.Color("6")  // System Cyan
+	ColorSecondary = lipgloss.Color("4")  // System Blue
+	ColorAccent    = lipgloss.Color("2")  // System Green
+	ColorWarning   = lipgloss.Color("3")  // System Yellow
+	ColorError     = lipgloss.Color("1")  // System Red
+	ColorBorder    = lipgloss.Color("6")  // System Cyan Border
+	ColorFg        = lipgloss.Color("15") // Bright White
+	ColorFgMuted   = lipgloss.Color("7")  // Standard Light Gray/White for readable descriptions
+	ColorSelected  = lipgloss.Color("14") // Bright Cyan
 )
 
 type ViewMode int
@@ -110,6 +63,13 @@ type LabDefinition struct {
 	Prefix string
 }
 
+type MenuItem struct {
+	Icon string
+	Name string
+	Desc string
+	Key  string
+}
+
 type Model struct {
 	width          int
 	height         int
@@ -120,14 +80,10 @@ type Model struct {
 	clients        []ClientInfo
 	labs           []LabDefinition
 	statusMsg      string
-	statusColor    lipgloss.Color
-	targetHost     string
-	shotStatus     string
 	repoDir        string
 	backupDir      string
 	apiURL         string
-	selectedFile   string
-	confirmAction  string
+	menuItems      []MenuItem
 }
 
 func initialModel() Model {
@@ -144,14 +100,24 @@ func initialModel() Model {
 	_ = os.MkdirAll(bDir, 0755)
 
 	m := Model{
-		view:        ViewMain,
-		cursor:      0,
-		filterMode:  "all",
-		repoDir:     rDir,
-		backupDir:   bDir,
-		apiURL:      "http://127.0.0.1:8080",
-		statusMsg:   "Ready",
-		statusColor: ColorAccent,
+		view:       ViewMain,
+		cursor:     0,
+		filterMode: "all",
+		repoDir:    rDir,
+		backupDir:  bDir,
+		apiURL:     "http://127.0.0.1:8080",
+		statusMsg:  "System Ready",
+		width:      100,
+		height:     30,
+		menuItems: []MenuItem{
+			{"📊", "Live Workstation Monitor", "Active workstations, logged-in students & real-time telemetry", "1"},
+			{"📸", "Instant Screen Capture", "Grab real-time screen frame from any online workstation", "2"},
+			{"📝", "Safe Configuration Editor", "Edit domain configs with 20-backup / 7-day retention engine", "3"},
+			{"⚡", "Execute Remote Lab Task", "Dispatch maintenance commands across single/all lab endpoints", "4"},
+			{"📜", "Workstation Audit History", "Complete enrollment and connection history log", "5"},
+			{"🔄", "Sync Policies & Push to Git", "Synchronize configurations across Intranet & GitHub", "6"},
+			{"🚪", "Exit Control Center", "Close interactive management console", "7"},
+		},
 	}
 	m.labs = readLabs(m.repoDir)
 	return m
@@ -164,10 +130,7 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-type tickMsg time.Time
 type clientsMsg []ClientInfo
-type screenshotUploadedMsg string
-type errMsg error
 
 func fetchClientsCmd(apiURL string) tea.Cmd {
 	return func() tea.Msg {
@@ -214,9 +177,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "r":
-			// Live Refresh
-			m.statusMsg = "Refreshed telemetry"
-			m.statusColor = ColorSuccess
+			m.statusMsg = "Telemetry Refreshed"
 			return m, fetchClientsCmd(m.apiURL)
 
 		case "up", "k":
@@ -225,11 +186,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
-			maxIndex := 5
+			maxIndex := len(m.menuItems) - 1
 			if m.view == ViewMonitor {
-				maxIndex = 3 // 3 filter options
+				maxIndex = 2
 			} else if m.view == ViewSafeEditor {
-				maxIndex = 6 // 7 config files
+				maxIndex = 6
 			}
 			if m.cursor < maxIndex {
 				m.cursor++
@@ -259,6 +220,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
+	if idx < 0 || idx >= len(m.menuItems) {
+		return m, nil
+	}
 	switch idx {
 	case 0:
 		m.view = ViewMonitor
@@ -324,96 +288,152 @@ func (m Model) handleEditorSelect(idx int) (tea.Model, tea.Cmd) {
 func triggerGitSync(repoDir string) tea.Cmd {
 	return func() tea.Msg {
 		_ = exec.Command("git", "-C", repoDir, "add", "-A").Run()
-		_ = exec.Command("git", "-C", repoDir, "commit", "-m", "feat: update policies via Go TUI").Run()
+		_ = exec.Command("git", "-C", repoDir, "commit", "-m", "feat: update policies via AD-DMS Go TUI").Run()
 		_ = exec.Command("git", "-C", repoDir, "push", "origin", "main").Run()
 		return nil
 	}
 }
 
 // ------------------------------------------------------------------------------
-// View Renderers
+// View Renderers (Full Window Responsive Containers)
 // ------------------------------------------------------------------------------
 func (m Model) View() string {
+	contentWidth := m.width - 4
+	if contentWidth < 40 {
+		contentWidth = 40
+	}
+	contentHeight := m.height - 4
+	if contentHeight < 15 {
+		contentHeight = 15
+	}
+
+	outerStyle := lipgloss.NewStyle().
+		Width(contentWidth).
+		Height(contentHeight).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Padding(0, 1)
+
 	var b strings.Builder
 
-	// Top Banner / Header Box
+	// Top App Header
 	hostname, _ := os.Hostname()
-	titleText := fmt.Sprintf("🛡️  AD-DMS INTRANET CONTROL & MONITORING (pVPN Go TUI)")
-	subText := fmt.Sprintf("Host: %s | API: %s | %s", hostname, m.apiURL, time.Now().Format("15:04:05"))
+	topBar := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorPrimary).
+		Render(fmt.Sprintf("🛡️  AD-DMS INTRANET CONTROL & MONITORING"))
 
-	header := lipgloss.JoinVertical(lipgloss.Left,
-		styleTitle.Render(titleText),
-		styleDim.Render(subText),
-	)
+	metaBar := lipgloss.NewStyle().
+		Foreground(ColorFgMuted).
+		Render(fmt.Sprintf("Host: %s | API: %s | %s", hostname, m.apiURL, time.Now().Format("15:04:05")))
 
-	b.WriteString(header + "\n\n")
+	headerBlock := lipgloss.JoinVertical(lipgloss.Left, topBar, metaBar)
+	b.WriteString(headerBlock + "\n\n")
 
 	switch m.view {
 	case ViewMain:
-		b.WriteString(m.renderMainMenu())
+		b.WriteString(m.renderMainMenu(contentWidth))
 	case ViewMonitor:
-		b.WriteString(m.renderMonitorView())
+		b.WriteString(m.renderMonitorView(contentWidth))
 	case ViewScreenshot:
-		b.WriteString(m.renderScreenshotView())
+		b.WriteString(m.renderScreenshotView(contentWidth))
 	case ViewSafeEditor:
-		b.WriteString(m.renderSafeEditorView())
+		b.WriteString(m.renderSafeEditorView(contentWidth))
 	case ViewHistory:
-		b.WriteString(m.renderHistoryView())
+		b.WriteString(m.renderHistoryView(contentWidth))
 	case ViewCommand:
-		b.WriteString(m.renderCommandView())
+		b.WriteString(m.renderCommandView(contentWidth))
 	}
 
-	// Footer / Hotkey hints
-	footer := fmt.Sprintf("\n%s[↑/↓/j/k] Navigate  •  [Enter] Select  •  [r] Refresh  •  [esc/b] Back  •  [q] Quit%s", Dim, Reset)
-	b.WriteString(footer)
+	// Bottom Navigation Bar
+	footerText := lipgloss.NewStyle().
+		Foreground(ColorFgMuted).
+		Render("[↑/↓/j/k] Navigate  •  [Enter] Select  •  [r] Refresh  •  [esc/b] Back  •  [q] Quit")
 
-	return styleBox.Render(b.String())
+	return outerStyle.Render(lipgloss.JoinVertical(lipgloss.Left, b.String(), "\n"+footerText))
 }
 
-func (m Model) renderMainMenu() string {
-	items := []struct {
-		icon string
-		name string
-		desc string
-	}{
-		{"📊", "Live Device Monitor & Lab Scanner", "Active workstations, current users & online status"},
-		{"📸", "Instant Remote Screen Capture", "Grab live desktop view from student machines"},
-		{"📝", "Safe Configuration Editor", "Edit domain.conf & policies with 20-backup 7-day rotation"},
-		{"⚡", "Execute Remote Lab Command", "Dispatch maintenance tasks across labs"},
-		{"📜", "Workstation Connection History", "Full audit log of enrolled machines"},
-		{"🔄", "Trigger Policy Sync & Git Push", "Synchronize rules across Intranet & GitHub"},
-		{"🚪", "Exit Control Center", "Quit Go TUI"},
+func (m Model) renderMainMenu(totalWidth int) string {
+	cardWidth := totalWidth - 4
+	if cardWidth < 30 {
+		cardWidth = 30
 	}
 
 	var b strings.Builder
-	b.WriteString(styleSubTitle.Render("SELECT MANAGEMENT MODULE:") + "\n\n")
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorPrimary).
+		Render("SELECT MANAGEMENT MODULE:")
+	b.WriteString(title + "\n\n")
 
-	for i, item := range items {
-		cursorStr := "  "
-		itemStyle := styleNormal
-		if m.cursor == i {
-			cursorStr = "► "
-			itemStyle = styleSelected
+	for i, item := range m.menuItems {
+		isSelected := m.cursor == i
+
+		// Container Button Style
+		var boxStyle lipgloss.Style
+		if isSelected {
+			boxStyle = lipgloss.NewStyle().
+				Width(cardWidth).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorAccent).
+				Padding(0, 1).
+				Bold(true)
+		} else {
+			boxStyle = lipgloss.NewStyle().
+				Width(cardWidth).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("8")).
+				Padding(0, 1)
 		}
 
-		line := fmt.Sprintf("%s[%d] %s %s  %s(%s)%s",
-			cursorStr, i+1, item.icon, itemStyle.Render(item.name), Dim, item.desc, Reset)
-		b.WriteString(line + "\n")
+		icon := item.Icon
+		keyBadge := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(ColorPrimary).
+			Render(fmt.Sprintf("[%s]", item.Key))
+
+		nameStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorFg)
+		if isSelected {
+			nameStyle = nameStyle.Foreground(ColorAccent)
+		}
+		nameStr := nameStyle.Render(item.Name)
+
+		descStr := lipgloss.NewStyle().
+			Foreground(ColorFgMuted).
+			Render(item.Desc)
+
+		lineContent := fmt.Sprintf("%s %s %s  -  %s", keyBadge, icon, nameStr, descStr)
+		b.WriteString(boxStyle.Render(lineContent) + "\n")
 	}
 
 	return b.String()
 }
 
-func (m Model) renderMonitorView() string {
+func (m Model) renderMonitorView(totalWidth int) string {
 	var b strings.Builder
 
-	b.WriteString(styleSubTitle.Render("FILTER BY STATUS:") + " ")
+	filterTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorPrimary).
+		Render("FILTER BY WORKSTATION STATUS:")
+
+	b.WriteString(filterTitle + " ")
+
 	filters := []string{"[1] All Devices", "[2] Active Only", "[3] Inactive Only"}
 	for i, f := range filters {
-		if (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2) {
-			b.WriteString(styleBadge.Render(f) + "  ")
+		isActiveFilter := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
+		if isActiveFilter {
+			b.WriteString(lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorAccent).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorAccent).
+				Padding(0, 1).
+				Render(f) + "  ")
 		} else {
-			b.WriteString(styleDim.Render(f) + "  ")
+			b.WriteString(lipgloss.NewStyle().
+				Foreground(ColorFgMuted).
+				Render(f) + "  ")
 		}
 	}
 	b.WriteString("\n\n")
@@ -446,18 +466,19 @@ func (m Model) renderMonitorView() string {
 
 		if len(labClients) > 0 {
 			headerStr := fmt.Sprintf("► LAB: %s (%s)", lab.Name, lab.Prefix)
-			b.WriteString(fmt.Sprintf("│ %s%-80s%s│\n", Yellow, headerStr, Reset))
+			b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(ColorWarning).Render(fmt.Sprintf("│ %-81s│\n", headerStr)))
 
 			for _, c := range labClients {
 				totalShown++
 				stStr := "ONLINE"
-				stStyle := styleSuccess
+				stStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 				if !c.IsActive {
 					stStr = "OFFLINE"
-					stStyle = styleError
+					stStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
 				}
+				userStr := lipgloss.NewStyle().Foreground(ColorFg).Render(c.ActiveUser)
 				row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
-					c.Hostname, c.IP, c.ActiveUser, stStyle.Render(stStr), c.LastSeen)
+					c.Hostname, c.IP, userStr, stStyle.Render(stStr), c.LastSeen)
 				b.WriteString(row + "\n")
 			}
 		}
@@ -478,59 +499,68 @@ func (m Model) renderMonitorView() string {
 	}
 
 	if len(otherClients) > 0 {
-		b.WriteString(fmt.Sprintf("│ %s%-80s%s│\n", Blue, "► GENERAL / UNASSIGNED WORKSTATIONS", Reset))
+		b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                             │\n"))
 		for _, c := range otherClients {
 			totalShown++
 			stStr := "ONLINE"
-			stStyle := styleSuccess
+			stStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 			if !c.IsActive {
 				stStr = "OFFLINE"
-				stStyle = styleError
+				stStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
 			}
+			userStr := lipgloss.NewStyle().Foreground(ColorFg).Render(c.ActiveUser)
 			row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
-				c.Hostname, c.IP, c.ActiveUser, stStyle.Render(stStr), c.LastSeen)
+				c.Hostname, c.IP, userStr, stStyle.Render(stStr), c.LastSeen)
 			b.WriteString(row + "\n")
 		}
 	}
 
 	if totalShown == 0 {
-		b.WriteString(fmt.Sprintf("│  %s%-78s%s│\n", Dim, "No matching workstations found in this filter.", Reset))
+		b.WriteString(fmt.Sprintf("│  %-78s│\n", lipgloss.NewStyle().Foreground(ColorFgMuted).Render("No matching workstations found in this filter.")))
 	}
 
 	b.WriteString("└──────────────────┴─────────────────┴──────────────────────┴─────────────┴─────────────────────┘\n")
 	return b.String()
 }
 
-func (m Model) renderScreenshotView() string {
+func (m Model) renderScreenshotView(totalWidth int) string {
 	var b strings.Builder
-	b.WriteString(styleSubTitle.Render("INSTANT REMOTE SCREEN CAPTURE:") + "\n\n")
-	b.WriteString("  Select a registered workstation to capture its current active display:\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("INSTANT REMOTE SCREEN CAPTURE:")
+	b.WriteString(title + "\n\n")
+	b.WriteString("Select a registered workstation to capture its live desktop display:\n\n")
 
 	if len(m.clients) == 0 {
-		b.WriteString("  " + styleDim.Render("No active workstations connected to intranet.") + "\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(ColorFgMuted).Render("No active workstations connected to intranet.") + "\n")
 	} else {
 		for i, c := range m.clients {
-			cursorStr := "  "
-			itemStyle := styleNormal
-			if m.cursor == i {
-				cursorStr = "► "
-				itemStyle = styleSelected
+			isSelected := m.cursor == i
+			boxStyle := lipgloss.NewStyle().
+				Width(totalWidth - 6).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("8")).
+				Padding(0, 1)
+
+			if isSelected {
+				boxStyle = boxStyle.BorderForeground(ColorAccent).Bold(true)
 			}
-			statusStr := styleSuccess.Render("ONLINE")
+
+			stStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("ONLINE")
 			if !c.IsActive {
-				statusStr = styleError.Render("OFFLINE")
+				stStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorError).Render("OFFLINE")
 			}
-			line := fmt.Sprintf("%s[%d] %-18s (User: %-15s | IP: %-15s | %s)",
-				cursorStr, i+1, itemStyle.Render(c.Hostname), c.ActiveUser, c.IP, statusStr)
-			b.WriteString(line + "\n")
+
+			line := fmt.Sprintf("[%d] %-18s  (User: %-15s | IP: %-15s | %s)",
+				i+1, c.Hostname, c.ActiveUser, c.IP, stStyle)
+			b.WriteString(boxStyle.Render(line) + "\n")
 		}
 	}
 	return b.String()
 }
 
-func (m Model) renderSafeEditorView() string {
+func (m Model) renderSafeEditorView(totalWidth int) string {
 	var b strings.Builder
-	b.WriteString(styleSubTitle.Render("SAFE CONFIGURATION EDITOR (20-BACKUP / 7-DAY ROTATION):") + "\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("SAFE CONFIGURATION EDITOR (20-BACKUP / 7-DAY ROTATION ENGINE):")
+	b.WriteString(title + "\n\n")
 
 	files := []struct {
 		name string
@@ -546,26 +576,37 @@ func (m Model) renderSafeEditorView() string {
 	}
 
 	for i, f := range files {
-		cursorStr := "  "
-		itemStyle := styleNormal
-		if m.cursor == i {
-			cursorStr = "► "
-			itemStyle = styleSelected
+		isSelected := m.cursor == i
+		boxStyle := lipgloss.NewStyle().
+			Width(totalWidth - 6).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("8")).
+			Padding(0, 1)
+
+		if isSelected {
+			boxStyle = boxStyle.BorderForeground(ColorAccent).Bold(true)
 		}
-		line := fmt.Sprintf("%s[%d] %-28s %s(%s)%s",
-			cursorStr, i+1, itemStyle.Render(f.name), Dim, f.desc, Reset)
-		b.WriteString(line + "\n")
+
+		nameStr := lipgloss.NewStyle().Bold(true).Foreground(ColorFg).Render(f.name)
+		if isSelected {
+			nameStr = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render(f.name)
+		}
+		descStr := lipgloss.NewStyle().Foreground(ColorFgMuted).Render(f.desc)
+
+		line := fmt.Sprintf("[%d] %-28s - %s", i+1, nameStr, descStr)
+		b.WriteString(boxStyle.Render(line) + "\n")
 	}
 
 	return b.String()
 }
 
-func (m Model) renderHistoryView() string {
+func (m Model) renderHistoryView(totalWidth int) string {
 	var b strings.Builder
-	b.WriteString(styleSubTitle.Render("WORKSTATION ENROLLMENT AUDIT LOG:") + "\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("WORKSTATION ENROLLMENT AUDIT LOG:")
+	b.WriteString(title + "\n\n")
 
 	if len(m.clients) == 0 {
-		b.WriteString("  " + styleDim.Render("No workstation enrollment records yet.") + "\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(ColorFgMuted).Render("No workstation enrollment records yet.") + "\n")
 	} else {
 		b.WriteString(fmt.Sprintf("  %-18s %-16s %-21s %-21s %s\n", "HOSTNAME", "IP ADDRESS", "FIRST JOINED", "LAST SEEN", "ACTIVE USER"))
 		b.WriteString("  " + strings.Repeat("-", 86) + "\n")
@@ -576,11 +617,12 @@ func (m Model) renderHistoryView() string {
 	return b.String()
 }
 
-func (m Model) renderCommandView() string {
+func (m Model) renderCommandView(totalWidth int) string {
 	var b strings.Builder
-	b.WriteString(styleSubTitle.Render("DISPATCH REMOTE COMMAND / TASK:") + "\n\n")
-	b.WriteString("  Dispatch administrative commands across single endpoints or entire labs.\n")
-	b.WriteString("  " + styleDim.Render("(Scheduled commands execute automatically upon the next client heartbeat poll)") + "\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render("DISPATCH REMOTE COMMAND / TASK:")
+	b.WriteString(title + "\n\n")
+	b.WriteString("Dispatch administrative commands across single endpoints or entire labs.\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorFgMuted).Render("(Scheduled commands execute automatically upon the next client heartbeat poll)") + "\n")
 	return b.String()
 }
 
@@ -685,7 +727,7 @@ func readLabs(repoDir string) []LabDefinition {
 }
 
 func main() {
-	p := tea.NewProgram(initialModel())
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error running Go TUI: %v\n", err)
 		os.Exit(1)
