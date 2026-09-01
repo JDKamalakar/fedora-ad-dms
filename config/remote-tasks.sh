@@ -34,11 +34,35 @@
 #   systemctl restart sssd
 # '
 
-# Example 3: Clean data for a specific user on OS Lab machines
-# target_exec "task_2026_08_01_clean_user" "GSFCUOSLAB" "rm -rf /home/23bca032/*"
+# ==============================================================================
+# ACTIVE TASK: Remove protonVPN Plugin & Uninstall ProtonVPN across ALL Hosts
+# ==============================================================================
+target_exec "task_2026_09_01_purge_pvpn" "ALL" '
+  echo "Executing ProtonVPN removal and plugin purge on $(hostname)..."
 
-# Example 4: Remove a bad user account entirely across ALL labs
-# target_exec "task_2026_08_02_del_baduser" "ALL" "userdel -r baduser1 || true"
+  # 1. Kill any active protonvpn processes
+  pkill -f -9 protonvpn 2>/dev/null || true
+  pkill -f -9 proton-vpn 2>/dev/null || true
 
-# Example 5: Enable or disable a system service on Hardware Lab
-# target_exec "task_2026_08_03_hw_service" "GSFCUDSLAB" "systemctl disable --now bluetooth"
+  # 2. Remove DMS protonVPN plugin directory across ALL user home folders and root
+  for user_dir in /home/* /root; do
+    if [ -d "$user_dir/.config/DankMaterialShell/plugins/protonVPN" ]; then
+      echo "  -> Removing plugin from: $user_dir/.config/DankMaterialShell/plugins/protonVPN"
+      rm -rf "$user_dir/.config/DankMaterialShell/plugins/protonVPN"
+    fi
+  done
+
+  # 3. Uninstall native ProtonVPN RPMs / DNF packages if present
+  echo "  -> Purging native ProtonVPN DNF packages..."
+  dnf remove -y proton-vpn-gnome-desktop protonvpn-cli protonvpn-gui "protonvpn*" 2>/dev/null || true
+
+  # 4. Uninstall ProtonVPN Flatpaks if installed (system & user scopes)
+  echo "  -> Purging ProtonVPN Flatpaks..."
+  flatpak uninstall -y --system com.protonvpn.www 2>/dev/null || true
+  for user_dir in /home/*; do
+    username=$(basename "$user_dir")
+    su - "$username" -c "flatpak uninstall -y --user com.protonvpn.www" 2>/dev/null || true
+  done
+
+  echo "  -> [SUCCESS] ProtonVPN packages and DMS plugin purged."
+'
