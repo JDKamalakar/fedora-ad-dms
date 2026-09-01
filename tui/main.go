@@ -380,33 +380,40 @@ func (m Model) renderMainMenu(totalWidth int) string {
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorPrimary).
-		Render("SELECT MANAGEMENT MODULE:")
+		Render("MODULE SELECTOR:")
 	b.WriteString(title + "\n\n")
 
-	// Calculate 2-column card width
-	colWidth := (totalWidth - 6) / 2
-	if colWidth < 30 {
-		colWidth = 30
+	// Calculate number of columns based on available terminal width
+	buttonMinWidth := 28
+	numCols := totalWidth / buttonMinWidth
+	if numCols < 1 {
+		numCols = 1
+	}
+	if numCols > 4 {
+		numCols = 4
 	}
 
-	var renderedCards []string
+	btnWidth := (totalWidth - (numCols * 2)) / numCols
+	if btnWidth < 22 {
+		btnWidth = 22
+	}
+
+	var renderedButtons []string
 
 	for i, item := range m.menuItems {
 		isSelected := m.cursor == i
 
-		var cardStyle lipgloss.Style
+		var btnStyle lipgloss.Style
 		if isSelected {
-			cardStyle = lipgloss.NewStyle().
-				Width(colWidth).
-				Height(4).
+			btnStyle = lipgloss.NewStyle().
+				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(ColorAccent).
 				Padding(0, 1).
 				Bold(true)
 		} else {
-			cardStyle = lipgloss.NewStyle().
-				Width(colWidth).
-				Height(4).
+			btnStyle = lipgloss.NewStyle().
+				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1)
@@ -421,32 +428,42 @@ func (m Model) renderMainMenu(totalWidth int) string {
 		if isSelected {
 			nameStyle = nameStyle.Foreground(ColorAccent)
 		}
-		titleLine := fmt.Sprintf("%s %s %s", keyBadge, item.Icon, nameStyle.Render(item.Name))
 
-		var descLine string
-		if isSelected {
-			descLine = lipgloss.NewStyle().
-				Foreground(ColorFgMuted).
-				Render("↳ " + item.Desc)
-		} else {
-			descLine = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("8")).
-				Render("  " + item.Desc)
-		}
-
-		cardContent := fmt.Sprintf("%s\n%s", titleLine, descLine)
-		renderedCards = append(renderedCards, cardStyle.Render(cardContent))
+		btnContent := fmt.Sprintf("%s %s %s", keyBadge, item.Icon, nameStyle.Render(item.Name))
+		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
 	}
 
-	// Pair cards into 2-column rows
-	for i := 0; i < len(renderedCards); i += 2 {
-		if i+1 < len(renderedCards) {
-			row := lipgloss.JoinHorizontal(lipgloss.Top, renderedCards[i], "  ", renderedCards[i+1])
-			b.WriteString(row + "\n")
-		} else {
-			b.WriteString(renderedCards[i] + "\n")
+	// Render buttons into dynamic multi-column rows
+	for i := 0; i < len(renderedButtons); i += numCols {
+		end := i + numCols
+		if end > len(renderedButtons) {
+			end = len(renderedButtons)
 		}
+
+		var rowItems []string
+		for j := i; j < end; j++ {
+			rowItems = append(rowItems, renderedButtons[j])
+			if j < end-1 {
+				rowItems = append(rowItems, " ")
+			}
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, rowItems...) + "\n")
 	}
+
+	// Dedicated Bottom Description Panel for currently focused / hovered item
+	b.WriteString("\n")
+	descBoxStyle := lipgloss.NewStyle().
+		Width(totalWidth - 4).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 1)
+
+	curItem := m.menuItems[m.cursor]
+	descHeader := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render(fmt.Sprintf("ℹ️  %s %s", curItem.Icon, curItem.Name))
+	descBody := lipgloss.NewStyle().Foreground(ColorFg).Render(curItem.Desc)
+	descContent := fmt.Sprintf("%s\n   %s", descHeader, descBody)
+
+	b.WriteString(descBoxStyle.Render(descContent) + "\n")
 
 	return b.String()
 }
