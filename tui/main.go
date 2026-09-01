@@ -16,20 +16,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// pVPN Color Palette & Themes
+// Adaptive System / Terminal Colors (Inherits terminal theme: Dark/Light/Custom)
 var (
-	ColorPrimary   = lipgloss.Color("#6D4AFF") // Proton purple
-	ColorSecondary = lipgloss.Color("#8B6FFF")
-	ColorAccent    = lipgloss.Color("#00F0C8") // Proton green / teal
-	ColorSuccess   = lipgloss.Color("#2ECC71")
-	ColorWarning   = lipgloss.Color("#F39C12")
-	ColorError     = lipgloss.Color("#E74C3C")
-	ColorMuted     = lipgloss.Color("#6C757D")
-	ColorBg        = lipgloss.Color("#1A1A2E")
-	ColorBgLight   = lipgloss.Color("#232340")
-	ColorFg        = lipgloss.Color("#E8E8E8")
-	ColorFgDim     = lipgloss.Color("#888899")
-	ColorBorder    = lipgloss.Color("#3D3D5C")
+	ColorPrimary   = lipgloss.Color("6")  // Cyan (ANSI 6)
+	ColorSecondary = lipgloss.Color("4")  // Blue (ANSI 4)
+	ColorAccent    = lipgloss.Color("2")  // Green (ANSI 2)
+	ColorSuccess   = lipgloss.Color("2")  // Green (ANSI 2)
+	ColorWarning   = lipgloss.Color("3")  // Yellow (ANSI 3)
+	ColorError     = lipgloss.Color("1")  // Red (ANSI 1)
+	ColorMuted     = lipgloss.Color("8")  // Bright Black / Gray (ANSI 8)
+	ColorFg        = lipgloss.Color("7")  // White / Default Foreground (ANSI 7)
+	ColorFgDim     = lipgloss.Color("8")  // Dim / Gray (ANSI 8)
+	ColorBorder    = lipgloss.Color("6")  // Cyan / System border
 )
 
 const (
@@ -40,13 +38,12 @@ const (
 	Reset  = "\033[0m"
 )
 
-// Lipgloss Styles
+// Lipgloss Styles using terminal native backgrounds & colors
 var (
 	styleBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
-			Padding(1, 2).
-			Background(ColorBg)
+			Padding(1, 2)
 
 	styleTitle = lipgloss.NewStyle().
 			Bold(true).
@@ -54,15 +51,14 @@ var (
 			MarginBottom(1)
 
 	styleSubTitle = lipgloss.NewStyle().
-			Foreground(ColorAccent).
+			Foreground(ColorPrimary).
 			Bold(true)
 
 	styleSelected = lipgloss.NewStyle().
 			Foreground(ColorAccent).
 			Bold(true)
 
-	styleNormal = lipgloss.NewStyle().
-			Foreground(ColorFg)
+	styleNormal = lipgloss.NewStyle()
 
 	styleDim = lipgloss.NewStyle().
 			Foreground(ColorFgDim)
@@ -76,9 +72,7 @@ var (
 			Bold(true)
 
 	styleBadge = lipgloss.NewStyle().
-			Background(ColorPrimary).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Padding(0, 1).
+			Foreground(ColorAccent).
 			Bold(true)
 )
 
