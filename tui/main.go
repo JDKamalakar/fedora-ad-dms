@@ -252,12 +252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.view == ViewMain {
-				return m, tea.Quit
-			}
-			m.view = ViewMain
-			m.cursor = 0
-			return m, nil
+			return m, tea.Quit
 
 		case "esc", "b":
 			if m.view != ViewMain {
@@ -309,8 +304,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "left", "h":
-			if (m.view == ViewMain || m.view == ViewSafeEditor || m.view == ViewMonitor) && m.cursor > 0 {
+			if (m.view == ViewMain || m.view == ViewSafeEditor) && m.cursor > 0 {
 				m.cursor--
+			} else if m.view == ViewMonitor {
+				if m.filterMode == "active" {
+					m.filterMode = "all"
+					return m, fetchClientsCmd(m.apiURL)
+				} else if m.filterMode == "inactive" {
+					m.filterMode = "active"
+					return m, fetchClientsCmd(m.apiURL)
+				}
 			}
 
 		case "right", "l":
@@ -318,8 +321,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			} else if m.view == ViewSafeEditor && m.cursor < 6 {
 				m.cursor++
-			} else if m.view == ViewMonitor && m.cursor < 2 {
-				m.cursor++
+			} else if m.view == ViewMonitor {
+				if m.filterMode == "all" {
+					m.filterMode = "active"
+					return m, fetchClientsCmd(m.apiURL)
+				} else if m.filterMode == "active" {
+					m.filterMode = "inactive"
+					return m, fetchClientsCmd(m.apiURL)
+				}
 			}
 
 		case "1", "2", "3", "4", "5", "6", "7":
@@ -329,6 +338,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == ViewSafeEditor {
 				idx := int(msg.String()[0] - '1')
 				return m.handleEditorSelect(idx)
+			} else if m.view == ViewMonitor {
+				switch msg.String() {
+				case "1":
+					m.filterMode = "all"
+				case "2":
+					m.filterMode = "active"
+				case "3":
+					m.filterMode = "inactive"
+				}
+				return m, fetchClientsCmd(m.apiURL)
 			}
 
 		case "enter":
@@ -666,7 +685,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	filterRow := lipgloss.JoinHorizontal(lipgloss.Top, filterBadges[0], "  ", filterBadges[1], "  ", filterBadges[2])
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(filterRow) + "\n\n")
 
-	// Table Header (with Rounded Corners)
+	// Table Header (with Rounded Corners - 97 cols width)
 	tblHeader := fmt.Sprintf("╭──────────────────┬─────────────────┬──────────────────────┬─────────────┬─────────────────────╮\n"+
 		"│ %-16s │ %-15s │ %-20s │ %-11s │ %-19s │\n"+
 		"├──────────────────┼─────────────────┼──────────────────────┼─────────────┼─────────────────────┤",
@@ -696,7 +715,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 
 		if len(labClients) > 0 {
 			headerStr := fmt.Sprintf("► LAB: %s (%s)", lab.Name, lab.Prefix)
-			labHeaderLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Warning).Render(fmt.Sprintf("│ %-81s│", headerStr))
+			labHeaderLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Warning).Render(fmt.Sprintf("│ %-95s │", headerStr))
 			tableLines = append(tableLines, labHeaderLine)
 
 			for _, c := range labClients {
@@ -706,7 +725,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 					stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
 				}
 				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
-				row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
+				row := fmt.Sprintf("│ %-16s │ %-15s │ %-20s │ %-11s │ %-19s │",
 					c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
 				tableLines = append(tableLines, row)
 			}
@@ -728,7 +747,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	}
 
 	if len(otherClients) > 0 {
-		unassignedLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Secondary).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                             │")
+		unassignedLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Secondary).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                                           │")
 		tableLines = append(tableLines, unassignedLine)
 		for _, c := range otherClients {
 			totalShown++
@@ -737,18 +756,21 @@ func (m Model) renderMonitorView(totalWidth int) string {
 				stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
 			}
 			userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
-			row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
+			row := fmt.Sprintf("│ %-16s │ %-15s │ %-20s │ %-11s │ %-19s │",
 				c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
 			tableLines = append(tableLines, row)
 		}
 	}
 
 	if totalShown == 0 {
-		emptyRow := fmt.Sprintf("│ %-81s │", "              No matching workstations found in this filter.")
+		emptyRow := fmt.Sprintf("│ %-95s │", "                       No matching workstations found in this filter.")
 		tableLines = append(tableLines, emptyRow)
 	}
 
 	tblFooter := "╰──────────────────┴─────────────────┴──────────────────────┴─────────────┴─────────────────────╯"
+	if totalShown == 0 {
+		tblFooter = "╰─────────────────────────────────────────────────────────────────────────────────────────────╯"
+	}
 	tableLines = append(tableLines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(tblFooter))
 
 	for _, line := range tableLines {
