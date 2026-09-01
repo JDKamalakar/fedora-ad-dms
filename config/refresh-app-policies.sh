@@ -746,30 +746,66 @@ fi
 if [ "$USE_INTRANET" = "yes" ]; then
   MY_HOST=$(hostname -s 2>/dev/null || echo "UNKNOWN")
   ACTIVE_USR="none"
-  ACTIVE_SESSION="none"
-
-  # Detect currently active user on seat0 / Wayland
+  # Accurately detect currently logged-in human student/faculty user (ignoring greeter/gdm/sddm/root)
   for s_id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
-    if [ "$(loginctl show-session -p Active "$s_id" 2>/dev/null | cut -d= -f2)" = "yes" ]; then
-      ACTIVE_USR=$(loginctl show-session -p Name "$s_id" 2>/dev/null | cut -d= -f2)
-      ACTIVE_SESSION=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
-      break
+    s_user=$(loginctl show-session -p Name "$s_id" 2>/dev/null | cut -d= -f2)
+    s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
+    s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
+    
+    if [ -n "$s_user" ] && [ "$s_user" != "greeter" ] && [ "$s_user" != "gdm" ] && [ "$s_user" != "sddm" ] && [ "$s_user" != "root" ]; then
+      ACTIVE_USR="$s_user"
+      ACTIVE_SESSION="$s_type"
+      if [ "$s_state" = "active" ]; then
+        break
+      fi
     fi
   done
-  [ "$ACTIVE_USR" = "none" ] && ACTIVE_USR=$(who | awk 'NR==1{print $1}' || echo "nobody")
+  if [ "$ACTIVE_USR" = "none" ]; then
+    ACTIVE_USR=$(who | awk '$1 !~ /root|greeter/ {print $1; exit}' || true)
+    [ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+  fi
   
-  UPTIME_STR=$(uptime -p 2>/dev/null || echo "up")
-  DMS_VER=$(dms version 2>/dev/null | sed -e 's/^dms[[:space:]]*//' || echo "installed")
+  # Collect installed user and system flatpaks
+  INSTALLED_APPS=()
+  for sa in $(flatpak list --app --columns=application 2>/dev/null || true); do
+    INSTALLED_APPS+=("flatpak:${sa}")
+  done
+  if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
+    for ua in $(su - "$ACTIVE_USR" -c "flatpak list --user --app --columns=application" 2>/dev/null || true); do
+      INSTALLED_APPS+=("flatpak:${ua}")
+    done
+  fi
+
+  # Collect recently installed native RPMs
+  for rpm_name in $(rpm -qa --qf '%{INSTALLTIME} %{NAME}\n' 2>/dev/null | sort -nr | head -n 15 | awk '{print $2}' || true); do
+    INSTALLED_APPS+=("dnf:${rpm_name}")
+  done
+
+  # Convert apps array to JSON
+  APPS_JSON=$(python3 -c "import json, sys; print(json.dumps(sys.argv[1:]))" "${INSTALLED_APPS[@]}" 2>/dev/null || echo "[]")
 
   # Send Heartbeat (Try Hostname, then IP)
   TARGET_URL="http://${INTRANET_HOST}:${INTRANET_PORT}"
+  PAYLOAD=$(python3 -c "
+import json
+data = {
+    'hostname': '${MY_HOST}',
+    'active_user': '${ACTIVE_USR}',
+    'session_type': '${ACTIVE_SESSION}',
+    'uptime': '${UPTIME_STR}',
+    'dms_version': '${DMS_VER}',
+    'installed_apps': ${APPS_JSON}
+}
+print(json.dumps(data))
+" 2>/dev/null || echo "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\"}")
+
   if ! curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
     -H "Content-Type: application/json" \
-    -d "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\", \"session_type\": \"${ACTIVE_SESSION}\", \"uptime\": \"${UPTIME_STR}\", \"dms_version\": \"${DMS_VER}\"}" &>/dev/null; then
+    -d "$PAYLOAD" &>/dev/null; then
     TARGET_URL="http://${INTRANET_IP}:${INTRANET_PORT}"
     curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
       -H "Content-Type: application/json" \
-      -d "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\", \"session_type\": \"${ACTIVE_SESSION}\", \"uptime\": \"${UPTIME_STR}\", \"dms_version\": \"${DMS_VER}\"}" &>/dev/null || true
+      -d "$PAYLOAD" &>/dev/null || true
   fi
 
   # Check if Host has requested a Remote Command or Instant Screenshot

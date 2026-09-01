@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,13 +57,12 @@ type DMSTheme struct {
 }
 
 func loadDMSTheme() DMSTheme {
-	// Baseline Material You Fallback
 	theme := DMSTheme{
-		Primary:   lipgloss.Color("#4285F4"), // Google Material Blue
-		Secondary: lipgloss.Color("#1976D2"), // Deep Material Blue
-		Accent:    lipgloss.Color("#00C853"), // Material Vibrant Green
-		Warning:   lipgloss.Color("#FFB300"), // Material Amber
-		Error:     lipgloss.Color("#D32F2F"), // Material Crimson Red
+		Primary:   lipgloss.Color("#4285F4"),
+		Secondary: lipgloss.Color("#1976D2"),
+		Accent:    lipgloss.Color("#00C853"),
+		Warning:   lipgloss.Color("#FFB300"),
+		Error:     lipgloss.Color("#D32F2F"),
 		Border:    lipgloss.Color("#4285F4"),
 		Bg:        lipgloss.Color("#1A1A2E"),
 		Fg:        lipgloss.Color("#FFFFFF"),
@@ -75,7 +75,6 @@ func loadDMSTheme() DMSTheme {
 		return theme
 	}
 
-	// 1. Inspect ~/.config/gtk-3.0/dank-colors.css for active Matugen scheme
 	dankCss := filepath.Join(home, ".config", "gtk-3.0", "dank-colors.css")
 	if content, err := os.ReadFile(dankCss); err == nil {
 		text := string(content)
@@ -95,7 +94,6 @@ func loadDMSTheme() DMSTheme {
 		}
 	}
 
-	// 2. Inspect ~/.config/niri/dms/colors.kdl
 	kdlPath := filepath.Join(home, ".config", "niri", "dms", "colors.kdl")
 	if content, err := os.ReadFile(kdlPath); err == nil {
 		text := string(content)
@@ -126,19 +124,46 @@ const (
 	ViewSafeEditor
 	ViewHistory
 	ViewCommand
+	ViewDeviceActionModal
+	ViewPackageActionModal
 )
 
 type ClientInfo struct {
-	Hostname        string  `json:"hostname"`
-	IP              string  `json:"ip"`
-	ActiveUser      string  `json:"active_user"`
-	SessionType     string  `json:"session_type"`
-	Uptime          string  `json:"uptime"`
-	DMSVersion      string  `json:"dms_version"`
-	LastSeen        string  `json:"last_seen"`
-	LastSeenTS      float64 `json:"last_seen_ts"`
-	FirstRegistered string  `json:"first_registered"`
-	IsActive        bool    `json:"is_active"`
+	Hostname        string   `json:"hostname"`
+	IP              string   `json:"ip"`
+	ActiveUser      string   `json:"active_user"`
+	SessionType     string   `json:"session_type"`
+	Uptime          string   `json:"uptime"`
+	DMSVersion      string   `json:"dms_version"`
+	LastSeen        string   `json:"last_seen"`
+	LastSeenTS      float64  `json:"last_seen_ts"`
+	FirstRegistered string   `json:"first_registered"`
+	IsActive        bool     `json:"is_active"`
+	InstalledApps   []string `json:"installed_apps"`
+}
+
+type UserSessionRecord struct {
+	Hostname     string  `json:"hostname"`
+	IP           string  `json:"ip"`
+	User         string  `json:"user"`
+	LoginTime    string  `json:"login_time"`
+	LastSeen     string  `json:"last_seen"`
+	DurationMins int     `json:"duration_mins"`
+	StartTS      float64 `json:"start_ts"`
+	LastSeenTS   float64 `json:"last_seen_ts"`
+}
+
+type InstalledAppRecord struct {
+	Name         string   `json:"name"`
+	Kind         string   `json:"kind"` // "dnf" or "flatpak"
+	DiscoveredOn string   `json:"discovered_on"`
+	Hosts        []string `json:"hosts"`
+	Users        []string `json:"users"`
+}
+
+type AuditResponse struct {
+	UserSessions  []UserSessionRecord  `json:"user_sessions"`
+	InstalledApps []InstalledAppRecord `json:"installed_apps"`
 }
 
 type ClientsResponse struct {
@@ -159,20 +184,25 @@ type MenuItem struct {
 }
 
 type Model struct {
-	width        int
-	height       int
-	view         ViewMode
-	cursor       int
-	filterCursor int
-	filterMode   string // "all", "active", "inactive"
-	clients      []ClientInfo
-	labs         []LabDefinition
-	statusMsg    string
-	repoDir      string
-	backupDir    string
-	apiURL       string
-	menuItems    []MenuItem
-	theme        DMSTheme
+	width          int
+	height         int
+	view           ViewMode
+	cursor         int
+	modalCursor    int
+	filterMode     string // "all", "active", "inactive"
+	auditFilter    string // "all", "users", "installs"
+	clients        []ClientInfo
+	userSessions   []UserSessionRecord
+	installedApps  []InstalledAppRecord
+	labs           []LabDefinition
+	statusMsg      string
+	repoDir        string
+	backupDir      string
+	apiURL         string
+	menuItems      []MenuItem
+	theme          DMSTheme
+	selectedDevice ClientInfo
+	selectedApp    InstalledAppRecord
 }
 
 func initialModel() Model {
@@ -189,22 +219,23 @@ func initialModel() Model {
 	_ = os.MkdirAll(bDir, 0755)
 
 	m := Model{
-		view:       ViewMain,
-		cursor:     0,
-		filterMode: "all",
-		repoDir:    rDir,
-		backupDir:  bDir,
-		apiURL:     "http://127.0.0.1:8080",
-		statusMsg:  "System Ready",
-		width:      100,
-		height:     30,
-		theme:      loadDMSTheme(),
+		view:        ViewMain,
+		cursor:      0,
+		filterMode:  "all",
+		auditFilter: "all",
+		repoDir:     rDir,
+		backupDir:   bDir,
+		apiURL:      "http://127.0.0.1:8080",
+		statusMsg:   "System Ready",
+		width:       100,
+		height:      30,
+		theme:       loadDMSTheme(),
 		menuItems: []MenuItem{
-			{"📊", "Live Workstation Monitor", "Active workstations, logged-in students & real-time telemetry", "1"},
-			{"📸", "Instant Screen Capture", "Grab real-time screen frame from any online workstation", "2"},
+			{"📊", "Live Workstation Monitor", "Interactive workstation telemetry, user logins & remote dispatch actions", "1"},
+			{"📸", "Instant Screen Capture", "Grab real-time screen frame from any online workstation silently", "2"},
 			{"📝", "Safe Configuration Editor", "Edit domain configs with 20-backup / 7-day retention engine", "3"},
 			{"⚡", "Execute Remote Lab Task", "Dispatch maintenance commands across single/all lab endpoints", "4"},
-			{"📜", "Workstation Audit History", "Complete enrollment and connection history log", "5"},
+			{"📜", "Workstation Audit History", "Audit user login durations, timestamps & GUI/terminal app installs", "5"},
 			{"🔄", "Sync Policies & Push to Git", "Synchronize configurations across Intranet & GitHub", "6"},
 			{"🚪", "Exit Control Center", "Close interactive management console", "7"},
 		},
@@ -217,10 +248,12 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		fetchClientsCmd(m.apiURL),
+		fetchAuditCmd(m.apiURL),
 	)
 }
 
 type clientsMsg []ClientInfo
+type auditMsg AuditResponse
 
 func fetchClientsCmd(apiURL string) tea.Cmd {
 	return func() tea.Msg {
@@ -238,6 +271,22 @@ func fetchClientsCmd(apiURL string) tea.Cmd {
 	}
 }
 
+func fetchAuditCmd(apiURL string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := http.Get(apiURL + "/api/audit")
+		if err != nil {
+			return auditMsg(AuditResponse{})
+		}
+		defer resp.Body.Close()
+
+		var ar AuditResponse
+		if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
+			return auditMsg(AuditResponse{})
+		}
+		return auditMsg(ar)
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -249,12 +298,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clients = msg
 		return m, nil
 
+	case auditMsg:
+		m.userSessions = msg.UserSessions
+		m.installedApps = msg.InstalledApps
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
 		case "esc", "b":
+			if m.view == ViewDeviceActionModal || m.view == ViewPackageActionModal {
+				if m.view == ViewDeviceActionModal {
+					m.view = ViewMonitor
+				} else {
+					m.view = ViewHistory
+				}
+				m.modalCursor = 0
+				return m, nil
+			}
 			if m.view != ViewMain {
 				m.view = ViewMain
 				m.cursor = 0
@@ -263,12 +326,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "r":
 			m.statusMsg = "Telemetry Refreshed"
-			return m, fetchClientsCmd(m.apiURL)
+			return m, tea.Batch(fetchClientsCmd(m.apiURL), fetchAuditCmd(m.apiURL))
 
 		case "up", "k":
+			if m.view == ViewDeviceActionModal || m.view == ViewPackageActionModal {
+				if m.modalCursor > 0 {
+					m.modalCursor--
+				}
+				return m, nil
+			}
 			if m.view == ViewMain || m.view == ViewSafeEditor {
 				numCols := 2
-				if m.width >= 120 {
+				if m.width >= 115 {
 					numCols = 3
 				}
 				if m.cursor >= numCols {
@@ -279,9 +348,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
+			if m.view == ViewDeviceActionModal {
+				if m.modalCursor < 3 {
+					m.modalCursor++
+				}
+				return m, nil
+			} else if m.view == ViewPackageActionModal {
+				if m.modalCursor < 4 {
+					m.modalCursor++
+				}
+				return m, nil
+			}
+
 			if m.view == ViewMain || m.view == ViewSafeEditor {
 				numCols := 2
-				if m.width >= 120 {
+				if m.width >= 115 {
 					numCols = 3
 				}
 				maxItems := len(m.menuItems)
@@ -293,13 +374,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.cursor < maxItems-1 {
 					m.cursor = maxItems - 1
 				}
-			} else {
-				maxIndex := len(m.menuItems) - 1
-				if m.view == ViewMonitor {
-					maxIndex = 2
-				}
-				if m.cursor < maxIndex {
+			} else if m.view == ViewMonitor {
+				filtered := m.getFilteredClients()
+				if m.cursor < len(filtered)-1 {
 					m.cursor++
+				}
+			} else if m.view == ViewHistory {
+				if m.auditFilter == "installs" {
+					if m.cursor < len(m.installedApps)-1 {
+						m.cursor++
+					}
+				} else if m.auditFilter == "users" {
+					if m.cursor < len(m.userSessions)-1 {
+						m.cursor++
+					}
+				} else {
+					if m.cursor < len(m.clients)-1 {
+						m.cursor++
+					}
 				}
 			}
 
@@ -309,10 +401,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == ViewMonitor {
 				if m.filterMode == "active" {
 					m.filterMode = "all"
+					m.cursor = 0
 					return m, fetchClientsCmd(m.apiURL)
 				} else if m.filterMode == "inactive" {
 					m.filterMode = "active"
+					m.cursor = 0
 					return m, fetchClientsCmd(m.apiURL)
+				}
+			} else if m.view == ViewHistory {
+				if m.auditFilter == "users" {
+					m.auditFilter = "all"
+					m.cursor = 0
+				} else if m.auditFilter == "installs" {
+					m.auditFilter = "users"
+					m.cursor = 0
 				}
 			}
 
@@ -324,10 +426,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == ViewMonitor {
 				if m.filterMode == "all" {
 					m.filterMode = "active"
+					m.cursor = 0
 					return m, fetchClientsCmd(m.apiURL)
 				} else if m.filterMode == "active" {
 					m.filterMode = "inactive"
+					m.cursor = 0
 					return m, fetchClientsCmd(m.apiURL)
+				}
+			} else if m.view == ViewHistory {
+				if m.auditFilter == "all" {
+					m.auditFilter = "users"
+					m.cursor = 0
+				} else if m.auditFilter == "users" {
+					m.auditFilter = "installs"
+					m.cursor = 0
 				}
 			}
 
@@ -347,14 +459,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "3":
 					m.filterMode = "inactive"
 				}
+				m.cursor = 0
 				return m, fetchClientsCmd(m.apiURL)
+			} else if m.view == ViewHistory {
+				switch msg.String() {
+				case "1":
+					m.auditFilter = "all"
+				case "2":
+					m.auditFilter = "users"
+				case "3":
+					m.auditFilter = "installs"
+				}
+				m.cursor = 0
+				return m, fetchAuditCmd(m.apiURL)
 			}
 
 		case "enter":
 			if m.view == ViewMain {
 				return m.handleMainMenuSelect(m.cursor)
 			} else if m.view == ViewMonitor {
-				return m.handleMonitorSelect()
+				filtered := m.getFilteredClients()
+				if len(filtered) > 0 && m.cursor >= 0 && m.cursor < len(filtered) {
+					m.selectedDevice = filtered[m.cursor]
+					m.view = ViewDeviceActionModal
+					m.modalCursor = 0
+				}
+				return m, nil
+			} else if m.view == ViewDeviceActionModal {
+				return m.handleDeviceModalSelect()
+			} else if m.view == ViewHistory {
+				if m.auditFilter == "installs" && len(m.installedApps) > 0 && m.cursor < len(m.installedApps) {
+					m.selectedApp = m.installedApps[m.cursor]
+					m.view = ViewPackageActionModal
+					m.modalCursor = 0
+				}
+				return m, nil
+			} else if m.view == ViewPackageActionModal {
+				return m.handlePackageModalSelect()
 			} else if m.view == ViewSafeEditor {
 				return m.handleEditorSelect(m.cursor)
 			}
@@ -362,6 +503,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) getFilteredClients() []ClientInfo {
+	var list []ClientInfo
+	for _, c := range m.clients {
+		if m.filterMode == "active" && !c.IsActive {
+			continue
+		}
+		if m.filterMode == "inactive" && c.IsActive {
+			continue
+		}
+		list = append(list, c)
+	}
+	return list
 }
 
 func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
@@ -375,7 +530,8 @@ func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
 		return m, fetchClientsCmd(m.apiURL)
 	case 1:
 		m.view = ViewScreenshot
-		return m, nil
+		m.cursor = 0
+		return m, fetchClientsCmd(m.apiURL)
 	case 2:
 		m.view = ViewSafeEditor
 		m.cursor = 0
@@ -385,7 +541,8 @@ func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
 		return m, nil
 	case 4:
 		m.view = ViewHistory
-		return m, fetchClientsCmd(m.apiURL)
+		m.cursor = 0
+		return m, tea.Batch(fetchClientsCmd(m.apiURL), fetchAuditCmd(m.apiURL))
 	case 5:
 		return m, triggerGitSync(m.repoDir)
 	case 6:
@@ -394,16 +551,95 @@ func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleMonitorSelect() (tea.Model, tea.Cmd) {
-	switch m.cursor {
-	case 0:
-		m.filterMode = "all"
-	case 1:
-		m.filterMode = "active"
-	case 2:
-		m.filterMode = "inactive"
+func (m Model) handleDeviceModalSelect() (tea.Model, tea.Cmd) {
+	host := m.selectedDevice.Hostname
+	switch m.modalCursor {
+	case 0: // Instant Screen Capture
+		return m, dispatchCommandCmd(m.apiURL, host, "screenshot", "")
+	case 1: // Refresh Policies on Device
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", "/usr/local/bin/refresh &")
+	case 2: // Reboot Workstation
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl reboot")
+	case 3: // Close Modal
+		m.view = ViewMonitor
 	}
-	return m, fetchClientsCmd(m.apiURL)
+	return m, nil
+}
+
+func (m Model) handlePackageModalSelect() (tea.Model, tea.Cmd) {
+	pkgName := m.selectedApp.Name
+	isFlatpak := m.selectedApp.Kind == "flatpak"
+
+	switch m.modalCursor {
+	case 0: // Search Web
+		searchQuery := fmt.Sprintf("https://www.google.com/search?q=%s", url.QueryEscape(pkgName))
+		_ = exec.Command("xdg-open", searchQuery).Start()
+	case 1: // Add to Whitelist (allowed-apps.conf)
+		m.appendPolicyConfig("allowed-apps.conf", pkgName, isFlatpak)
+		m.statusMsg = fmt.Sprintf("Added '%s' to Allowed Apps", pkgName)
+	case 2: // Add to Blacklist (blocked-apps.conf)
+		m.appendPolicyConfig("blocked-apps.conf", pkgName, isFlatpak)
+		m.statusMsg = fmt.Sprintf("Added '%s' to Blocked Apps", pkgName)
+	case 3: // Add to Compulsory Apps (compulsory-apps.conf)
+		m.appendPolicyConfig("compulsory-apps.conf", pkgName, isFlatpak)
+		m.statusMsg = fmt.Sprintf("Added '%s' to Compulsory Apps", pkgName)
+	case 4: // Back
+		m.view = ViewHistory
+	}
+	return m, nil
+}
+
+func (m Model) appendPolicyConfig(fileName, pkgName string, isFlatpak bool) {
+	targetFile := filepath.Join(m.repoDir, "config", fileName)
+	createConfigBackup(targetFile, m.backupDir)
+
+	content, err := os.ReadFile(targetFile)
+	if err != nil {
+		return
+	}
+	text := string(content)
+	if strings.Contains(text, pkgName) {
+		return
+	}
+
+	if isFlatpak {
+		if strings.Contains(text, "# --- FLATPAK") {
+			text += "\n" + pkgName
+		} else {
+			text += "\n\n# --- FLATPAK PACKAGES ---\n" + pkgName
+		}
+	} else {
+		// DNF at top section
+		lines := strings.Split(text, "\n")
+		var newLines []string
+		inserted := false
+		for _, l := range lines {
+			if strings.Contains(l, "# --- FLATPAK") && !inserted {
+				newLines = append(newLines, pkgName, "")
+				inserted = true
+			}
+			newLines = append(newLines, l)
+		}
+		if !inserted {
+			newLines = append(newLines, pkgName)
+		}
+		text = strings.Join(newLines, "\n")
+	}
+
+	_ = os.WriteFile(targetFile, []byte(text), 0644)
+}
+
+func dispatchCommandCmd(apiURL, target, action, cmdStr string) tea.Cmd {
+	return func() tea.Msg {
+		payload := map[string]string{
+			"target": target,
+			"action": action,
+			"cmd":    cmdStr,
+		}
+		data, _ := json.Marshal(payload)
+		_, _ = http.Post(apiURL+"/api/command/dispatch", "application/json", strings.NewReader(string(data)))
+		return nil
+	}
 }
 
 func (m Model) handleEditorSelect(idx int) (tea.Model, tea.Cmd) {
@@ -440,7 +676,7 @@ func triggerGitSync(repoDir string) tea.Cmd {
 }
 
 // ------------------------------------------------------------------------------
-// View Renderers: 4 Separate Full-Width Rounded Containers with DMS Theming
+// View Renderers
 // ------------------------------------------------------------------------------
 func (m Model) View() string {
 	minWidth := 80
@@ -462,7 +698,7 @@ func (m Model) View() string {
 		boxWidth = 76
 	}
 
-	// 1. TOP HEADER BOX (Standalone Rounded Block)
+	// 1. TOP HEADER BOX
 	hostname, _ := os.Hostname()
 	titleText := "🛡️  AD-DMS INTRANET CONTROL & MONITORING"
 	metaText := fmt.Sprintf("Host: %s  |  API: %s  |  %s", hostname, m.apiURL, time.Now().Format("15:04:05"))
@@ -478,7 +714,7 @@ func (m Model) View() string {
 		Padding(0, 1).
 		Render(headerContent)
 
-	// 2. MAIN BODY BOX (Standalone Rounded Block)
+	// 2. MAIN BODY BOX
 	bodyHeight := m.height - 13
 	if bodyHeight < 8 {
 		bodyHeight = 8
@@ -498,6 +734,10 @@ func (m Model) View() string {
 		bodyInner = m.renderHistoryView(boxWidth)
 	case ViewCommand:
 		bodyInner = m.renderCommandView(boxWidth)
+	case ViewDeviceActionModal:
+		bodyInner = m.renderDeviceModal(boxWidth)
+	case ViewPackageActionModal:
+		bodyInner = m.renderPackageModal(boxWidth)
 	}
 
 	mainBox := lipgloss.NewStyle().
@@ -508,7 +748,7 @@ func (m Model) View() string {
 		Padding(0, 1).
 		Render(bodyInner)
 
-	// 3. DESCRIPTION BOX (Standalone Rounded Block)
+	// 3. DESCRIPTION BOX
 	var descText string
 	if m.view == ViewMain {
 		cur := m.menuItems[m.cursor]
@@ -533,11 +773,21 @@ func (m Model) View() string {
 			descText = "Auto-creates timestamped backups before editing files"
 		}
 	} else if m.view == ViewMonitor {
-		descText = "Workstation Telemetry: Press [r] to refresh ping status • Active filter is highlighted"
+		descText = "Press [Enter] on any workstation to open Action Menu • [1/2/3] or [←/→] to Filter"
 	} else if m.view == ViewScreenshot {
 		descText = "Screen Capture: Grabs live display without notifying student and displays on host"
 	} else if m.view == ViewHistory {
-		descText = "Enrollment Audit: Chronological history of all workstations registered in domain"
+		if m.auditFilter == "installs" {
+			descText = "Press [Enter] on any application package to Search Web or Add to Allowed/Blocked/Compulsory lists"
+		} else if m.auditFilter == "users" {
+			descText = "Shows complete history of active student login durations and timestamps across all workstations"
+		} else {
+			descText = "Chronological enrollment and join records of all lab workstations"
+		}
+	} else if m.view == ViewDeviceActionModal {
+		descText = fmt.Sprintf("Targeting Workstation: %s (%s) — Select Action", m.selectedDevice.Hostname, m.selectedDevice.IP)
+	} else if m.view == ViewPackageActionModal {
+		descText = fmt.Sprintf("Package: %s (%s) — Select Action", m.selectedApp.Name, m.selectedApp.Kind)
 	} else {
 		descText = "Remote Tasks: Dispatch bash scripts or management tasks across network nodes"
 	}
@@ -550,8 +800,8 @@ func (m Model) View() string {
 		Padding(0, 1).
 		Render(lipgloss.NewStyle().Foreground(m.theme.Accent).Bold(true).Render(descText))
 
-	// 4. NAVIGATION / FOOTER BOX (Standalone Rounded Block)
-	navText := "[↑/↓/←/→] Navigate   •   [Enter] Select   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
+	// 4. NAVIGATION / FOOTER BOX
+	navText := "[↑/↓/←/→] Navigate   •   [Enter] Select / Action   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
 	footerBox := lipgloss.NewStyle().
 		Width(boxWidth).
 		Border(lipgloss.RoundedBorder()).
@@ -560,7 +810,6 @@ func (m Model) View() string {
 		Padding(0, 1).
 		Render(lipgloss.NewStyle().Foreground(m.theme.Secondary).Render(navText))
 
-	// Combine all 4 rounded blocks centered vertically & horizontally
 	fullUI := lipgloss.JoinVertical(lipgloss.Center,
 		headerBox,
 		mainBox,
@@ -579,7 +828,6 @@ func (m Model) renderMainMenu(contentWidth int) string {
 		Render("MODULE SELECTOR")
 	b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(title) + "\n\n")
 
-	// Calculate 2 or 3 columns with fixed button sizes
 	numCols := 2
 	if contentWidth >= 115 {
 		numCols = 3
@@ -626,7 +874,6 @@ func (m Model) renderMainMenu(contentWidth int) string {
 		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
 	}
 
-	// Render buttons in centered rows
 	for i := 0; i < len(renderedButtons); i += numCols {
 		end := i + numCols
 		if end > len(renderedButtons) {
@@ -686,98 +933,345 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	filterRow := lipgloss.JoinHorizontal(lipgloss.Top, filterBadges[0], "  ", filterBadges[1], "  ", filterBadges[2])
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(filterRow) + "\n\n")
 
-	var tableLines []string
+	filtered := m.getFilteredClients()
 
-	totalShown := 0
-	matchedHosts := make(map[string]bool)
+	if len(filtered) == 0 {
+		emptyTable := "╭───────────────────────────────────────────────────────────────────────────────────────────────────╮\n" +
+			fmt.Sprintf("│ %-97s │\n", "                            No matching workstations found in this filter.") +
+			"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
+		return b.String()
+	}
 
-	// Group by Labs
+	// Render Individual Lab Tables with distinct rounded borders
+	matchedMap := make(map[string]bool)
+	globalIndex := 0
+
 	for _, lab := range m.labs {
-		var labClients []ClientInfo
-		for _, c := range m.clients {
+		var labItems []ClientInfo
+		var labIndices []int
+
+		for idx, c := range filtered {
 			if strings.Contains(strings.ToUpper(c.Hostname), strings.ToUpper(lab.Prefix)) {
-				if m.filterMode == "active" && !c.IsActive {
-					continue
-				}
-				if m.filterMode == "inactive" && c.IsActive {
-					continue
-				}
-				labClients = append(labClients, c)
-				matchedHosts[c.Hostname] = true
+				labItems = append(labItems, c)
+				labIndices = append(labIndices, idx)
+				matchedMap[c.Hostname] = true
 			}
 		}
 
-		if len(labClients) > 0 {
-			headerStr := fmt.Sprintf("► LAB: %s (%s)", lab.Name, lab.Prefix)
-			labHeaderLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Warning).Render(fmt.Sprintf("│ %-99s │", headerStr))
-			tableLines = append(tableLines, labHeaderLine)
+		if len(labItems) > 0 {
+			labHeader := fmt.Sprintf("► LAB MATRIX: %s (Prefix: %s) — [%d Workstations]", lab.Name, lab.Prefix, len(labItems))
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Warning).Render(labHeader) + "\n")
 
-			for _, c := range labClients {
-				totalShown++
+			topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
+				fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "#", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
+				"├──────┼──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
+
+			var lines []string
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
+
+			for i, c := range labItems {
+				isHovered := m.cursor == labIndices[i]
 				stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("ONLINE")
 				if !c.IsActive {
 					stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
 				}
 				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
-				row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
-					c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
-				tableLines = append(tableLines, row)
+				cursorMark := fmt.Sprintf("%2d", globalIndex+1)
+				if isHovered {
+					cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", globalIndex+1))
+					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
+				}
+				row := fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
+					cursorMark, c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
+				lines = append(lines, row)
+				globalIndex++
 			}
+			botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+
+			for _, l := range lines {
+				b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
+			}
+			b.WriteString("\n")
 		}
 	}
 
-	// Unassigned Workstations
-	var otherClients []ClientInfo
-	for _, c := range m.clients {
-		if !matchedHosts[c.Hostname] {
-			if m.filterMode == "active" && !c.IsActive {
-				continue
-			}
-			if m.filterMode == "inactive" && c.IsActive {
-				continue
-			}
-			otherClients = append(otherClients, c)
+	// General / Unassigned Table
+	var unassigned []ClientInfo
+	var unassignedIndices []int
+	for idx, c := range filtered {
+		if !matchedMap[c.Hostname] {
+			unassigned = append(unassigned, c)
+			unassignedIndices = append(unassignedIndices, idx)
 		}
 	}
 
-	if len(otherClients) > 0 {
-		unassignedLine := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Secondary).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                                                 │")
-		tableLines = append(tableLines, unassignedLine)
-		for _, c := range otherClients {
-			totalShown++
+	if len(unassigned) > 0 {
+		labHeader := fmt.Sprintf("► GENERAL / UNASSIGNED WORKSTATIONS — [%d Workstations]", len(unassigned))
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Secondary).Render(labHeader) + "\n")
+
+		topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
+			fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "#", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
+			"├──────┼──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
+
+		var lines []string
+		lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
+
+		for i, c := range unassigned {
+			isHovered := m.cursor == unassignedIndices[i]
 			stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("ONLINE")
 			if !c.IsActive {
 				stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
 			}
 			userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
-			row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
-				c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
-			tableLines = append(tableLines, row)
+			cursorMark := fmt.Sprintf("%2d", globalIndex+1)
+			if isHovered {
+				cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", globalIndex+1))
+				userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
+			}
+			row := fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
+				cursorMark, c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
+			lines = append(lines, row)
+			globalIndex++
+		}
+		botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
+		lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+
+		for _, l := range lines {
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
 		}
 	}
 
-	var fullTable []string
-	if totalShown == 0 {
-		topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
-			fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
-			"├──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────┤"
-		fullTable = append(fullTable, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
-		emptyRow := fmt.Sprintf("│ %-99s │", "                            No matching workstations found in this filter.")
-		fullTable = append(fullTable, emptyRow)
-		botBorder := "╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
-		fullTable = append(fullTable, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
-	} else {
-		topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
-			fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
-			"├──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
-		fullTable = append(fullTable, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
-		fullTable = append(fullTable, tableLines...)
-		botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
-		fullTable = append(fullTable, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+	return b.String()
+}
+
+func (m Model) renderDeviceModal(totalWidth int) string {
+	var b strings.Builder
+	title := fmt.Sprintf("⚡ REMOTE ACTION MENU: %s (%s)", m.selectedDevice.Hostname, m.selectedDevice.IP)
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Accent).Render(title) + "\n\n")
+
+	actions := []struct {
+		icon string
+		name string
+		desc string
+	}{
+		{"📸", "Capture Live Screen Now", "Triggers immediate silent screen capture and downloads frame"},
+		{"🔄", "Trigger Policy Refresh on Endpoint", "Executes /usr/local/bin/refresh to re-apply configs & clean apps"},
+		{"⚡", "Reboot Workstation", "Safely triggers system restart over network"},
+		{"🔙", "Return to Workstation Monitor", "Close action dialog"},
 	}
 
-	for _, line := range fullTable {
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(line) + "\n")
+	for i, act := range actions {
+		isSelected := m.modalCursor == i
+		boxStyle := lipgloss.NewStyle().
+			Width(65).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Border).
+			Padding(0, 1)
+
+		if isSelected {
+			boxStyle = boxStyle.BorderForeground(m.theme.Accent).Bold(true)
+		}
+
+		keyBadge := fmt.Sprintf("[%d]", i+1)
+		var line string
+		if isSelected {
+			line = fmt.Sprintf("► %s %s %-28s — %s ◄", keyBadge, act.icon, act.name, act.desc)
+		} else {
+			line = fmt.Sprintf("  %s %s %-28s — %s  ", keyBadge, act.icon, act.name, act.desc)
+		}
+
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) renderPackageModal(totalWidth int) string {
+	var b strings.Builder
+	title := fmt.Sprintf("📦 PACKAGE POLICY ACTION: %s (%s)", m.selectedApp.Name, strings.ToUpper(m.selectedApp.Kind))
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Accent).Render(title) + "\n\n")
+
+	actions := []struct {
+		icon string
+		name string
+		desc string
+	}{
+		{"🔍", "Search Package in Web Browser", "Opens Google search in your default web browser"},
+		{"✅", "Add to Whitelist (allowed-apps.conf)", "Permits installation without admin privileges"},
+		{"⛔", "Add to Blacklist (blocked-apps.conf)", "Auto-kills and purges application on all machines"},
+		{"📌", "Add to Baseline (compulsory-apps.conf)", "Mandatory install across all enrolled endpoints"},
+		{"🔙", "Return to Audit Log", "Close package action dialog"},
+	}
+
+	for i, act := range actions {
+		isSelected := m.modalCursor == i
+		boxStyle := lipgloss.NewStyle().
+			Width(68).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Border).
+			Padding(0, 1)
+
+		if isSelected {
+			boxStyle = boxStyle.BorderForeground(m.theme.Accent).Bold(true)
+		}
+
+		keyBadge := fmt.Sprintf("[%d]", i+1)
+		var line string
+		if isSelected {
+			line = fmt.Sprintf("► %s %s %-32s — %s ◄", keyBadge, act.icon, act.name, act.desc)
+		} else {
+			line = fmt.Sprintf("  %s %s %-32s — %s  ", keyBadge, act.icon, act.name, act.desc)
+		}
+
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) renderHistoryView(totalWidth int) string {
+	var b strings.Builder
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).Render("WORKSTATION ENROLLMENT & AUDIT MATRIX")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
+
+	filters := []string{"[1] Workstation Matrix", "[2] User Login History", "[3] Installed Applications"}
+	var filterBadges []string
+
+	for i, f := range filters {
+		isSelected := (m.auditFilter == "all" && i == 0) || (m.auditFilter == "users" && i == 1) || (m.auditFilter == "installs" && i == 2)
+		if isSelected {
+			badge := lipgloss.NewStyle().
+				Width(28).
+				Bold(true).
+				Foreground(m.theme.Accent).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(m.theme.Accent).
+				Align(lipgloss.Center).
+				Render("► " + f + " ◄")
+			filterBadges = append(filterBadges, badge)
+		} else {
+			badge := lipgloss.NewStyle().
+				Width(28).
+				Foreground(m.theme.Primary).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(m.theme.Border).
+				Align(lipgloss.Center).
+				Render(f)
+			filterBadges = append(filterBadges, badge)
+		}
+	}
+
+	filterRow := lipgloss.JoinHorizontal(lipgloss.Top, filterBadges[0], "  ", filterBadges[1], "  ", filterBadges[2])
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(filterRow) + "\n\n")
+
+	if m.auditFilter == "users" {
+		// User Login Duration History Table
+		if len(m.userSessions) == 0 {
+			emptyTable := "╭───────────────────────────────────────────────────────────────────────────────────────────────────╮\n" +
+				fmt.Sprintf("│ %-97s │\n", "                              No student login records logged yet.") +
+				"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
+		} else {
+			topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
+				fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "HOSTNAME", "IP ADDRESS", "STUDENT / USER", "LOGGED IN AT", "DURATION") +
+				"├──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
+			var lines []string
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
+
+			for i, s := range m.userSessions {
+				isHovered := m.cursor == i
+				durStr := fmt.Sprintf("%d mins", s.DurationMins)
+				if s.DurationMins == 0 {
+					durStr = "< 1 min"
+				}
+				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(s.User)
+				if isHovered {
+					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(s.User)
+				}
+				row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │",
+					s.Hostname, s.IP, userStr, s.LoginTime, durStr)
+				lines = append(lines, row)
+			}
+			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+
+			for _, l := range lines {
+				b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
+			}
+		}
+	} else if m.auditFilter == "installs" {
+		// Installed Applications Inventory Table
+		if len(m.installedApps) == 0 {
+			emptyTable := "╭───────────────────────────────────────────────────────────────────────────────────────────────────╮\n" +
+				fmt.Sprintf("│ %-97s │\n", "                      No application installation audit records captured yet.") +
+				"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
+		} else {
+			topBorder := "╭──────┬────────────────────────────────┬─────────┬──────────────────────────┬──────────────────────╮\n" +
+				fmt.Sprintf("│ %-4s │ %-30s │ %-7s │ %-24s │ %-20s │\n", "#", "APPLICATION PACKAGE", "TYPE", "INSTALLED ON HOSTS", "DISCOVERED") +
+				"├──────┼────────────────────────────────┼─────────┼──────────────────────────┼──────────────────────┤"
+			var lines []string
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
+
+			for i, app := range m.installedApps {
+				isHovered := m.cursor == i
+				hostsStr := strings.Join(app.Hosts, ", ")
+				if len(hostsStr) > 24 {
+					hostsStr = hostsStr[:21] + "..."
+				}
+				pkgName := app.Name
+				if len(pkgName) > 30 {
+					pkgName = pkgName[:27] + "..."
+				}
+				cursorMark := fmt.Sprintf("%2d", i+1)
+				if isHovered {
+					cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", i+1))
+					pkgName = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(pkgName)
+				}
+				row := fmt.Sprintf("│ %-4s │ %-30s │ %-7s │ %-24s │ %-20s │",
+					cursorMark, pkgName, strings.ToUpper(app.Kind), hostsStr, app.DiscoveredOn)
+				lines = append(lines, row)
+			}
+			botBorder := "╰──────┴────────────────────────────────┴─────────┴──────────────────────────┴──────────────────────╯"
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+
+			for _, l := range lines {
+				b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
+			}
+		}
+	} else {
+		// All Workstations Join Log
+		if len(m.clients) == 0 {
+			emptyTable := "╭───────────────────────────────────────────────────────────────────────────────────────────────────╮\n" +
+				fmt.Sprintf("│ %-97s │\n", "                               No workstation enrollment records yet.") +
+				"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
+		} else {
+			topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
+				fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "HOSTNAME", "IP ADDRESS", "FIRST ENROLLED", "LAST SEEN", "ACTIVE USER") +
+				"├──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
+			var lines []string
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
+
+			for i, c := range m.clients {
+				isHovered := m.cursor == i
+				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
+				if isHovered {
+					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
+				}
+				row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │",
+					c.Hostname, c.IP, c.FirstRegistered, c.LastSeen, userStr)
+				lines = append(lines, row)
+			}
+			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
+
+			for _, l := range lines {
+				b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
+			}
+		}
 	}
 
 	return b.String()
@@ -899,25 +1393,6 @@ func (m Model) renderSafeEditorView(contentWidth int) string {
 		b.WriteString(lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(rowStr) + "\n")
 	}
 
-	return b.String()
-}
-
-func (m Model) renderHistoryView(totalWidth int) string {
-	var b strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).Render("WORKSTATION ENROLLMENT AUDIT LOG")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
-
-	if len(m.clients) == 0 {
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render("No workstation enrollment records yet.") + "\n")
-	} else {
-		headerLine := fmt.Sprintf("  %-18s %-16s %-21s %-21s %s", "HOSTNAME", "IP ADDRESS", "FIRST JOINED", "LAST SEEN", "ACTIVE USER")
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Primary).Render(headerLine) + "\n")
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(strings.Repeat("-", 86)) + "\n")
-		for _, c := range m.clients {
-			row := fmt.Sprintf("  %-18s %-16s %-21s %-21s %s", c.Hostname, c.IP, c.FirstRegistered, c.LastSeen, c.ActiveUser)
-			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(row) + "\n")
-		}
-	}
 	return b.String()
 }
 

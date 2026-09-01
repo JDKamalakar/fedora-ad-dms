@@ -25,8 +25,20 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 CLIENTS_FILE = LOGS_DIR / "clients.json"
 COMMANDS_FILE = LOGS_DIR / "pending_commands.json"
+AUDIT_LOG_FILE = LOGS_DIR / "audit_log.json"
 SCREENSHOTS_DIR = LOGS_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
+
+def load_audit_log():
+    if AUDIT_LOG_FILE.exists():
+        try:
+            return json.loads(AUDIT_LOG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {"user_sessions": [], "installed_apps": {}}
+    return {"user_sessions": [], "installed_apps": {}}
+
+def save_audit_log(data):
+    AUDIT_LOG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 def load_clients():
     if CLIENTS_FILE.exists():
@@ -294,6 +306,16 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"clients": client_list})
             return
 
+        # 3b. Audit Telemetry API (User login durations & Discovered Application packages)
+        if url.path == "/api/audit":
+            audit = load_audit_log()
+            apps_list = list(audit.get("installed_apps", {}).values())
+            self.send_json_response({
+                "user_sessions": list(reversed(audit.get("user_sessions", []))),
+                "installed_apps": apps_list
+            })
+            return
+
         # 4. Client Poll for Remote Command or Screenshot Request
         if url.path == "/api/command/poll":
             hostname = params.get("host", [""])[0].upper()
@@ -344,24 +366,87 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             req_data = {}
 
-        # 1. Client Heartbeat Telemetry
+        # 1. Client Heartbeat Telemetry & Audit Tracker
         if url.path == "/api/heartbeat":
             hostname = req_data.get("hostname", "UNKNOWN").upper()
             ip = self.client_address[0]
             clients = load_clients()
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_ts = time.time()
+            active_user = req_data.get("active_user", "none")
             
+            # Update active client record
+            prev_user = clients.get(hostname, {}).get("active_user", "none")
             clients[hostname] = {
                 "hostname": hostname,
                 "ip": req_data.get("ip", ip),
-                "active_user": req_data.get("active_user", "none"),
+                "active_user": active_user,
                 "session_type": req_data.get("session_type", "niri"),
                 "uptime": req_data.get("uptime", "unknown"),
                 "dms_version": req_data.get("dms_version", "installed"),
-                "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "last_seen_ts": time.time(),
-                "first_registered": clients.get(hostname, {}).get("first_registered", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                "last_seen": now_str,
+                "last_seen_ts": now_ts,
+                "first_registered": clients.get(hostname, {}).get("first_registered", now_str)
             }
             save_clients(clients)
+
+            # Update User Login Session History & Installed Apps Audit Log
+            audit_data = load_audit_log()
+            user_sessions = audit_data.get("user_sessions", [])
+            installed_apps_map = audit_data.get("installed_apps", {})
+
+            if active_user and active_user not in ["none", "nobody", "greeter", "root"]:
+                # Check if this session is already open
+                session_found = False
+                for sess in reversed(user_sessions):
+                    if sess.get("hostname") == hostname and sess.get("user") == active_user:
+                        if (now_ts - sess.get("last_seen_ts", 0)) < 600: # Ongoing within last 10 mins
+                            sess["last_seen"] = now_str
+                            sess["last_seen_ts"] = now_ts
+                            sess["duration_mins"] = int((now_ts - sess.get("start_ts", now_ts)) / 60)
+                            session_found = True
+                            break
+                if not session_found:
+                    user_sessions.append({
+                        "hostname": hostname,
+                        "ip": req_data.get("ip", ip),
+                        "user": active_user,
+                        "login_time": now_str,
+                        "start_ts": now_ts,
+                        "last_seen": now_str,
+                        "last_seen_ts": now_ts,
+                        "duration_mins": 0
+                    })
+                    # Keep latest 200 sessions
+                    if len(user_sessions) > 200:
+                        user_sessions = user_sessions[-200:]
+                    audit_data["user_sessions"] = user_sessions
+
+            # Record Installed Apps Inventory
+            apps = req_data.get("installed_apps", [])
+            for app_spec in apps:
+                if ":" in app_spec:
+                    kind, name = app_spec.split(":", 1)
+                else:
+                    kind, name = "flatpak", app_spec
+                if name not in installed_apps_map:
+                    installed_apps_map[name] = {
+                        "name": name,
+                        "kind": kind,
+                        "discovered_on": now_str,
+                        "hosts": [hostname],
+                        "users": [active_user] if active_user not in ["none", "nobody"] else []
+                    }
+                else:
+                    entry = installed_apps_map[name]
+                    if hostname not in entry.get("hosts", []):
+                        entry["hosts"].append(hostname)
+                    if active_user not in ["none", "nobody"] and active_user not in entry.get("users", []):
+                        entry["users"].append(active_user)
+            
+            audit_data["installed_apps"] = installed_apps_map
+            save_audit_log(audit_data)
+
             self.send_json_response({"status": "ok", "ack": True})
             return
 
