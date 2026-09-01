@@ -272,8 +272,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "up", "k":
 			if m.view == ViewMain {
-				if m.cursor >= 2 {
-					m.cursor -= 2
+				numCols := 2
+				if m.width >= 120 {
+					numCols = 3
+				}
+				if m.cursor >= numCols {
+					m.cursor -= numCols
 				}
 			} else if m.cursor > 0 {
 				m.cursor--
@@ -281,8 +285,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "down", "j":
 			if m.view == ViewMain {
-				if m.cursor+2 < len(m.menuItems) {
-					m.cursor += 2
+				numCols := 2
+				if m.width >= 120 {
+					numCols = 3
+				}
+				if m.cursor+numCols < len(m.menuItems) {
+					m.cursor += numCols
 				} else if m.cursor < len(m.menuItems)-1 {
 					m.cursor = len(m.menuItems) - 1
 				}
@@ -480,10 +488,27 @@ func (m Model) View() string {
 	if m.view == ViewMain {
 		cur := m.menuItems[m.cursor]
 		descText = fmt.Sprintf("ℹ️  %s %s  —  %s", cur.Icon, cur.Name, cur.Desc)
+	} else if m.view == ViewSafeEditor {
+		editorFiles := []struct {
+			name string
+			desc string
+		}{
+			{"domain.conf", "Master domain, IP, Timezone, and alert notifications"},
+			{"config/blocked-apps.conf", "Blacklisted DNF packages and Flatpaks to auto-remove"},
+			{"config/allowed-apps.conf", "Whitelisted applications (passwordless install)"},
+			{"config/compulsory-apps.conf", "Mandatory baseline software for all endpoints"},
+			{"config/group-apps.conf", "Lab-specific software package mappings"},
+			{"config/device-rules.conf", "100% Brightness & 100% Volume enforcement rules"},
+			{"config/remote-tasks.sh", "Automated remote execution tasks & scripts"},
+		}
+		if m.cursor >= 0 && m.cursor < len(editorFiles) {
+			f := editorFiles[m.cursor]
+			descText = fmt.Sprintf("📝 %s  —  %s (Auto 20-backup / 7-day retention on save)", f.name, f.desc)
+		} else {
+			descText = "📝 Safe Configuration Editor: Auto-creates backups before editing files"
+		}
 	} else if m.view == ViewMonitor {
 		descText = "📊 Workstation Telemetry: Press [r] to refresh ping status • Active filter is highlighted"
-	} else if m.view == ViewSafeEditor {
-		descText = "📝 Safe Editor: Automatic 20-backup / 7-day retention engine creates backups before modifying files"
 	} else if m.view == ViewScreenshot {
 		descText = "📸 Screen Capture: Grabs live display without notifying student and displays on host"
 	} else if m.view == ViewHistory {
@@ -740,7 +765,10 @@ func (m Model) renderScreenshotView(totalWidth int) string {
 
 func (m Model) renderSafeEditorView(totalWidth int) string {
 	var b strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).Render("SAFE CONFIGURATION EDITOR (20-BACKUP / 7-DAY ROTATION ENGINE)")
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(m.theme.Primary).
+		Render("SAFE CONFIGURATION EDITOR")
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
 
 	files := []struct {
@@ -756,26 +784,57 @@ func (m Model) renderSafeEditorView(totalWidth int) string {
 		{"config/remote-tasks.sh", "Automated remote execution tasks & scripts"},
 	}
 
+	numCols := 2
+	if totalWidth >= 120 {
+		numCols = 3
+	}
+
+	btnWidth := (totalWidth - 6 - (numCols-1)*2) / numCols
+	if btnWidth < 34 {
+		btnWidth = 34
+	}
+
+	var renderedButtons []string
+
 	for i, f := range files {
 		isSelected := m.cursor == i
-		boxStyle := lipgloss.NewStyle().
-			Width(totalWidth - 6).
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(m.theme.Border).
-			Padding(0, 1)
 
+		var btnStyle lipgloss.Style
 		if isSelected {
-			boxStyle = boxStyle.BorderForeground(m.theme.Accent).Bold(true)
+			btnStyle = lipgloss.NewStyle().
+				Width(btnWidth).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(m.theme.Accent).
+				Bold(true).
+				Align(lipgloss.Center)
+		} else {
+			btnStyle = lipgloss.NewStyle().
+				Width(btnWidth).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(m.theme.Border).
+				Align(lipgloss.Center)
 		}
 
-		nameStr := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Primary).Render(f.name)
+		keyBadge := lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true).Render(fmt.Sprintf("[%d]", i+1))
+		var btnContent string
 		if isSelected {
-			nameStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(f.name)
+			btnName := lipgloss.NewStyle().Foreground(m.theme.Accent).Bold(true).Render(f.name)
+			btnContent = fmt.Sprintf("► %s %s ◄", keyBadge, btnName)
+		} else {
+			btnName := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(f.name)
+			btnContent = fmt.Sprintf("%s %s", keyBadge, btnName)
 		}
-		descStr := lipgloss.NewStyle().Foreground(m.theme.Secondary).Render(f.desc)
 
-		line := fmt.Sprintf("[%d] %-26s - %s", i+1, nameStr, descStr)
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
+		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
+	}
+
+	for i := 0; i < len(renderedButtons); i += numCols {
+		end := i + numCols
+		if end > len(renderedButtons) {
+			end = len(renderedButtons)
+		}
+		row := lipgloss.JoinHorizontal(lipgloss.Top, renderedButtons[i:end]...)
+		b.WriteString(row + "\n")
 	}
 
 	return b.String()
