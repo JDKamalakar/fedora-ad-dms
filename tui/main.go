@@ -36,6 +36,9 @@ func acquireSingleInstanceLock() {
 	lockFile = f
 }
 
+// ------------------------------------------------------------------------------
+// Data Models
+// ------------------------------------------------------------------------------
 type ViewMode int
 
 const (
@@ -332,14 +335,16 @@ func (m Model) View() string {
 	if m.width < minWidth || m.height < minHeight {
 		warnBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("1")).
 			Padding(1, 2).
 			Align(lipgloss.Center).
-			Render(fmt.Sprintf("⚠️  TERMINAL WINDOW TOO SMALL\n\nSize: %d×%d | Required: %d×%d\n\n👉 Please maximize or expand your terminal.",
+			Render(fmt.Sprintf("⚠️  TERMINAL WINDOW TOO SMALL\n\nSize: %d×%d | Required: %d×%d\n\n👉 Please maximize or expand your terminal window.",
 				m.width, m.height, minWidth, minHeight))
 
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, warnBox)
 	}
 
+	// Full width block calculation
 	boxWidth := m.width - 2
 	if boxWidth < 76 {
 		boxWidth = 76
@@ -350,18 +355,18 @@ func (m Model) View() string {
 	titleText := "🛡️  AD-DMS INTRANET CONTROL & MONITORING"
 	metaText := fmt.Sprintf("Host: %s  |  API: %s  |  %s", hostname, m.apiURL, time.Now().Format("15:04:05"))
 	headerContent := lipgloss.JoinVertical(lipgloss.Center,
-		lipgloss.NewStyle().Bold(true).Render(titleText),
-		lipgloss.NewStyle().Render(metaText),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(titleText),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(metaText),
 	)
 	headerBox := lipgloss.NewStyle().
 		Width(boxWidth).
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
 		Align(lipgloss.Center).
 		Padding(0, 1).
 		Render(headerContent)
 
 	// 2. MAIN BODY BOX (Standalone Rounded Block for buttons/tables)
-	// Calculate dynamic height to fill available vertical space
 	bodyHeight := m.height - 13
 	if bodyHeight < 8 {
 		bodyHeight = 8
@@ -387,6 +392,7 @@ func (m Model) View() string {
 		Width(boxWidth).
 		Height(bodyHeight).
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
 		Padding(0, 1).
 		Render(bodyInner)
 
@@ -394,7 +400,7 @@ func (m Model) View() string {
 	var descText string
 	if m.view == ViewMain {
 		cur := m.menuItems[m.cursor]
-		descText = fmt.Sprintf("%s %s  —  %s", cur.Icon, cur.Name, cur.Desc)
+		descText = fmt.Sprintf("ℹ️  %s %s  —  %s", cur.Icon, cur.Name, cur.Desc)
 	} else if m.view == ViewMonitor {
 		descText = "📊 Workstation Telemetry: Press [r] to refresh ping status • Active filter is highlighted"
 	} else if m.view == ViewSafeEditor {
@@ -410,18 +416,20 @@ func (m Model) View() string {
 	descBox := lipgloss.NewStyle().
 		Width(boxWidth).
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
 		Align(lipgloss.Center).
 		Padding(0, 1).
-		Render(descText)
+		Render(lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true).Render(descText))
 
 	// 4. NAVIGATION / FOOTER BOX (Standalone Rounded Block)
 	navText := "[↑/↓/←/→] Navigate   •   [Enter] Select   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
 	footerBox := lipgloss.NewStyle().
 		Width(boxWidth).
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("6")).
 		Align(lipgloss.Center).
 		Padding(0, 1).
-		Render(navText)
+		Render(lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(navText))
 
 	// Combine all 4 rounded blocks centered vertically & horizontally
 	fullUI := lipgloss.JoinVertical(lipgloss.Center,
@@ -438,6 +446,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 	var b strings.Builder
 	title := lipgloss.NewStyle().
 		Bold(true).
+		Foreground(lipgloss.Color("6")).
 		Render("MODULE SELECTOR")
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
 
@@ -448,7 +457,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 	}
 
 	spacing := 2
-	btnWidth := (totalWidth - (numCols-1)*spacing - 6) / numCols
+	btnWidth := (totalWidth - (numCols-1)*spacing - 8) / numCols
 	if btnWidth < 30 {
 		btnWidth = 30
 	}
@@ -463,6 +472,7 @@ func (m Model) renderMainMenu(totalWidth int) string {
 			btnStyle = lipgloss.NewStyle().
 				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("2")).
 				Padding(0, 1).
 				Bold(true).
 				Align(lipgloss.Center)
@@ -470,16 +480,19 @@ func (m Model) renderMainMenu(totalWidth int) string {
 			btnStyle = lipgloss.NewStyle().
 				Width(btnWidth).
 				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1).
 				Align(lipgloss.Center)
 		}
 
-		keyBadge := fmt.Sprintf("[%s]", item.Key)
+		keyBadge := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true).Render(fmt.Sprintf("[%s]", item.Key))
 		var btnContent string
 		if isSelected {
-			btnContent = fmt.Sprintf("► %s %s %s ◄", keyBadge, item.Icon, item.Name)
+			btnName := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true).Render(item.Name)
+			btnContent = fmt.Sprintf("► %s %s %s ◄", keyBadge, item.Icon, btnName)
 		} else {
-			btnContent = fmt.Sprintf("%s %s %s", keyBadge, item.Icon, item.Name)
+			btnName := lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(item.Name)
+			btnContent = fmt.Sprintf("%s %s %s", keyBadge, item.Icon, btnName)
 		}
 
 		renderedButtons = append(renderedButtons, btnStyle.Render(btnContent))
@@ -509,16 +522,16 @@ func (m Model) renderMainMenu(totalWidth int) string {
 func (m Model) renderMonitorView(totalWidth int) string {
 	var b strings.Builder
 
-	filterTitle := "WORKSTATION STATUS: "
+	filterTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("WORKSTATION STATUS: ")
 	filters := []string{"[1] All Devices", "[2] Active Only", "[3] Inactive Only"}
 	var filterBadges []string
 
 	for i, f := range filters {
 		isActive := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
 		if isActive {
-			filterBadges = append(filterBadges, lipgloss.NewStyle().Bold(true).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render("► "+f+" ◄"))
+			filterBadges = append(filterBadges, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("2")).Padding(0, 1).Render("► "+f+" ◄"))
 		} else {
-			filterBadges = append(filterBadges, lipgloss.NewStyle().Render(f))
+			filterBadges = append(filterBadges, lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(f))
 		}
 	}
 
@@ -530,7 +543,7 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		"│ %-16s │ %-15s │ %-20s │ %-11s │ %-19s │\n"+
 		"├──────────────────┼─────────────────┼──────────────────────┼─────────────┼─────────────────────┤",
 		"HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN")
-	b.WriteString(tblHeader + "\n")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(tblHeader) + "\n")
 
 	totalShown := 0
 	matchedHosts := make(map[string]bool)
@@ -553,17 +566,22 @@ func (m Model) renderMonitorView(totalWidth int) string {
 
 		if len(labClients) > 0 {
 			headerStr := fmt.Sprintf("► LAB: %s (%s)", lab.Name, lab.Prefix)
-			b.WriteString(fmt.Sprintf("│ %-81s│\n", headerStr))
+			labHeaderLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render(fmt.Sprintf("│ %-81s│", headerStr))
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(labHeaderLine) + "\n")
 
 			for _, c := range labClients {
 				totalShown++
 				stStr := "ONLINE"
+				stStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("ONLINE")
 				if !c.IsActive {
 					stStr = "OFFLINE"
+					stStyled = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("OFFLINE")
 				}
-				row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-12s│ %-20s│",
-					c.Hostname, c.IP, c.ActiveUser, stStr, c.LastSeen)
-				b.WriteString(row + "\n")
+				_ = stStr
+				userStr := lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(c.ActiveUser)
+				row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
+					c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
+				b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(row) + "\n")
 			}
 		}
 	}
@@ -583,54 +601,58 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	}
 
 	if len(otherClients) > 0 {
-		b.WriteString("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                             │\n")
+		unassignedLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("│ ► GENERAL / UNASSIGNED WORKSTATIONS                                             │")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(unassignedLine) + "\n")
 		for _, c := range otherClients {
 			totalShown++
-			stStr := "ONLINE"
+			stStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("ONLINE")
 			if !c.IsActive {
-				stStr = "OFFLINE"
+				stStyled = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("OFFLINE")
 			}
-			row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-12s│ %-20s│",
-				c.Hostname, c.IP, c.ActiveUser, stStr, c.LastSeen)
-			b.WriteString(row + "\n")
+			userStr := lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(c.ActiveUser)
+			row := fmt.Sprintf("│  %-16s│ %-16s│ %-21s│ %-21s│ %-20s│",
+				c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(row) + "\n")
 		}
 	}
 
 	if totalShown == 0 {
-		b.WriteString("│  No matching workstations found in this filter.                                │\n")
+		emptyRow := fmt.Sprintf("│  %-78s│", "No matching workstations found in this filter.")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(emptyRow) + "\n")
 	}
 
-	b.WriteString("└──────────────────┴─────────────────┴──────────────────────┴─────────────┴─────────────────────┘\n")
+	tblFooter := "└──────────────────┴─────────────────┴──────────────────────┴─────────────┴─────────────────────┘"
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(tblFooter) + "\n")
 	return b.String()
 }
 
 func (m Model) renderScreenshotView(totalWidth int) string {
 	var b strings.Builder
-	title := "INSTANT REMOTE SCREEN CAPTURE"
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Bold(true).Render(title) + "\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("INSTANT REMOTE SCREEN CAPTURE")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
 
 	if len(m.clients) == 0 {
-		b.WriteString("  No active workstations connected to intranet.\n")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(lipgloss.Color("7")).Render("No active workstations connected to intranet.") + "\n")
 	} else {
 		for i, c := range m.clients {
 			isSelected := m.cursor == i
 			boxStyle := lipgloss.NewStyle().
 				Width(totalWidth - 6).
 				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("8")).
 				Padding(0, 1)
 
-			stStr := "ONLINE"
+			stStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render("ONLINE")
 			if !c.IsActive {
-				stStr = "OFFLINE"
+				stStyled = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render("OFFLINE")
 			}
 
-			var line string
 			if isSelected {
-				line = fmt.Sprintf("► [%d] %-18s  (User: %-15s | IP: %-15s | %s) ◄", i+1, c.Hostname, c.ActiveUser, c.IP, stStr)
-			} else {
-				line = fmt.Sprintf("[%d] %-18s  (User: %-15s | IP: %-15s | %s)", i+1, c.Hostname, c.ActiveUser, c.IP, stStr)
+				boxStyle = boxStyle.BorderForeground(lipgloss.Color("2")).Bold(true)
 			}
-			b.WriteString(boxStyle.Render(line) + "\n")
+
+			line := fmt.Sprintf("[%d] %-18s  (User: %-15s | IP: %-15s | %s)", i+1, c.Hostname, c.ActiveUser, c.IP, stStyled)
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
 		}
 	}
 	return b.String()
@@ -638,8 +660,8 @@ func (m Model) renderScreenshotView(totalWidth int) string {
 
 func (m Model) renderSafeEditorView(totalWidth int) string {
 	var b strings.Builder
-	title := "SAFE CONFIGURATION EDITOR (20-BACKUP / 7-DAY ROTATION ENGINE)"
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Bold(true).Render(title) + "\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("SAFE CONFIGURATION EDITOR (20-BACKUP / 7-DAY ROTATION ENGINE)")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
 
 	files := []struct {
 		name string
@@ -659,15 +681,21 @@ func (m Model) renderSafeEditorView(totalWidth int) string {
 		boxStyle := lipgloss.NewStyle().
 			Width(totalWidth - 6).
 			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("8")).
 			Padding(0, 1)
 
-		var line string
 		if isSelected {
-			line = fmt.Sprintf("► [%d] %-26s - %s ◄", i+1, f.name, f.desc)
-		} else {
-			line = fmt.Sprintf("[%d] %-26s - %s", i+1, f.name, f.desc)
+			boxStyle = boxStyle.BorderForeground(lipgloss.Color("2")).Bold(true)
 		}
-		b.WriteString(boxStyle.Render(line) + "\n")
+
+		nameStr := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render(f.name)
+		if isSelected {
+			nameStr = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2")).Render(f.name)
+		}
+		descStr := lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Render(f.desc)
+
+		line := fmt.Sprintf("[%d] %-26s - %s", i+1, nameStr, descStr)
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
 	}
 
 	return b.String()
@@ -675,16 +703,18 @@ func (m Model) renderSafeEditorView(totalWidth int) string {
 
 func (m Model) renderHistoryView(totalWidth int) string {
 	var b strings.Builder
-	title := "WORKSTATION ENROLLMENT AUDIT LOG"
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Bold(true).Render(title) + "\n\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("WORKSTATION ENROLLMENT AUDIT LOG")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
 
 	if len(m.clients) == 0 {
-		b.WriteString("  No workstation enrollment records yet.\n")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(lipgloss.Color("7")).Render("No workstation enrollment records yet.") + "\n")
 	} else {
-		b.WriteString(fmt.Sprintf("  %-18s %-16s %-21s %-21s %s\n", "HOSTNAME", "IP ADDRESS", "FIRST JOINED", "LAST SEEN", "ACTIVE USER"))
-		b.WriteString("  " + strings.Repeat("-", 86) + "\n")
+		headerLine := fmt.Sprintf("  %-18s %-16s %-21s %-21s %s", "HOSTNAME", "IP ADDRESS", "FIRST JOINED", "LAST SEEN", "ACTIVE USER")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Bold(true).Render(headerLine) + "\n")
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(strings.Repeat("-", 86)) + "\n")
 		for _, c := range m.clients {
-			b.WriteString(fmt.Sprintf("  %-18s %-16s %-21s %-21s %s\n", c.Hostname, c.IP, c.FirstRegistered, c.LastSeen, c.ActiveUser))
+			row := fmt.Sprintf("  %-18s %-16s %-21s %-21s %s", c.Hostname, c.IP, c.FirstRegistered, c.LastSeen, c.ActiveUser)
+			b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(row) + "\n")
 		}
 	}
 	return b.String()
@@ -692,10 +722,10 @@ func (m Model) renderHistoryView(totalWidth int) string {
 
 func (m Model) renderCommandView(totalWidth int) string {
 	var b strings.Builder
-	title := "DISPATCH REMOTE COMMAND / TASK"
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Bold(true).Render(title) + "\n\n")
-	b.WriteString("Dispatch administrative commands across single endpoints or entire labs.\n")
-	b.WriteString("(Scheduled commands execute automatically upon the next client heartbeat poll)\n")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("DISPATCH REMOTE COMMAND / TASK")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Render(title) + "\n\n")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(lipgloss.Color("7")).Render("Dispatch administrative commands across single endpoints or entire labs.") + "\n")
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth - 4).Align(lipgloss.Center).Foreground(lipgloss.Color("3")).Render("(Scheduled commands execute automatically upon the next client heartbeat poll)") + "\n")
 	return b.String()
 }
 
