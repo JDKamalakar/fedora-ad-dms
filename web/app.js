@@ -86,6 +86,8 @@ function populateDomainForm() {
   document.getElementById('confDomainUser').value = d.DOMAIN_USER || 'admin';
   document.getElementById('confRefreshInterval').value = d.REFRESH_INTERVAL || '1h';
   document.getElementById('confSystemTimezone').value = d.SYSTEM_TIMEZONE || 'Asia/Kolkata';
+  document.getElementById('confIntranetHost').value = d.INTRANET_HOST_NAME || 'GSFCUPLLAB203';
+  document.getElementById('confIntranetIp').value = d.INTRANET_FALLBACK_IP || '10.205.18.253';
   document.getElementById('confBlockNotifTitle').value = d.BLOCK_NOTIFICATION_TITLE || 'Unauthorized Application Blocked';
   document.getElementById('confBlockNotifMsg').value = d.BLOCK_NOTIFICATION_MSG || 'Access Denied: This application is blacklisted under University IT Policy and has been terminated and removed.';
   document.getElementById('confAcademicWarningMsg').value = d.ACADEMIC_WARNING_MSG || 'WARNING: This software is not pre-approved. If this package is found to be non-academic or violates institution policy, strict disciplinary action will be initiated.';
@@ -100,6 +102,8 @@ async function saveDomainConfig() {
   AppState.domain.DOMAIN_USER = document.getElementById('confDomainUser').value.trim();
   AppState.domain.REFRESH_INTERVAL = document.getElementById('confRefreshInterval').value.trim();
   AppState.domain.SYSTEM_TIMEZONE = document.getElementById('confSystemTimezone').value.trim();
+  AppState.domain.INTRANET_HOST_NAME = document.getElementById('confIntranetHost').value.trim();
+  AppState.domain.INTRANET_FALLBACK_IP = document.getElementById('confIntranetIp').value.trim();
   AppState.domain.BLOCK_NOTIFICATION_TITLE = document.getElementById('confBlockNotifTitle').value.trim();
   AppState.domain.BLOCK_NOTIFICATION_MSG = document.getElementById('confBlockNotifMsg').value.trim();
   AppState.domain.ACADEMIC_WARNING_MSG = document.getElementById('confAcademicWarningMsg').value.trim();

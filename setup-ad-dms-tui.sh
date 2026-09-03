@@ -243,22 +243,22 @@ if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "
   exit 0
 fi
 
-# Support checking which service/source is active without root privileges
-if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ]; then
+# Support checking which service/source was used previously & live ping/probe status
+if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
   echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
-  echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & INTRANET STATUS\033[0m                  \033[1;36m║\033[0m"
+  echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & HOST PROBE STATUS\033[0m                \033[1;36m║\033[0m"
   echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
 
   CONF_DIR="/etc/ad-dms"
   SOURCE_LOG="${CONF_DIR}/.last_source"
   
   if [ -f "$SOURCE_LOG" ]; then
-    echo -e "  \033[1;36m[LAST SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
+    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
   else
-    echo -e "  \033[1;36m[LAST SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
+    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
   fi
 
-  # Live check connectivity
+  # Load intranet and main host configuration from domain.conf
   INTRANET_HOST="GSFCUPLLAB203"
   INTRANET_IP="10.205.18.253"
   INTRANET_PORT="8080"
@@ -270,7 +270,28 @@ if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ 
     INTRANET_PORT="${INTRANET_PORT:-8080}"
   fi
 
-  echo -e "\n  \033[1;36m[LIVE PROBE]\033[0m Testing reachable upstream service..."
+  echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP:-None}, Port: ${INTRANET_PORT})"
+
+  echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
+  ping_ok=false
+  for ping_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+    if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+      ping_ok=true
+      break
+    fi
+  done
+  if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
+    if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
+      ping_ok=true
+    fi
+  fi
+  if [ "$ping_ok" = false ]; then
+    echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
+  fi
+
+  echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
   live_found=false
   for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
     if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then

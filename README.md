@@ -234,13 +234,40 @@ refresh
 ### Checking Timer Countdown
 To inspect when the next automated sync is scheduled:
 ```bash
-refresh --t
-# or
 refresh -t
+# or
+refresh --time
 ```
 *Output:*
 ```text
 [AD-DMS TIMER] Next policy refresh scheduled in: 28min (Next run: Thu 2026-08-27 15:00:00)
+```
+
+### Inspecting Previous Sync Source & Live Host Ping Status
+To check which upstream source (`Intranet Host`, `Intranet IP`, or `GitHub Cloud CDN`) was previously used and test live ICMP ping & HTTP reachability against the main host device configured in `domain.conf`:
+```bash
+refresh -s
+# or
+refresh --source
+# or
+refresh -p
+# or
+refresh --ping
+```
+*Output:*
+```text
+╔══════════════════════════════════════════════════════════════════════════╗
+║                  AD-DMS POLICY SOURCE & HOST PROBE STATUS                ║
+╚══════════════════════════════════════════════════════════════════════════╝
+  [PREVIOUS SYNC SOURCE] Intranet Host (GSFCUPLLAB203:8080) - Synced at Thu Sep 3 08:50:12 IST 2026
+
+  [MAIN HOST DEVICE TARGET] GSFCUPLLAB203 (Fallback IP: 10.205.18.253, Port: 8080)
+
+  [ICMP PING PROBE] Pinging main host device...
+    -> ● ICMP PING SUCCESSFUL (Host 'GSFCUPLLAB203' replied to ping)
+
+  [HTTP SERVICE PROBE] Testing reachable upstream service...
+    -> ● INTRANET HOST ONLINE (Connected via GSFCUPLLAB203:8080)
 ```
 
 ---

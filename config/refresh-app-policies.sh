@@ -616,6 +616,236 @@ EOF
 chmod +x /usr/local/bin/install
 echo -e "  -> ${GREEN}[CLI INSTALLED]${NC} Universal user installation utility active at /usr/local/bin/install"
 
+# Deploy /usr/local/bin/refresh utility command
+cat <<'REFRESH_UTIL_EOF' > /usr/local/bin/refresh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Support checking remaining timer interval without root privileges
+if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
+  if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+    TIMER_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+    LEFT_TIME=$(echo "$TIMER_INFO" | awk '{print $3}' || echo "unknown")
+    NEXT_DATE=$(echo "$TIMER_INFO" | awk '{print $1, $2}' || echo "unknown")
+    echo -e "\033[1;36m[AD-DMS TIMER]\033[0m Next policy refresh scheduled in: \033[1;32m${LEFT_TIME}\033[0m (Next run: ${NEXT_DATE})"
+  else
+    echo -e "\033[1;33m[AD-DMS TIMER]\033[0m ad-dms-refresh.timer is currently inactive or not installed."
+  fi
+  exit 0
+fi
+
+# Support checking which service/source was used previously & live ping/probe status
+if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
+  echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+  echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & HOST PROBE STATUS\033[0m                \033[1;36m║\033[0m"
+  echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
+
+  CONF_DIR="/etc/ad-dms"
+  SOURCE_LOG="${CONF_DIR}/.last_source"
+  
+  if [ -f "$SOURCE_LOG" ]; then
+    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
+  else
+    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
+  fi
+
+  # Load intranet and main host configuration from domain.conf
+  INTRANET_HOST="GSFCUPLLAB203"
+  INTRANET_IP="10.205.18.253"
+  INTRANET_PORT="8080"
+  if [ -f "${CONF_DIR}/domain.conf" ]; then
+    # shellcheck source=/dev/null
+    source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+    INTRANET_PORT="${INTRANET_PORT:-8080}"
+  fi
+
+  echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP:-None}, Port: ${INTRANET_PORT})"
+
+  echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
+  ping_ok=false
+  for ping_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+    if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+      ping_ok=true
+      break
+    fi
+  done
+  if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
+    if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
+      ping_ok=true
+    fi
+  fi
+  if [ "$ping_ok" = false ]; then
+    echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
+  fi
+
+  echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
+  live_found=false
+  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+    if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
+      live_found=true
+      break
+    fi
+  done
+
+  if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
+    if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
+      live_found=true
+    fi
+  fi
+
+  if [ "$live_found" = false ]; then
+    if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> \033[1;33m● GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)"
+    else
+      echo -e "    -> \033[1;31m● ALL SOURCES OFFLINE\033[0m (No intranet or internet connectivity)"
+    fi
+  fi
+  echo ""
+  exit 0
+fi
+
+REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
+CONF_DIR="/etc/ad-dms"
+
+# Load local domain configuration if present to discover intranet host
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
+if [ "$EUID" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
+# Detect if running in headless background mode (no TTY)
+if [ ! -t 1 ]; then
+  exec >> /var/log/ad-dms-refresh.log 2>&1
+  echo "=== Policy Sync Started: $(date) ==="
+else
+  echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files (Intranet First & GitHub Fallback)...\033[0m"
+fi
+
+mkdir -p "$CONF_DIR"
+
+FILES=(
+  "refresh-app-policies.sh"
+  "remote-tasks.sh"
+  "allowed-apps.conf"
+  "blocked-apps.conf"
+  "compulsory-apps.conf"
+  "group-apps.conf"
+  "device-rules.conf"
+  "domain.conf"
+  "lab.conf"
+)
+
+for file in "${FILES[@]}"; do
+  [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
+  fetched=false
+
+  # 1. Try Intranet Host via Hostname (Plain, .local, and FQDN)
+  if [ "$USE_INTRANET" = "yes" ]; then
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
+        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+        fetched=true
+        break
+      fi
+    done
+  fi
+
+  # 2. Try Intranet Host via Fallback IP
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ]; then
+    if curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP: ${INTRANET_IP})\033[0m"
+      echo "Intranet IP (${INTRANET_IP}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+      fetched=true
+    fi
+  fi
+
+  # 3. Fallback to GitHub Cloud CDN
+  if [ "$fetched" = false ]; then
+    if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      echo "GitHub Cloud (github.com/JDKamalakar/fedora-ad-dms) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+      fetched=true
+    fi
+  fi
+
+  if [ "$fetched" = false ]; then
+    [ -t 1 ] && echo -e "\033[1;33m[UNCHANGED / OFFLINE]\033[0m"
+  fi
+done
+
+# Sync Siren alarm asset if missing or outdated
+mkdir -p "${CONF_DIR}/assets"
+if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
+  [ -t 1 ] && echo -n -e "  -> Downloading security asset: Siren.mp3... "
+  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
+    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
+  else
+    [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
+  fi
+fi
+
+# Dynamically synchronize ad-dms-refresh.timer interval if domain.conf was updated
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  RAW_INT="${REFRESH_INTERVAL:-1h}"
+  # Normalize human intervals (e.g. 1hrs -> 1h, 1hr -> 1h, 30mins -> 30m)
+  NORM_INT=$(echo "$RAW_INT" | sed -E -e 's/([0-9]+)[[:space:]]*(hrs|hr|hours|hour)/\1h/g' -e 's/([0-9]+)[[:space:]]*(mins|min|minutes|minute)/\1m/g' -e 's/([0-9]+)[[:space:]]*(secs|sec|seconds|second)/\1s/g')
+  
+  CURRENT_TIMER_INT=$(systemctl show ad-dms-refresh.timer --property=Unit -p AccuracySec 2>/dev/null | grep -i "OnUnitActiveSec" || true)
+  if [ -f /etc/systemd/system/ad-dms-refresh.timer ]; then
+    cat <<TIMER_EOF > /etc/systemd/system/ad-dms-refresh.timer
+[Unit]
+Description=Run AD-DMS Policy Refresh Periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${NORM_INT}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER_EOF
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl restart ad-dms-refresh.timer 2>/dev/null || true
+  fi
+fi
+
+chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
+
+if [ -x "${CONF_DIR}/refresh-app-policies.sh" ]; then
+  "${CONF_DIR}/refresh-app-policies.sh"
+else
+  echo "[ERROR] Missing executable engine script at '${CONF_DIR}/refresh-app-policies.sh'"
+  exit 1
+fi
+REFRESH_UTIL_EOF
+chmod +x /usr/local/bin/refresh
+echo -e "  -> ${GREEN}[REFRESH CLI INSTALLED]${NC} Universal policy refresh utility active at /usr/local/bin/refresh"
+
 # E. Deploy Background GUI Flatpak Scanner Daemon (/usr/local/bin/ad-dms-gui-scan)
 cat <<'EOF' > /usr/local/bin/ad-dms-gui-scan
 #!/usr/bin/env bash
