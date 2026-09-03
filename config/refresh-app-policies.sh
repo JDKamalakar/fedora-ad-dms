@@ -1564,22 +1564,23 @@ fi
 # ------------------------------------------------------------------------------
 # Auto-Manage Intranet Host Server (web_server.py) if on the Central Server
 # ------------------------------------------------------------------------------
-MY_CURR_HOST="GSFCUPLLAB203"
-INTRANET_HOST_VAL="GSFCUPLLAB203"
-INTRANET_IP_VAL="10.205.18.253"
+MY_CURR_HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo '')"
+INTRANET_HOST_VAL="${INTRANET_HOST_NAME:-${INTRANET_HOST:-GSFCUPLLAB203}}"
+INTRANET_IP_VAL="${INTRANET_FALLBACK_IP:-${INTRANET_IP:-10.205.18.253}}"
 
 # Find web_server.py in local repo or /etc/ad-dms or workspace
 SERVER_SCRIPT=""
-for candidate in "/home/jk/Projects/fedora-ad-dms/web_server.py" "/web_server.py" "/home/jk/Projects/fedora-ad-dms/web_server.py" "/etc/ad-dms/web_server.py"; do
-  if [ -f "" ]; then
-    SERVER_SCRIPT=""
+for candidate in "${PWD}/web_server.py" "${SCRIPT_DIR:-}/web_server.py" "/home/jk/Projects/fedora-ad-dms/web_server.py" "/etc/ad-dms/web_server.py"; do
+  if [ -f "$candidate" ]; then
+    SERVER_SCRIPT="$candidate"
     break
   fi
 done
 
-if [ -n "" ]; then
+if [ -n "$SERVER_SCRIPT" ]; then
   # If current machine is the Central Host or has the fallback IP
-  if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+  if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST_VAL,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP_VAL}/"; then
+    SERVER_DIR="$(dirname "$SERVER_SCRIPT")"
     cat <<EOF > /etc/systemd/system/ad-dms-server.service
 [Unit]
 Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
@@ -1588,8 +1589,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=.
-ExecStart=/usr/bin/python3 
+WorkingDirectory=${SERVER_DIR}
+ExecStart=/usr/bin/python3 ${SERVER_SCRIPT}
 Restart=always
 RestartSec=3
 StandardOutput=journal
@@ -1601,7 +1602,7 @@ EOF
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now ad-dms-server.service 2>/dev/null || true
     systemctl restart ad-dms-server.service 2>/dev/null || true
-    echo -e "  -> [SERVER ACTIVE] ad-dms-server.service started and running on port 8080."
+    echo -e "  -> ${GREEN}[SERVER ACTIVE]${NC} ad-dms-server.service started and running on port ${INTRANET_PORT:-8080}."
   fi
 fi
 
