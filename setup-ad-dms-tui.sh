@@ -696,16 +696,19 @@ AUTOS_EOF
   fi
 }
 
-msg_info "Deploying all preset archives from '${PRESETS_DIR:-presets/}' to '/etc/skel'..."
+msg_info "Deploying all preset archives from '${PRESETS_DIR:-presets/}' to '/etc/skel' and all user accounts..."
 deploy_presets "/etc/skel"
 
-if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
-  USER_HOME=$(eval echo "~${REAL_USER}")
-  if [ -d "$USER_HOME" ]; then
-    msg_info "Deploying preset archives to current user '${REAL_USER}' (${USER_HOME})..."
-    deploy_presets "$USER_HOME" "$REAL_USER"
+# Deploy to ALL existing user home directories in /home/*
+for udir in /home/*; do
+  [ -d "$udir" ] || continue
+  uname=$(basename "$udir")
+  [ "$uname" = "*" ] && continue
+  if id "$uname" &>/dev/null; then
+    msg_info "Configuring DMS desktop presets for user '${uname}' (${udir})..."
+    deploy_presets "$udir" "$uname"
   fi
-fi
+done
 
 msg_ok "All DMS and desktop preset configurations successfully deployed."
 

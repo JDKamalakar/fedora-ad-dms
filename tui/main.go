@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 	"syscall"
 	"time"
 
@@ -972,18 +973,28 @@ func (m Model) renderMonitorView(totalWidth int) string {
 
 			for i, c := range labItems {
 				isHovered := m.cursor == labIndices[i]
-				stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("ONLINE")
+				stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell("ONLINE", 11))
 				if !c.IsActive {
-					stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
+					stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render(padCell("OFFLINE", 11))
 				}
-				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
 				cursorMark := fmt.Sprintf("%2d", globalIndex+1)
 				if isHovered {
-					cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", globalIndex+1))
-					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
+					cursorMark = fmt.Sprintf("►%d", globalIndex+1)
 				}
-				row := fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
-					cursorMark, c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
+				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
+				if isHovered {
+					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
+				}
+				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.Hostname, 16), 16))
+				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.IP, 15), 15))
+				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.ActiveUser, 24), 24))
+				if isHovered {
+					c4 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.ActiveUser, 24), 24))
+				}
+				c5 := stStyled
+				c6 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.LastSeen, 23), 23))
+
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5, c6)
 				lines = append(lines, row)
 				globalIndex++
 			}
@@ -1186,12 +1197,16 @@ func (m Model) renderHistoryView(totalWidth int) string {
 				if s.DurationMins == 0 {
 					durStr = "< 1 min"
 				}
-				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(s.User)
+				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.Hostname, 16), 16))
+				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.IP, 15), 15))
+				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.User, 24), 24))
 				if isHovered {
-					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(s.User)
+					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.User, 24), 24))
 				}
-				row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │",
-					s.Hostname, s.IP, userStr, s.LoginTime, durStr)
+				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.LoginTime, 20), 20))
+				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(durStr, 11), 11))
+
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
 				lines = append(lines, row)
 			}
 			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
@@ -1218,20 +1233,24 @@ func (m Model) renderHistoryView(totalWidth int) string {
 			for i, app := range m.installedApps {
 				isHovered := m.cursor == i
 				hostsStr := strings.Join(app.Hosts, ", ")
-				if len(hostsStr) > 24 {
-					hostsStr = hostsStr[:21] + "..."
-				}
 				pkgName := app.Name
-				if len(pkgName) > 30 {
-					pkgName = pkgName[:27] + "..."
-				}
 				cursorMark := fmt.Sprintf("%2d", i+1)
 				if isHovered {
-					cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", i+1))
-					pkgName = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(pkgName)
+					cursorMark = fmt.Sprintf("►%d", i+1)
 				}
-				row := fmt.Sprintf("│ %-4s │ %-30s │ %-7s │ %-24s │ %-20s │",
-					cursorMark, pkgName, strings.ToUpper(app.Kind), hostsStr, app.DiscoveredOn)
+				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
+				if isHovered {
+					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
+				}
+				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(pkgName, 30), 30))
+				if isHovered {
+					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(pkgName, 30), 30))
+				}
+				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(strings.ToUpper(app.Kind), 7), 7))
+				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(hostsStr, 24), 24))
+				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(app.DiscoveredOn, 20), 20))
+
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
 				lines = append(lines, row)
 			}
 			botBorder := "╰──────┴────────────────────────────────┴─────────┴──────────────────────────┴──────────────────────╯"
@@ -1257,12 +1276,16 @@ func (m Model) renderHistoryView(totalWidth int) string {
 
 			for i, c := range m.clients {
 				isHovered := m.cursor == i
-				userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
+				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.Hostname, 16), 16))
+				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.IP, 15), 15))
+				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.FirstRegistered, 24), 24))
+				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.LastSeen, 20), 20))
+				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.ActiveUser, 11), 11))
 				if isHovered {
-					userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
+					c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.ActiveUser, 11), 11))
 				}
-				row := fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │",
-					c.Hostname, c.IP, c.FirstRegistered, c.LastSeen, userStr)
+
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
 				lines = append(lines, row)
 			}
 			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
@@ -1476,6 +1499,27 @@ func pruneBackups(baseName, backupDir string) {
 			os.Remove(b.path)
 		}
 	}
+}
+
+
+func padCell(s string, width int) string {
+	runeLen := utf8.RuneCountInString(s)
+	if runeLen >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-runeLen)
+}
+
+func truncateText(s string, maxLen int) string {
+	runeLen := utf8.RuneCountInString(s)
+	if runeLen <= maxLen {
+		return s
+	}
+	runes := []rune(s)
+	if maxLen <= 3 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func readLabs(repoDir string) []LabDefinition {

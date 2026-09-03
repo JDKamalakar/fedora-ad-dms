@@ -1306,20 +1306,51 @@ EOF
 chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
 echo -e "  -> ${GREEN}[ALIASES CONFIGURED]${NC} Premium CLI interceptors configured in /etc/profile.d/99-ad-dms-aliases.sh"
 
-# Ensure DMS auto-starts for new user sessions in Niri (safely avoiding duplicate entries)
+# Comprehensive DMS & Desktop Preset Sync for ALL Users & /etc/skel Template
+# Ensures new and existing Active Directory / local users get full working DMS & Niri desktop
+PRESETS_DIR=""
+for cand_dir in "${CONF_DIR}/presets" "${SCRIPT_DIR:-}/presets" "/home/jk/Projects/fedora-ad-dms/presets" "/tmp/fedora-ad-dms/presets"; do
+  if [ -d "$cand_dir" ] && ls "$cand_dir"/*.tar.gz &>/dev/null; then
+    PRESETS_DIR="$cand_dir"
+    break
+  fi
+done
+
 for user_home in /etc/skel /home/*; do
-  [ -d "" ] || continue
-  niri_kdl="/.config/niri/config.kdl"
-  if [ -f "" ]; then
-    # Do not add if spawn-at-startup "dms" already exists in the file
-    if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' ""; then
-      sed -i '1s/^/spawn-at-startup "dms" "run"
-/' ""
+  [ -d "$user_home" ] || continue
+  u_name=$(basename "$user_home")
+  [ "$u_name" = "*" ] && continue
+
+  mkdir -p "${user_home}/.config" "${user_home}/.local/share" "${user_home}/.config/autostart"
+
+  # Unpack presets if user config or DankMaterialShell / niri is missing
+  if [ -n "$PRESETS_DIR" ] && [ -d "$PRESETS_DIR" ]; then
+    if [ ! -d "${user_home}/.config/niri" ] || [ ! -d "${user_home}/.config/DankMaterialShell" ] || [ "$user_home" = "/etc/skel" ]; then
+      for preset_archive in "${PRESETS_DIR}"/*.tar.gz "${PRESETS_DIR}"/*.tgz; do
+        [ -f "$preset_archive" ] || continue
+        if tar -tzf "$preset_archive" 2>/dev/null | grep -q -E '^\.?/?(\.config|\.local|\.bash|\.zsh)'; then
+          tar -xzf "$preset_archive" -C "$user_home" 2>/dev/null || true
+        else
+          tar -xzf "$preset_archive" -C "${user_home}/.config" 2>/dev/null || true
+        fi
+      done
     fi
   fi
+
+  # CRITICAL: Always remove hardcoded outputs.kdl so niri dynamically handles the current monitor
+  rm -f "${user_home}/.config/niri/dms/outputs.kdl"
+  rm -f "${user_home}/.config/niri/config.kdl.backup"*
+
+  # Ensure Niri config spawns DMS safely without duplicate lines
+  niri_kdl="${user_home}/.config/niri/config.kdl"
+  if [ -f "$niri_kdl" ]; then
+    if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' "$niri_kdl"; then
+      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_kdl"
+    fi
+  fi
+
   # Autostart fallback desktop entry
-  mkdir -p "/.config/autostart"
-  cat <<'DMS_AUTOS_EOF' > "/.config/autostart/dms.desktop"
+  cat <<'DMS_AUTOS_EOF' > "${user_home}/.config/autostart/dms.desktop"
 [Desktop Entry]
 Type=Application
 Name=Dank Material Shell
@@ -1328,9 +1359,12 @@ Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 DMS_AUTOS_EOF
-  if [ "" != "/etc/skel" ]; then
-    u_name=""
-    chown -R ":" "/.config/autostart" 2>/dev/null || true
+
+  # Fix ownership for non-skel user home directories
+  if [ "$user_home" != "/etc/skel" ]; then
+    if id "$u_name" &>/dev/null; then
+      chown -R "${u_name}:" "${user_home}/.config" "${user_home}/.local" 2>/dev/null || true
+    fi
   fi
 done
 echo -e "  -> ${GREEN}[DMS AUTOSTART]${NC} Verified Dank Material Shell auto-launch configuration across all users & templates."
