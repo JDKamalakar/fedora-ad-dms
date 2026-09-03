@@ -213,7 +213,7 @@ CONF_DIR="/etc/ad-dms"
 mkdir -p "$CONF_DIR"
 
 msg_info "Deploying system app policy configurations to '${CONF_DIR}'..."
-for config_file in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf refresh-app-policies.sh remote-tasks.sh; do
+for config_file in allowed-apps.conf blocked-apps.conf compulsory-apps.conf group-apps.conf refresh-app-policies.sh remote-tasks.sh domain.conf device-rules.conf lab.conf; do
   if [ -f "${SCRIPT_DIR}/${config_file}" ]; then
     cp -f "${SCRIPT_DIR}/${config_file}" "${CONF_DIR}/"
     msg_ok "Deployed: ${config_file}"
@@ -258,61 +258,90 @@ if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ 
     echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
   fi
 
-  # Load intranet and main host configuration from domain.conf
+  # Load intranet and main host configuration from domain.conf (or local workspace)
   INTRANET_HOST="GSFCUPLLAB203"
   INTRANET_IP="10.205.18.253"
   INTRANET_PORT="8080"
-  if [ -f "${CONF_DIR}/domain.conf" ]; then
+  if [ -f "/domain.conf" ]; then
     # shellcheck source=/dev/null
-    source "${CONF_DIR}/domain.conf" 2>/dev/null || true
-    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-    INTRANET_PORT="${INTRANET_PORT:-8080}"
+    source "/domain.conf" 2>/dev/null || true
+    INTRANET_HOST=""
+    INTRANET_IP=""
+    INTRANET_PORT="8080"
+  elif [ -f "/home/jk/Projects/fedora-ad-dms/domain.conf" ]; then
+    source "/home/jk/Projects/fedora-ad-dms/domain.conf" 2>/dev/null || true
+    INTRANET_HOST=""
+    INTRANET_IP=""
+    INTRANET_PORT="8080"
   fi
 
-  echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP:-None}, Port: ${INTRANET_PORT})"
+  MY_CURR_HOST="GSFCUPLLAB203"
+  echo -e "
+  [1;36m[MAIN HOST DEVICE TARGET][0m [1;37m[0m (Fallback IP: None, Port: )"
 
-  echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
+  echo -e "
+  [1;36m[ICMP PING PROBE][0m Pinging main host device..."
   ping_ok=false
-  for ping_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-    if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+  for ping_target in "127.0.0.1" "" ".local" ".gsfcu.local"; do
+    if [ "" = "127.0.0.1" ]; then
+      if [ "" != "" ]; then
+        continue
+      fi
+    fi
+    if ping -c 1 -W 1 "" >/dev/null 2>&1; then
+      if [ "" = "127.0.0.1" ]; then
+        echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Current machine is Central Host '')"
+      else
+        echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Host '' replied to ping)"
+      fi
       ping_ok=true
       break
     fi
   done
-  if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
-    if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
+  if [ "" = false ] && [ -n "" ]; then
+    if ping -c 1 -W 1 "" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Fallback IP '' replied to ping)"
       ping_ok=true
     fi
   fi
-  if [ "$ping_ok" = false ]; then
-    echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
+  if [ "" = false ]; then
+    echo -e "    -> [1;33m○ ICMP PING UNREACHABLE[0m (Host '' did not answer ping request)"
   fi
 
-  echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
+  echo -e "
+  [1;36m[HTTP SERVICE PROBE][0m Testing reachable upstream service..."
   live_found=false
-  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-    if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
-      live_found=true
-      break
-    fi
-  done
 
-  if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
-    if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
+  # Check localhost first if running on the host machine
+  if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+    if curl -fsSL -m 2 "http://127.0.0.1:/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● INTRANET HOST ONLINE[0m (Local host server active on port )"
       live_found=true
     fi
   fi
 
-  if [ "$live_found" = false ]; then
+  if [ "" = false ]; then
+    for host_target in "" ".local" ".gsfcu.local"; do
+      if curl -fsSL -m 2 "http://:/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> [1;32m● INTRANET HOST ONLINE[0m (Connected via :)"
+        live_found=true
+        break
+      fi
+    done
+  fi
+
+  if [ "" = false ] && [ -n "" ]; then
+    if curl -fsSL -m 2 "http://:/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● INTRANET IP ONLINE[0m (Connected via :)"
+      live_found=true
+    fi
+  fi
+
+  if [ "" = false ]; then
     if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;33m● GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)"
+      echo -e "    -> [1;33m● GITHUB CLOUD FALLBACK[0m (Intranet offline, GitHub reachable)"
     else
-      echo -e "    -> \033[1;31m● ALL SOURCES OFFLINE\033[0m (No intranet or internet connectivity)"
+      echo -e "    -> [1;31m● ALL SOURCES OFFLINE[0m (No intranet or internet connectivity)"
     fi
   fi
   echo ""
@@ -367,13 +396,26 @@ for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
   fetched=false
 
-  # 1. Try Intranet Host via Hostname (Plain, .local, and FQDN)
-  if [ "$USE_INTRANET" = "yes" ]; then
-    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
-        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+  # 1. Try Local Host loopback first if on the intranet host itself
+  if [ "" = "yes" ]; then
+    MY_CURR_HOST="GSFCUPLLAB203"
+    if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+      if curl -fsSL -m 3 "http://127.0.0.1:/config/" -o "/" 2>/dev/null || curl -fsSL -m 3 "http://127.0.0.1:/" -o "/" 2>/dev/null; then
+        [ -t 1 ] && echo -e "[1;32m[OK] (Intranet Localhost: 127.0.0.1)[0m"
+        echo "Intranet Host (127.0.0.1:) - Synced at Thu Sep  3 10:00:39 AM IST 2026" > "/.last_source" 2>/dev/null || true
+        chmod 644 "/.last_source" 2>/dev/null || true
+        fetched=true
+      fi
+    fi
+  fi
+
+  # 1b. Try Intranet Host via Hostname (Plain, .local, and FQDN)
+  if [ "" = false ] && [ "" = "yes" ]; then
+    for host_target in "" ".local" ".gsfcu.local"; do
+      if curl -fsSL -m 3 "http://:/config/" -o "/" 2>/dev/null || curl -fsSL -m 3 "http://:/" -o "/" 2>/dev/null; then
+        [ -t 1 ] && echo -e "[1;32m[OK] (Intranet Host: )[0m"
+        echo "Intranet Host (:) - Synced at Thu Sep  3 10:00:39 AM IST 2026" > "/.last_source" 2>/dev/null || true
+        chmod 644 "/.last_source" 2>/dev/null || true
         fetched=true
         break
       fi

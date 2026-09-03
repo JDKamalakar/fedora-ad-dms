@@ -649,61 +649,91 @@ if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ 
     echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
   fi
 
-  # Load intranet and main host configuration from domain.conf
+  # Load intranet and main host configuration from domain.conf (or local workspace)
   INTRANET_HOST="GSFCUPLLAB203"
   INTRANET_IP="10.205.18.253"
   INTRANET_PORT="8080"
-  if [ -f "${CONF_DIR}/domain.conf" ]; then
+  if [ -f "/domain.conf" ]; then
     # shellcheck source=/dev/null
-    source "${CONF_DIR}/domain.conf" 2>/dev/null || true
-    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-    INTRANET_PORT="${INTRANET_PORT:-8080}"
+    source "/domain.conf" 2>/dev/null || true
+    INTRANET_HOST=""
+    INTRANET_IP=""
+    INTRANET_PORT="8080"
+  elif [ -f "/home/jk/Projects/fedora-ad-dms/domain.conf" ]; then
+    source "/home/jk/Projects/fedora-ad-dms/domain.conf" 2>/dev/null || true
+    INTRANET_HOST=""
+    INTRANET_IP=""
+    INTRANET_PORT="8080"
   fi
 
-  echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP:-None}, Port: ${INTRANET_PORT})"
+  MY_CURR_HOST="GSFCUPLLAB203"
+  echo -e "
+  [1;36m[MAIN HOST DEVICE TARGET][0m [1;37m[0m (Fallback IP: None, Port: )"
 
-  echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
+  echo -e "
+  [1;36m[ICMP PING PROBE][0m Pinging main host device..."
   ping_ok=false
-  for ping_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-    if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+  for ping_target in "127.0.0.1" "" ".local" ".gsfcu.local"; do
+    # Only test 127.0.0.1 if current machine is the intranet host
+    if [ "" = "127.0.0.1" ]; then
+      if [ "" != "" ]; then
+        continue
+      fi
+    fi
+    if ping -c 1 -W 1 "" >/dev/null 2>&1; then
+      if [ "" = "127.0.0.1" ]; then
+        echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Current machine is Central Host '')"
+      else
+        echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Host '' replied to ping)"
+      fi
       ping_ok=true
       break
     fi
   done
-  if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
-    if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
+  if [ "" = false ] && [ -n "" ]; then
+    if ping -c 1 -W 1 "" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● ICMP PING SUCCESSFUL[0m (Fallback IP '' replied to ping)"
       ping_ok=true
     fi
   fi
-  if [ "$ping_ok" = false ]; then
-    echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
+  if [ "" = false ]; then
+    echo -e "    -> [1;33m○ ICMP PING UNREACHABLE[0m (Host '' did not answer ping request)"
   fi
 
-  echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
+  echo -e "
+  [1;36m[HTTP SERVICE PROBE][0m Testing reachable upstream service..."
   live_found=false
-  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-    if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
-      live_found=true
-      break
-    fi
-  done
 
-  if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
-    if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
+  # Check localhost first if running on the host machine
+  if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+    if curl -fsSL -m 2 "http://127.0.0.1:/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● INTRANET HOST ONLINE[0m (Local host server active on port )"
       live_found=true
     fi
   fi
 
-  if [ "$live_found" = false ]; then
+  if [ "" = false ]; then
+    for host_target in "" ".local" ".gsfcu.local"; do
+      if curl -fsSL -m 2 "http://:/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> [1;32m● INTRANET HOST ONLINE[0m (Connected via :)"
+        live_found=true
+        break
+      fi
+    done
+  fi
+
+  if [ "" = false ] && [ -n "" ]; then
+    if curl -fsSL -m 2 "http://:/domain.conf" >/dev/null 2>&1; then
+      echo -e "    -> [1;32m● INTRANET IP ONLINE[0m (Connected via :)"
+      live_found=true
+    fi
+  fi
+
+  if [ "" = false ]; then
     if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;33m● GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)"
+      echo -e "    -> [1;33m● GITHUB CLOUD FALLBACK[0m (Intranet offline, GitHub reachable)"
     else
-      echo -e "    -> \033[1;31m● ALL SOURCES OFFLINE\033[0m (No intranet or internet connectivity)"
+      echo -e "    -> [1;31m● ALL SOURCES OFFLINE[0m (No intranet or internet connectivity)"
     fi
   fi
   echo ""
@@ -758,13 +788,26 @@ for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
   fetched=false
 
-  # 1. Try Intranet Host via Hostname (Plain, .local, and FQDN)
-  if [ "$USE_INTRANET" = "yes" ]; then
-    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
-        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+  # 1. Try Local Host loopback first if on the intranet host itself
+  if [ "" = "yes" ]; then
+    MY_CURR_HOST="GSFCUPLLAB203"
+    if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+      if curl -fsSL -m 3 "http://127.0.0.1:/config/" -o "/" 2>/dev/null || curl -fsSL -m 3 "http://127.0.0.1:/" -o "/" 2>/dev/null; then
+        [ -t 1 ] && echo -e "[1;32m[OK] (Intranet Localhost: 127.0.0.1)[0m"
+        echo "Intranet Host (127.0.0.1:) - Synced at Thu Sep  3 10:00:30 AM IST 2026" > "/.last_source" 2>/dev/null || true
+        chmod 644 "/.last_source" 2>/dev/null || true
+        fetched=true
+      fi
+    fi
+  fi
+
+  # 1b. Try Intranet Host via Hostname (Plain, .local, and FQDN)
+  if [ "" = false ] && [ "" = "yes" ]; then
+    for host_target in "" ".local" ".gsfcu.local"; do
+      if curl -fsSL -m 3 "http://:/config/" -o "/" 2>/dev/null || curl -fsSL -m 3 "http://:/" -o "/" 2>/dev/null; then
+        [ -t 1 ] && echo -e "[1;32m[OK] (Intranet Host: )[0m"
+        echo "Intranet Host (:) - Synced at Thu Sep  3 10:00:30 AM IST 2026" > "/.last_source" 2>/dev/null || true
+        chmod 644 "/.last_source" 2>/dev/null || true
         fetched=true
         break
       fi
@@ -894,7 +937,17 @@ while read -r sess_id sess_user; do
   U_UID=$(id -u "$sess_user" 2>/dev/null || true)
   [ -z "$U_UID" ] && continue
   
-  USER_FLATPAKS=$(su - "$sess_user" -c "flatpak list --user --app --columns=application" 2>/dev/null || true)
+  # Check user flatpak exports directly on disk without PAM/su lock
+  if [ -d "/home/${sess_user}/.local/share/flatpak/app" ]; then
+    for u_app_dir in "/home/${sess_user}/.local/share/flatpak/app/"*; do
+      if [ -d "$u_app_dir" ]; then
+        ua=$(basename "$u_app_dir")
+        DETECTED_APPS["$ua"]="$sess_user"
+      fi
+    done
+  fi
+  # Fast timeout-protected fallback
+  USER_FLATPAKS=$(timeout 2 su - "$sess_user" -c "flatpak list --user --app --columns=application" < /dev/null 2>/dev/null || true)
   for ua in $USER_FLATPAKS; do
     DETECTED_APPS["$ua"]="$sess_user"
   done
@@ -915,7 +968,7 @@ for b_app in "${BLOCKED_FLATPAKS[@]}"; do
       # 2. Uninstall across all scopes
       flatpak uninstall -y --system "$installed_id" 2>/dev/null || true
       if [ -n "$owner_user" ] && [ "$owner_user" != "system" ]; then
-        su - "$owner_user" -c "flatpak uninstall -y --user $installed_id" 2>/dev/null || true
+        timeout 5 su - "$owner_user" -c "flatpak uninstall -y --user $installed_id" < /dev/null 2>/dev/null || true
       fi
       flatpak uninstall -y --user "$installed_id" 2>/dev/null || true
 
@@ -949,7 +1002,7 @@ print(title or '$installed_id')
         TARGET_UID=$(id -u "$owner_user" 2>/dev/null || echo 1000)
         DBUS_PATH="/run/user/${TARGET_UID}/bus"
         if [ -S "$DBUS_PATH" ]; then
-          DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" su - "$owner_user" -c "notify-send -u critical -i dialog-error 'Unauthorized Application Blocked' 'Access Denied: ${HUMAN_TITLE} was terminated and removed per University IT Policy.'" 2>/dev/null || true
+          DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$owner_user" -c "notify-send -u critical -i dialog-error 'Unauthorized Application Blocked' 'Access Denied: ${HUMAN_TITLE} was terminated and removed per University IT Policy.'" < /dev/null 2>/dev/null || true
         fi
       fi
     fi
@@ -974,26 +1027,39 @@ if [ -f "/etc/ad-dms/domain.conf" ]; then
 fi
 
 if [ "$USE_INTRANET" = "yes" ]; then
-  MY_HOST=$(hostname -s 2>/dev/null || echo "UNKNOWN")
+  MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
   ACTIVE_USR="none"
-  # Accurately detect currently logged-in human student/faculty user (ignoring greeter/gdm/sddm/root)
-  for s_id in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
-    s_user=$(loginctl show-session -p Name "$s_id" 2>/dev/null | cut -d= -f2)
-    s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
-    s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
-    
-    if [ -n "$s_user" ] && [ "$s_user" != "greeter" ] && [ "$s_user" != "gdm" ] && [ "$s_user" != "sddm" ] && [ "$s_user" != "root" ]; then
-      ACTIVE_USR="$s_user"
-      ACTIVE_SESSION="$s_type"
-      if [ "$s_state" = "active" ]; then
-        break
+  ACTIVE_SESSION="none"
+  UPTIME_STR=$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "up")
+  DMS_VER="2.0.0"
+
+  # 1. Inspect all active and graphical user sessions from loginctl
+  while read -r s_id s_uid s_user s_seat s_leader s_class s_tty s_idle; do
+    [ -z "$s_user" ] || [ "$s_user" = "USER" ] && continue
+    if [ "$s_user" != "greeter" ] && [ "$s_user" != "gdm" ] && [ "$s_user" != "sddm" ] && [ "$s_user" != "lightdm" ] && [ "$s_user" != "root" ]; then
+      s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
+      s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
+      s_class=$(loginctl show-session -p Class "$s_id" 2>/dev/null | cut -d= -f2)
+      if [ "$s_state" = "active" ] || [ "$s_class" = "user" ]; then
+        ACTIVE_USR="$s_user"
+        ACTIVE_SESSION="${s_type:-desktop}"
+        [ "$s_state" = "active" ] && break
       fi
     fi
-  done
+  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+
+  # 2. Fallback to interactive terminal/seat users (who / w)
   if [ "$ACTIVE_USR" = "none" ]; then
-    ACTIVE_USR=$(who | awk '$1 !~ /root|greeter/ {print $1; exit}' || true)
-    [ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+    ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
   fi
+
+  # 3. Fallback to desktop compositor/display process owner
+  if [ -z "$ACTIVE_USR" ] || [ "$ACTIVE_USR" = "none" ]; then
+    ACTIVE_USR=$(ps -eo user,comm 2>/dev/null | grep -E "gnome-shell|sway|niri|hyprland|kwin|plasma|xfce4-session|wayfire|labwc|Xorg" | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
+  fi
+
+  [ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+  [ "$ACTIVE_SESSION" = "none" ] && ACTIVE_SESSION="desktop"
   
   # Collect installed user and system flatpaks
   INSTALLED_APPS=()
@@ -1001,9 +1067,17 @@ if [ "$USE_INTRANET" = "yes" ]; then
     INSTALLED_APPS+=("flatpak:${sa}")
   done
   if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
-    for ua in $(su - "$ACTIVE_USR" -c "flatpak list --user --app --columns=application" 2>/dev/null || true); do
-      INSTALLED_APPS+=("flatpak:${ua}")
-    done
+    if [ -d "/home/${ACTIVE_USR}/.local/share/flatpak/app" ]; then
+      for u_dir in "/home/${ACTIVE_USR}/.local/share/flatpak/app/"*; do
+        if [ -d "$u_dir" ]; then
+          INSTALLED_APPS+=("flatpak:$(basename "$u_dir")")
+        fi
+      done
+    else
+      for ua in $(timeout 2 su - "$ACTIVE_USR" -c "flatpak list --user --app --columns=application" < /dev/null 2>/dev/null || true); do
+        INSTALLED_APPS+=("flatpak:${ua}")
+      done
+    fi
   fi
 
   # Collect recently installed native RPMs
@@ -1029,13 +1103,15 @@ data = {
 print(json.dumps(data))
 " 2>/dev/null || echo "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\"}")
 
-  if ! curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
-    -H "Content-Type: application/json" \
-    -d "$PAYLOAD" &>/dev/null; then
-    TARGET_URL="http://${INTRANET_IP}:${INTRANET_PORT}"
-    curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD" &>/dev/null || true
+  # Send heartbeat (Try Intranet Host, then Fallback IP, then 127.0.0.1 if host)
+  if ! curl -fsSL -m 2 -X POST "/api/heartbeat"     -H "Content-Type: application/json"     -d "" &>/dev/null; then
+    TARGET_URL="http://:"
+    if ! curl -fsSL -m 2 -X POST "/api/heartbeat"       -H "Content-Type: application/json"       -d "" &>/dev/null; then
+      if [ "" = "" ]; then
+        TARGET_URL="http://127.0.0.1:"
+        curl -fsSL -m 2 -X POST "/api/heartbeat"           -H "Content-Type: application/json"           -d "" &>/dev/null || true
+      fi
+    fi
   fi
 
   # Check if Host has requested a Remote Command or Instant Screenshot
@@ -1053,13 +1129,13 @@ print(json.dumps(data))
 
       # Execute screen capture using DMS / grim / spectacle
       if command -v dms &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" WAYLAND_DISPLAY="$WAYLAND_NAME" su - "$ACTIVE_USR" -c "dms screenshot full --no-notify --no-clipboard --no-file > '$TMP_SHOT'" 2>/dev/null || true
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" WAYLAND_DISPLAY="$WAYLAND_NAME" timeout 5 su - "$ACTIVE_USR" -c "dms screenshot full --no-notify --no-clipboard --no-file > '$TMP_SHOT'" < /dev/null 2>/dev/null || true
       fi
       if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" WAYLAND_DISPLAY="$WAYLAND_NAME" su - "$ACTIVE_USR" -c "grim '$TMP_SHOT'" 2>/dev/null || true
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" WAYLAND_DISPLAY="$WAYLAND_NAME" timeout 5 su - "$ACTIVE_USR" -c "grim '$TMP_SHOT'" < /dev/null 2>/dev/null || true
       fi
       if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" su - "$ACTIVE_USR" -c "spectacle -b -n -o '$TMP_SHOT'" 2>/dev/null || true
+        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 5 su - "$ACTIVE_USR" -c "spectacle -b -n -o '$TMP_SHOT'" < /dev/null 2>/dev/null || true
       fi
 
       if [ -s "$TMP_SHOT" ]; then
@@ -1098,8 +1174,9 @@ cat <<'EOF' > /etc/systemd/system/ad-dms-gui-scan.timer
 Description=Run AD-DMS GUI Flatpak Scanner Guard Periodically
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=2min
+OnBootSec=30s
+OnStartupSec=10s
+OnUnitActiveSec=1min
 Persistent=true
 
 [Install]
@@ -1138,29 +1215,29 @@ if [ "$(echo "$LOCK_BRIGHTNESS" | tr '[:upper:]' '[:lower:]')" = "yes" ]; then
     fi
   done
 
-  # Try brightnessctl if available
+  # Try brightnessctl if available (with timeout)
   if command -v brightnessctl &>/dev/null; then
-    brightnessctl set 100% &>/dev/null || true
+    timeout 2 brightnessctl set 100% &>/dev/null || true
   fi
 
-  # Try ddcutil for external monitors
+  # Try ddcutil for external monitors (with timeout)
   if command -v ddcutil &>/dev/null; then
-    ddcutil setvcp 10 100 &>/dev/null || true
+    timeout 2 ddcutil setvcp 10 100 &>/dev/null || true
   fi
 fi
 
 # 2. Enforce 100% Volume
 if [ "$(echo "$LOCK_VOLUME" | tr '[:upper:]' '[:lower:]')" = "yes" ]; then
   if command -v wpctl &>/dev/null; then
-    wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0 &>/dev/null || true
-    wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 &>/dev/null || true
+    timeout 2 wpctl set-volume @DEFAULT_AUDIO_SINK@ 1.0 &>/dev/null || true
+    timeout 2 wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 &>/dev/null || true
   fi
   if command -v pactl &>/dev/null; then
-    pactl set-sink-mute @DEFAULT_SINK@ 0 &>/dev/null || true
-    pactl set-sink-volume @DEFAULT_SINK@ 100% &>/dev/null || true
+    timeout 2 pactl set-sink-mute @DEFAULT_SINK@ 0 &>/dev/null || true
+    timeout 2 pactl set-sink-volume @DEFAULT_SINK@ 100% &>/dev/null || true
   fi
   if command -v amixer &>/dev/null; then
-    amixer set Master 100% unmute &>/dev/null || true
+    timeout 2 amixer set Master 100% unmute &>/dev/null || true
   fi
 fi
 EOF
@@ -1192,7 +1269,7 @@ EOF
 
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable --now ad-dms-device-guard.timer 2>/dev/null || true
-/usr/local/bin/ad-dms-device-enforce 2>/dev/null || true
+timeout 3 /usr/local/bin/ad-dms-device-enforce 2>/dev/null || true
 echo -e "  -> ${GREEN}[DEVICE GUARD]${NC} Hardware policy guard active (Brightness 100% & Sound 100% locked every 5min)."
 
 # F. Deploy Interactive Shell Interceptors & Aliases (/etc/profile.d/99-ad-dms-aliases.sh)
@@ -1333,7 +1410,7 @@ remove_software() {
       [ -d "$udir" ] || continue
       local uname
       uname=$(basename "$udir")
-      su - "$uname" -c "flatpak uninstall -y --user '$item'" 2>/dev/null || true
+      timeout 5 su - "$uname" -c "flatpak uninstall -y --user '$item'" < /dev/null 2>/dev/null || true
     done
   done
 }
