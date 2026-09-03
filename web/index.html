@@ -62,6 +62,12 @@
           <span class="nav-label">Lab Monitor</span>
         </button>
 
+        <button class="m3-nav-item" data-tab="audit" id="navAudit">
+          <div class="nav-state-layer"></div>
+          <span class="material-symbols-rounded nav-icon">history_edu</span>
+          <span class="nav-label">User Audit History</span>
+        </button>
+
         <button class="m3-nav-item" data-tab="groupapps" id="navGroupApps">
           <div class="nav-state-layer"></div>
           <span class="material-symbols-rounded nav-icon">apps</span>
@@ -459,6 +465,68 @@
               </thead>
               <tbody id="workstationsBody">
                 <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB: AUDIT SESSIONS & APPLICATION INVENTORY -->
+      <section class="tab-pane" id="pane-audit">
+        <div class="m3-card table-card" style="margin-bottom: 24px;">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">history</span>
+              <h3>User Login & Workstation Session History (Historical Audit)</h3>
+            </div>
+            <div class="table-actions">
+              <button class="m3-button secondary small" onclick="loadAuditLogs()">
+                <span class="material-symbols-rounded">refresh</span> Refresh Audit
+              </button>
+            </div>
+          </div>
+
+          <div class="m3-table-wrapper">
+            <table class="m3-table" id="auditSessionsTable">
+              <thead>
+                <tr>
+                  <th>Hostname</th>
+                  <th>IP Address</th>
+                  <th>Username</th>
+                  <th>Session Type</th>
+                  <th>Login Time</th>
+                  <th>Last Active</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody id="auditSessionsBody">
+                <tr><td colspan="7" style="text-align:center;">Loading audit sessions...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="m3-card table-card">
+          <div class="card-header">
+            <div class="card-title-group">
+              <span class="material-symbols-rounded">inventory_2</span>
+              <h3>Discovered Installed Application Inventory</h3>
+            </div>
+          </div>
+
+          <div class="m3-table-wrapper">
+            <table class="m3-table" id="auditAppsTable">
+              <thead>
+                <tr>
+                  <th>Application Name</th>
+                  <th>Package Type</th>
+                  <th>Discovered Date</th>
+                  <th>Installed Workstations</th>
+                  <th>Discovered Users</th>
+                </tr>
+              </thead>
+              <tbody id="auditAppsBody">
+                <tr><td colspan="5" style="text-align:center;">Loading application inventory...</td></tr>
               </tbody>
             </table>
           </div>

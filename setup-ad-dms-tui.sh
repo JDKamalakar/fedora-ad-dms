@@ -565,6 +565,33 @@ systemctl enable --now ad-dms-refresh.timer 2>/dev/null || true
 msg_ok "Systemd background timer 'ad-dms-refresh.timer' activated (${INTERVAL} interval)."
 
 # ------------------------------------------------------------------------------
+# Step 3b: Intranet Host Central Server Daemon (Auto-Start web_server.py on port 8080)
+# ------------------------------------------------------------------------------
+if [ -f "/web_server.py" ]; then
+  cat <<EOF > /etc/systemd/system/ad-dms-server.service
+[Unit]
+Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=
+ExecStart=/usr/bin/python3 /web_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now ad-dms-server.service 2>/dev/null || true
+  msg_ok "Activated central intranet web & API daemon (ad-dms-server.service on port 8080)."
+fi
+
+# ------------------------------------------------------------------------------
 # Step 4: Install Dank Material Shell (DMS) & Deploy Profiles
 # ------------------------------------------------------------------------------
 step_header "4" "Installing Dank Material Shell (DMS)"

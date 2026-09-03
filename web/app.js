@@ -21,6 +21,13 @@ document.addEventListener('DOMContentLoaded', () => {
   setupAudioTest();
   setupGitPushButton();
   loadLiveConfigs();
+  loadAuditLogs();
+
+  // Auto-refresh live monitoring and audit tables every 5 seconds
+  setInterval(() => {
+    renderWorkstations(false);
+    loadAuditLogs(false);
+  }, 5000);
 });
 
 // Fetch Live Data from Server API
@@ -305,10 +312,12 @@ async function saveGroupApps() {
 }
 
 // Render Intranet Workstations
-async function renderWorkstations() {
+async function renderWorkstations(showLoading = true) {
   const tbody = document.getElementById('workstationsBody');
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">Loading active nodes...</td></tr>';
+  if (showLoading && tbody.innerHTML.trim() === '') {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">Loading active nodes...</td></tr>';
+  }
 
   try {
     const res = await fetch('/api/clients');
@@ -565,4 +574,73 @@ function copyInstallCmd() {
 function capitalize(s) {
   if (!s) return '';
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Load & Render Historical User Login Audit & Discovered Applications
+async function loadAuditLogs(showToastMsg = false) {
+  const sessionsBody = document.getElementById('auditSessionsBody');
+  const appsBody = document.getElementById('auditAppsBody');
+  if (!sessionsBody && !appsBody) return;
+
+  try {
+    const res = await fetch('/api/audit');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const userSessions = data.user_sessions || [];
+    const installedApps = data.installed_apps || [];
+
+    if (sessionsBody) {
+      if (userSessions.length === 0) {
+        sessionsBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:var(--md-sys-color-outline);">No user login sessions recorded yet.</td></tr>';
+      } else {
+        sessionsBody.innerHTML = '';
+        userSessions.forEach(s => {
+          const tr = document.createElement('tr');
+          const isOngoing = (s.duration_mins === 0 || s.status === 'Active');
+          tr.innerHTML = `
+            <td><strong>${s.hostname || 'UNKNOWN'}</strong></td>
+            <td><code>${s.ip || '127.0.0.1'}</code></td>
+            <td><span style="font-weight:700; color:var(--md-sys-color-primary);">${s.user || 'unknown'}</span></td>
+            <td><code>${s.session_type || 'desktop'}</code></td>
+            <td><span style="font-size:12px; color:var(--md-sys-color-on-surface);">${s.login_time || ''}</span></td>
+            <td><span style="font-size:12px; color:var(--md-sys-color-outline);">${s.last_seen || ''}</span></td>
+            <td>
+              <span class="m3-badge ${isOngoing ? 'success' : 'secondary'}">
+                ${s.duration_mins > 0 ? s.duration_mins + ' mins' : 'Active (<1m)'}
+              </span>
+            </td>
+          `;
+          sessionsBody.appendChild(tr);
+        });
+      }
+    }
+
+    if (appsBody) {
+      if (installedApps.length === 0) {
+        appsBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--md-sys-color-outline);">No installed applications discovered yet.</td></tr>';
+      } else {
+        appsBody.innerHTML = '';
+        installedApps.forEach(a => {
+          const tr = document.createElement('tr');
+          const hostsStr = (a.hosts || []).join(', ') || 'N/A';
+          const usersStr = (a.users || []).join(', ') || 'System / All';
+          tr.innerHTML = `
+            <td><strong>${a.name || ''}</strong></td>
+            <td><span class="m3-badge secondary">${(a.kind || 'pkg').toUpperCase()}</span></td>
+            <td><span style="font-size:12px; color:var(--md-sys-color-outline);">${a.discovered_on || ''}</span></td>
+            <td><code>${hostsStr}</code></td>
+            <td><span style="font-weight:600; color:var(--md-sys-color-primary);">${usersStr}</span></td>
+          `;
+          appsBody.appendChild(tr);
+        });
+      }
+    }
+
+    if (showToastMsg) {
+      showToast('Loaded active user login audit history', 'history');
+    }
+  } catch (err) {
+    console.error('Failed to load audit data:', err);
+  }
 }

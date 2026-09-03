@@ -396,30 +396,35 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             installed_apps_map = audit_data.get("installed_apps", {})
 
             if active_user and active_user not in ["none", "nobody", "greeter", "root"]:
-                # Check if this session is already open
+                # Check if this session is already open and ongoing
                 session_found = False
                 for sess in reversed(user_sessions):
                     if sess.get("hostname") == hostname and sess.get("user") == active_user:
-                        if (now_ts - sess.get("last_seen_ts", 0)) < 600: # Ongoing within last 10 mins
+                        # If heartbeat received within last 180s (3m), update ongoing session duration
+                        if (now_ts - sess.get("last_seen_ts", 0)) < 180:
                             sess["last_seen"] = now_str
                             sess["last_seen_ts"] = now_ts
-                            sess["duration_mins"] = int((now_ts - sess.get("start_ts", now_ts)) / 60)
+                            sess["duration_mins"] = max(1, int((now_ts - sess.get("start_ts", now_ts)) / 60))
+                            sess["status"] = "Active"
                             session_found = True
                             break
                 if not session_found:
+                    # New distinct user login session initiated - preserves all previous historical sessions!
                     user_sessions.append({
                         "hostname": hostname,
                         "ip": req_data.get("ip", ip),
                         "user": active_user,
+                        "session_type": req_data.get("session_type", "desktop"),
                         "login_time": now_str,
                         "start_ts": now_ts,
                         "last_seen": now_str,
                         "last_seen_ts": now_ts,
-                        "duration_mins": 0
+                        "duration_mins": 0,
+                        "status": "Active"
                     })
-                    # Keep latest 200 sessions
-                    if len(user_sessions) > 200:
-                        user_sessions = user_sessions[-200:]
+                    # Persist up to 1,000 historical user sessions across reboots & logouts
+                    if len(user_sessions) > 1000:
+                        user_sessions = user_sessions[-1000:]
                     audit_data["user_sessions"] = user_sessions
 
             # Record Installed Apps Inventory
