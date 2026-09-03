@@ -663,12 +663,13 @@ deploy_presets() {
   rm -f "${target_home}/.config/niri/dms/outputs.kdl"
   rm -f "${target_home}/.config/niri/config.kdl.backup"*
 
-  # Ensure Niri automatically spawns DMS on session start for any user
+  # Ensure Niri automatically spawns DMS on session start (without duplicate spawn entries)
   local niri_conf="${target_home}/.config/niri/config.kdl"
   if [ -f "$niri_conf" ]; then
-    if ! grep -q 'spawn-at-startup "dms"' "$niri_conf" && ! grep -q "spawn-at-startup \"dms\"" "$niri_conf"; then
-      # Add DMS autostart spawn line to niri config
-      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_conf"
+    # Do not prepend if already spawned or already configured in niri config
+    if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' "$niri_conf"; then
+      sed -i '1s/^/spawn-at-startup "dms" "run"
+/' "$niri_conf"
     fi
   fi
 

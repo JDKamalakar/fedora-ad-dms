@@ -1306,18 +1306,20 @@ EOF
 chmod 0644 /etc/profile.d/99-ad-dms-aliases.sh
 echo -e "  -> ${GREEN}[ALIASES CONFIGURED]${NC} Premium CLI interceptors configured in /etc/profile.d/99-ad-dms-aliases.sh"
 
-# Ensure DMS auto-starts for any user in Niri (both in /etc/skel and all user profiles)
+# Ensure DMS auto-starts for new user sessions in Niri (safely avoiding duplicate entries)
 for user_home in /etc/skel /home/*; do
-  [ -d "$user_home" ] || continue
-  niri_kdl="${user_home}/.config/niri/config.kdl"
-  if [ -f "$niri_kdl" ]; then
-    if ! grep -q 'spawn-at-startup "dms"' "$niri_kdl" && ! grep -q "spawn-at-startup \"dms\"" "$niri_kdl"; then
-      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_kdl"
+  [ -d "" ] || continue
+  niri_kdl="/.config/niri/config.kdl"
+  if [ -f "" ]; then
+    # Do not add if spawn-at-startup "dms" already exists in the file
+    if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' ""; then
+      sed -i '1s/^/spawn-at-startup "dms" "run"
+/' ""
     fi
   fi
   # Autostart fallback desktop entry
-  mkdir -p "${user_home}/.config/autostart"
-  cat <<'DMS_AUTOS_EOF' > "${user_home}/.config/autostart/dms.desktop"
+  mkdir -p "/.config/autostart"
+  cat <<'DMS_AUTOS_EOF' > "/.config/autostart/dms.desktop"
 [Desktop Entry]
 Type=Application
 Name=Dank Material Shell
@@ -1326,9 +1328,9 @@ Hidden=false
 NoDisplay=false
 X-GNOME-Autostart-enabled=true
 DMS_AUTOS_EOF
-  if [ "$user_home" != "/etc/skel" ]; then
-    u_name=$(basename "$user_home")
-    chown -R "${u_name}:" "${user_home}/.config/autostart" 2>/dev/null || true
+  if [ "" != "/etc/skel" ]; then
+    u_name=""
+    chown -R ":" "/.config/autostart" 2>/dev/null || true
   fi
 done
 echo -e "  -> ${GREEN}[DMS AUTOSTART]${NC} Verified Dank Material Shell auto-launch configuration across all users & templates."
@@ -1529,6 +1531,58 @@ EOF
   fi
 fi
 
+# ------------------------------------------------------------------------------
+# Auto-Manage Intranet Host Server (web_server.py) if on the Central Server
+# ------------------------------------------------------------------------------
+MY_CURR_HOST="GSFCUPLLAB203"
+INTRANET_HOST_VAL="GSFCUPLLAB203"
+INTRANET_IP_VAL="10.205.18.253"
+
+# Find web_server.py in local repo or /etc/ad-dms or workspace
+SERVER_SCRIPT=""
+for candidate in "/home/jk/Projects/fedora-ad-dms/web_server.py" "/web_server.py" "/home/jk/Projects/fedora-ad-dms/web_server.py" "/etc/ad-dms/web_server.py"; do
+  if [ -f "" ]; then
+    SERVER_SCRIPT=""
+    break
+  fi
+done
+
+if [ -n "" ]; then
+  # If current machine is the Central Host or has the fallback IP
+  if [ "" = "" ] || ip -o a 2>/dev/null | grep -q "/"; then
+    cat <<EOF > /etc/systemd/system/ad-dms-server.service
+[Unit]
+Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=.
+ExecStart=/usr/bin/python3 
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable --now ad-dms-server.service 2>/dev/null || true
+    systemctl restart ad-dms-server.service 2>/dev/null || true
+    echo -e "  -> [SERVER ACTIVE] ad-dms-server.service started and running on port 8080."
+  fi
+fi
+
+# Ensure all client timers and scanner daemons are actively running
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now ad-dms-refresh.timer 2>/dev/null || true
+systemctl enable --now ad-dms-gui-scan.timer 2>/dev/null || true
+systemctl enable --now ad-dms-device-guard.timer 2>/dev/null || true
+
+# Trigger an immediate non-blocking GUI scan and heartbeat transmission
+timeout 3 /usr/local/bin/ad-dms-gui-scan 2>/dev/null || true
 echo -e "\n${BOLD}${GREEN}======================================================================${NC}"
 echo -e "${BOLD}${GREEN}         ALL SYSTEM & APP POLICIES SYNCHRONIZED SUCCESSFULLY          ${NC}"
 echo -e "${BOLD}${GREEN}======================================================================${NC}\n"
