@@ -1,0 +1,194 @@
+{
+  "user_sessions": [
+    {
+      "hostname": "GSFCUPLLAB203",
+      "ip": "10.205.18.253",
+      "user": "jk",
+      "session_type": "wayland",
+      "login_time": "2026-09-07 15:28:50",
+      "start_ts": 1788775130.9261317,
+      "last_seen": "2026-09-07 15:48:22",
+      "last_seen_ts": 1788776302.4053688,
+      "duration_mins": 19,
+      "status": "Active"
+    }
+  ],
+  "installed_apps": {
+    "com.vscodium.codium": {
+      "name": "com.vscodium.codium",
+      "kind": "flatpak",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "cups-filters-driverless": {
+      "name": "cups-filters-driverless",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "cups-filters": {
+      "name": "cups-filters",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "chrony": {
+      "name": "chrony",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "ibus-table": {
+      "name": "ibus-table",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "dgop": {
+      "name": "dgop",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "danksearch": {
+      "name": "danksearch",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "libwmf-lite": {
+      "name": "libwmf-lite",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "libjaylink": {
+      "name": "libjaylink",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "libcloudproviders": {
+      "name": "libcloudproviders",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "ibus-typing-booster": {
+      "name": "ibus-typing-booster",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "localsearch": {
+      "name": "localsearch",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "python3-perf": {
+      "name": "python3-perf",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "wireless-regdb": {
+      "name": "wireless-regdb",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "srt-libs": {
+      "name": "srt-libs",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "qt6-qttranslations": {
+      "name": "qt6-qttranslations",
+      "kind": "dnf",
+      "discovered_on": "2026-09-07 15:28:50",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    }
+  }
+}

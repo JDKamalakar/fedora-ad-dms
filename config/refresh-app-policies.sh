@@ -1701,7 +1701,7 @@ if [ -n "$SERVER_SCRIPT" ]; then
     SERVER_DIR="$(dirname "$SERVER_SCRIPT")"
     cat <<EOF > /etc/systemd/system/ad-dms-server.service
 [Unit]
-Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
+Description=AD-DMS Intranet Host Telemetry & API Daemon (Port 8080)
 After=network.target network-online.target
 Wants=network-online.target
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-AD-DMS Intranet Host Server & Monitoring Backend
+AD-DMS Intranet Host Server & Telemetry API Backend
 - Serves repository configs, scripts, and preset archives over intranet HTTP.
 - Provides Heartbeat Telemetry & Auto-Registration (/api/heartbeat, /api/register-install).
 - Manages Remote Commands & Instant Screen Capture queue (/api/command/poll, /api/screenshot/upload).
-- Powers the Material 3 Web Control Center & CLI TUI backend.
+- Powers the interactive Go TUI ('remote') and central policy distribution.
 """
 
 import http.server
@@ -19,7 +19,6 @@ from pathlib import Path
 PORT = 8080
 REPO_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = REPO_DIR / "config"
-WEB_DIR = REPO_DIR / "web"
 LOGS_DIR = REPO_DIR / "data"
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -272,28 +271,17 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(url.query)
 
-        # 1. UI Root (redirects / or /index.html to /web/index.html)
-        if url.path in ["/", "/index.html"]:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            index_file = WEB_DIR / "index.html"
-            self.wfile.write(index_file.read_bytes())
+        # 1. Health / Server Identification
+        if url.path in ["/", "/health", "/api/health"]:
+            self.send_json_response({
+                "service": "ad-dms-intranet-daemon",
+                "status": "online",
+                "version": "2.0.0",
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
             return
 
-        # 2. Web UI static assets
-        if url.path.startswith("/web/") or url.path in ["/styles.css", "/app.js"]:
-            rel_name = url.path.replace("/web/", "").lstrip("/")
-            asset_path = WEB_DIR / rel_name
-            if asset_path.exists():
-                ctype = "text/css" if str(asset_path).endswith(".css") else "application/javascript" if str(asset_path).endswith(".js") else "text/html"
-                self.send_response(200)
-                self.send_header("Content-Type", ctype)
-                self.end_headers()
-                self.wfile.write(asset_path.read_bytes())
-                return
-
-        # 3. Client Telemetry & Monitoring API
+        # 2. Client Telemetry & Monitoring API
         if url.path == "/api/clients":
             clients = load_clients()
             now = time.time()

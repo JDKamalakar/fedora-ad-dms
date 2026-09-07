@@ -2,7 +2,3 @@ __pycache__/
 *.pyc
 .DS_Store
 *.swp
-data/clients.json
-data/clients.json
-data/audit_log.json
-data/clients.json

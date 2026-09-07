@@ -102,10 +102,6 @@ fi
 if [ "${MY_LOCAL_HOST,,}" = "${MY_HOST_CONF,,}" ] || ( [ -n "${INTRANET_IP:-}" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/" ); then
   echo -e "\n${BOLD}${GREEN}[HOST DETECTED] Machine '${MY_LOCAL_HOST}' matches Intranet Host '${MY_HOST_CONF}'. Preparing Central Server components...${NC}"
   fetch_file "web_server.py" "true"
-  mkdir -p web
-  fetch_file "web/index.html" "true"
-  fetch_file "web/styles.css" "true"
-  fetch_file "web/app.js" "true"
 fi
 
 # ------------------------------------------------------------------------------

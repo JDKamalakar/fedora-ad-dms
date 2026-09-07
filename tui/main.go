@@ -184,6 +184,22 @@ type MenuItem struct {
 	Key  string
 }
 
+type MonitorItemType int
+
+const (
+	MonitorItemHeader MonitorItemType = iota
+	MonitorItemDevice
+)
+
+type MonitorItem struct {
+	Type      MonitorItemType
+	LabPrefix string     // for Header: prefix key for collapsing
+	LabName   string     // for Header: display name
+	Count     int        // for Header: count of workstations
+	Device    ClientInfo // for Device
+	GlobalIdx int        // 1-based sequential visible index
+}
+
 type Model struct {
 	width          int
 	height         int
@@ -191,6 +207,8 @@ type Model struct {
 	cursor         int
 	modalCursor    int
 	filterMode     string // "all", "active", "inactive"
+	filterFocused  bool   // true if user focus is currently on the top filter bar
+	collapsedLabs  map[string]bool
 	auditFilter    string // "all", "users", "installs"
 	clients        []ClientInfo
 	userSessions   []UserSessionRecord
@@ -220,17 +238,19 @@ func initialModel() Model {
 	_ = os.MkdirAll(bDir, 0755)
 
 	m := Model{
-		view:        ViewMain,
-		cursor:      0,
-		filterMode:  "all",
-		auditFilter: "all",
-		repoDir:     rDir,
-		backupDir:   bDir,
-		apiURL:      "http://127.0.0.1:8080",
-		statusMsg:   "System Ready",
-		width:       100,
-		height:      30,
-		theme:       loadDMSTheme(),
+		view:          ViewMain,
+		cursor:        0,
+		filterMode:    "all",
+		filterFocused: false,
+		collapsedLabs: make(map[string]bool),
+		auditFilter:   "all",
+		repoDir:       rDir,
+		backupDir:     bDir,
+		apiURL:        "http://127.0.0.1:8080",
+		statusMsg:     "System Ready",
+		width:         100,
+		height:        30,
+		theme:         loadDMSTheme(),
 		menuItems: []MenuItem{
 			{"📊", "Live Workstation Monitor", "Interactive workstation telemetry, user logins & remote dispatch actions", "1"},
 			{"📸", "Instant Screen Capture", "Grab real-time screen frame from any online workstation silently", "2"},
@@ -344,6 +364,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cursor >= numCols {
 					m.cursor -= numCols
 				}
+			} else if m.view == ViewMonitor {
+				if m.filterFocused {
+					// Already on filter bar
+					return m, nil
+				}
+				if m.cursor > 0 {
+					m.cursor--
+				} else {
+					// Moving UP from first row moves focus to the filter bar
+					m.filterFocused = true
+				}
 			} else if m.cursor > 0 {
 				m.cursor--
 			}
@@ -376,8 +407,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = maxItems - 1
 				}
 			} else if m.view == ViewMonitor {
-				filtered := m.getFilteredClients()
-				if m.cursor < len(filtered)-1 {
+				items := m.getMonitorItems()
+				if m.filterFocused {
+					// Move from filter bar into the table entries
+					if len(items) > 0 {
+						m.filterFocused = false
+						m.cursor = 0
+					}
+					return m, nil
+				}
+				if m.cursor < len(items)-1 {
 					m.cursor++
 				}
 			} else if m.view == ViewHistory {
@@ -400,14 +439,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if (m.view == ViewMain || m.view == ViewSafeEditor) && m.cursor > 0 {
 				m.cursor--
 			} else if m.view == ViewMonitor {
-				if m.filterMode == "active" {
-					m.filterMode = "all"
-					m.cursor = 0
-					return m, fetchClientsCmd(m.apiURL)
-				} else if m.filterMode == "inactive" {
-					m.filterMode = "active"
-					m.cursor = 0
-					return m, fetchClientsCmd(m.apiURL)
+				if m.filterFocused {
+					if m.filterMode == "active" {
+						m.filterMode = "all"
+						m.cursor = 0
+						return m, fetchClientsCmd(m.apiURL)
+					} else if m.filterMode == "inactive" {
+						m.filterMode = "active"
+						m.cursor = 0
+						return m, fetchClientsCmd(m.apiURL)
+					}
 				}
 			} else if m.view == ViewHistory {
 				if m.auditFilter == "users" {
@@ -425,14 +466,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == ViewSafeEditor && m.cursor < 6 {
 				m.cursor++
 			} else if m.view == ViewMonitor {
-				if m.filterMode == "all" {
-					m.filterMode = "active"
-					m.cursor = 0
-					return m, fetchClientsCmd(m.apiURL)
-				} else if m.filterMode == "active" {
-					m.filterMode = "inactive"
-					m.cursor = 0
-					return m, fetchClientsCmd(m.apiURL)
+				if m.filterFocused {
+					if m.filterMode == "all" {
+						m.filterMode = "active"
+						m.cursor = 0
+						return m, fetchClientsCmd(m.apiURL)
+					} else if m.filterMode == "active" {
+						m.filterMode = "inactive"
+						m.cursor = 0
+						return m, fetchClientsCmd(m.apiURL)
+					}
 				}
 			} else if m.view == ViewHistory {
 				if m.auditFilter == "all" {
@@ -444,7 +487,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case "1", "2", "3", "4", "5", "6", "7":
+		case "tab", "f":
+			if m.view == ViewMonitor {
+				if m.filterMode == "all" {
+					m.filterMode = "active"
+				} else if m.filterMode == "active" {
+					m.filterMode = "inactive"
+				} else {
+					m.filterMode = "all"
+				}
+				m.cursor = 0
+				return m, fetchClientsCmd(m.apiURL)
+			}
+
+		case "shift+tab":
+			if m.view == ViewMonitor {
+				if m.filterMode == "inactive" {
+					m.filterMode = "active"
+				} else if m.filterMode == "active" {
+					m.filterMode = "all"
+				} else {
+					m.filterMode = "inactive"
+				}
+				m.cursor = 0
+				return m, fetchClientsCmd(m.apiURL)
+			}
+
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 			if m.view == ViewMain {
 				idx := int(msg.String()[0] - '1')
 				return m.handleMainMenuSelect(idx)
@@ -452,16 +521,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				idx := int(msg.String()[0] - '1')
 				return m.handleEditorSelect(idx)
 			} else if m.view == ViewMonitor {
-				switch msg.String() {
-				case "1":
-					m.filterMode = "all"
-				case "2":
-					m.filterMode = "active"
-				case "3":
-					m.filterMode = "inactive"
+				targetNum := int(msg.String()[0] - '0')
+				items := m.getMonitorItems()
+				for idx, it := range items {
+					if it.Type == MonitorItemDevice && it.GlobalIdx == targetNum {
+						m.filterFocused = false
+						m.cursor = idx
+						m.selectedDevice = it.Device
+						m.view = ViewDeviceActionModal
+						m.modalCursor = 0
+						return m, nil
+					}
 				}
-				m.cursor = 0
-				return m, fetchClientsCmd(m.apiURL)
+				return m, nil
 			} else if m.view == ViewHistory {
 				switch msg.String() {
 				case "1":
@@ -475,15 +547,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchAuditCmd(m.apiURL)
 			}
 
+		case " ", "space":
+			if m.view == ViewMonitor {
+				items := m.getMonitorItems()
+				if !m.filterFocused && len(items) > 0 && m.cursor >= 0 && m.cursor < len(items) {
+					curItem := items[m.cursor]
+					if curItem.Type == MonitorItemHeader {
+						m.collapsedLabs[curItem.LabPrefix] = !m.collapsedLabs[curItem.LabPrefix]
+						return m, nil
+					}
+				}
+			}
+
 		case "enter":
 			if m.view == ViewMain {
 				return m.handleMainMenuSelect(m.cursor)
 			} else if m.view == ViewMonitor {
-				filtered := m.getFilteredClients()
-				if len(filtered) > 0 && m.cursor >= 0 && m.cursor < len(filtered) {
-					m.selectedDevice = filtered[m.cursor]
-					m.view = ViewDeviceActionModal
-					m.modalCursor = 0
+				items := m.getMonitorItems()
+				if m.filterFocused {
+					// User pressed Enter on the filter row: move focus into the table entries
+					if len(items) > 0 {
+						m.filterFocused = false
+						m.cursor = 0
+					}
+					return m, nil
+				}
+				if len(items) > 0 && m.cursor >= 0 && m.cursor < len(items) {
+					curItem := items[m.cursor]
+					if curItem.Type == MonitorItemHeader {
+						// Toggle collapse/expand on group header!
+						m.collapsedLabs[curItem.LabPrefix] = !m.collapsedLabs[curItem.LabPrefix]
+						return m, nil
+					} else if curItem.Type == MonitorItemDevice {
+						m.selectedDevice = curItem.Device
+						m.view = ViewDeviceActionModal
+						m.modalCursor = 0
+						return m, nil
+					}
 				}
 				return m, nil
 			} else if m.view == ViewDeviceActionModal {
@@ -518,6 +618,81 @@ func (m Model) getFilteredClients() []ClientInfo {
 		list = append(list, c)
 	}
 	return list
+}
+
+func (m Model) getMonitorItems() []MonitorItem {
+	filtered := m.getFilteredClients()
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	var items []MonitorItem
+	matchedMap := make(map[string]bool)
+	globalNum := 1
+
+	for _, lab := range m.labs {
+		var labItems []ClientInfo
+		for _, c := range filtered {
+			if strings.Contains(strings.ToUpper(c.Hostname), strings.ToUpper(lab.Prefix)) {
+				labItems = append(labItems, c)
+				matchedMap[c.Hostname] = true
+			}
+		}
+
+		if len(labItems) > 0 {
+			// Header item
+			items = append(items, MonitorItem{
+				Type:      MonitorItemHeader,
+				LabPrefix: lab.Prefix,
+				LabName:   lab.Name,
+				Count:     len(labItems),
+			})
+
+			// If not collapsed, include device items
+			if !m.collapsedLabs[lab.Prefix] {
+				for _, c := range labItems {
+					items = append(items, MonitorItem{
+						Type:      MonitorItemDevice,
+						LabPrefix: lab.Prefix,
+						Device:    c,
+						GlobalIdx: globalNum,
+					})
+					globalNum++
+				}
+			}
+		}
+	}
+
+	// General / Unassigned devices
+	var unassigned []ClientInfo
+	for _, c := range filtered {
+		if !matchedMap[c.Hostname] {
+			unassigned = append(unassigned, c)
+		}
+	}
+
+	if len(unassigned) > 0 {
+		items = append(items, MonitorItem{
+			Type:      MonitorItemHeader,
+			LabPrefix: "UNASSIGNED",
+			LabName:   "GENERAL / UNASSIGNED WORKSTATIONS",
+			Count:     len(unassigned),
+		})
+
+		if !m.collapsedLabs["UNASSIGNED"] {
+			for _, c := range unassigned {
+				items = append(items, MonitorItem{
+					Type:      MonitorItemDevice,
+					LabPrefix: "UNASSIGNED",
+					Device:    c,
+					GlobalIdx: globalNum,
+				})
+				globalNum++
+			}
+		}
+	}
+
+	return items
 }
 
 func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
@@ -774,7 +949,11 @@ func (m Model) View() string {
 			descText = "Auto-creates timestamped backups before editing files"
 		}
 	} else if m.view == ViewMonitor {
-		descText = "Press [Enter] on any workstation to open Action Menu • [1/2/3] or [←/→] to Filter"
+		if m.filterFocused {
+			descText = "Filter Toolbar Active: Use [←/→] to change filter • [↓] or [Enter] to enter workstations table"
+		} else {
+			descText = "Workstations Table: [Enter] Action / Expand • [Space] Expand/Collapse Lab • [Tab/F] Change Filter • [1-9] Quick Select • [↑] to Filter"
+		}
 	} else if m.view == ViewScreenshot {
 		descText = "Screen Capture: Grabs live display without notifying student and displays on host"
 	} else if m.view == ViewHistory {
@@ -904,22 +1083,38 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		Render("WORKSTATION TELEMETRY & LAB MATRIX")
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
 
-	filters := []string{"[1] All Devices", "[2] Active Only", "[3] Inactive Only"}
+	filterLabels := []string{"All Devices", "Active Only", "Inactive Only"}
 	var filterBadges []string
 
-	for i, f := range filters {
-		isSelected := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
-		if isSelected {
-			badge := lipgloss.NewStyle().
-				Width(24).
-				Bold(true).
-				Foreground(m.theme.Accent).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(m.theme.Accent).
-				Align(lipgloss.Center).
-				Render("► " + f + " ◄")
-			filterBadges = append(filterBadges, badge)
+	for i, f := range filterLabels {
+		isActiveFilter := (m.filterMode == "all" && i == 0) || (m.filterMode == "active" && i == 1) || (m.filterMode == "inactive" && i == 2)
+
+		if isActiveFilter {
+			if m.filterFocused {
+				// User is focused on the filter bar: fully highlighted in active green
+				badge := lipgloss.NewStyle().
+					Width(24).
+					Bold(true).
+					Foreground(m.theme.Accent).
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(m.theme.Accent).
+					Align(lipgloss.Center).
+					Render("► " + f + " ◄")
+				filterBadges = append(filterBadges, badge)
+			} else {
+				// User moved to entries: remove active green color, but keep the indicator arrows
+				badge := lipgloss.NewStyle().
+					Width(24).
+					Bold(true).
+					Foreground(m.theme.Primary).
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(m.theme.Border).
+					Align(lipgloss.Center).
+					Render("► " + f + " ◄")
+				filterBadges = append(filterBadges, badge)
+			}
 		} else {
+			// Inactive filter button
 			badge := lipgloss.NewStyle().
 				Width(24).
 				Foreground(m.theme.Primary).
@@ -934,9 +1129,8 @@ func (m Model) renderMonitorView(totalWidth int) string {
 	filterRow := lipgloss.JoinHorizontal(lipgloss.Top, filterBadges[0], "  ", filterBadges[1], "  ", filterBadges[2])
 	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(filterRow) + "\n\n")
 
-	filtered := m.getFilteredClients()
-
-	if len(filtered) == 0 {
+	items := m.getMonitorItems()
+	if len(items) == 0 {
 		emptyTable := "╭───────────────────────────────────────────────────────────────────────────────────────────────────╮\n" +
 			fmt.Sprintf("│ %-97s │\n", "                            No matching workstations found in this filter.") +
 			"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
@@ -944,113 +1138,103 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		return b.String()
 	}
 
-	// Render Individual Lab Tables with distinct rounded borders
-	matchedMap := make(map[string]bool)
-	globalIndex := 0
+	topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
+		fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "#", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
+		"├──────┼──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
+	botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
 
-	for _, lab := range m.labs {
-		var labItems []ClientInfo
-		var labIndices []int
+	i := 0
+	for i < len(items) {
+		item := items[i]
+		if item.Type == MonitorItemHeader {
+			isHeaderHovered := !m.filterFocused && m.cursor == i
+			isCollapsed := m.collapsedLabs[item.LabPrefix]
 
-		for idx, c := range filtered {
-			if strings.Contains(strings.ToUpper(c.Hostname), strings.ToUpper(lab.Prefix)) {
-				labItems = append(labItems, c)
-				labIndices = append(labIndices, idx)
-				matchedMap[c.Hostname] = true
+			arrowIcon := "▼"
+			if isCollapsed {
+				arrowIcon = "▶"
 			}
-		}
 
-		if len(labItems) > 0 {
-			labHeader := fmt.Sprintf("► LAB MATRIX: %s (Prefix: %s) — [%d Workstations]", lab.Name, lab.Prefix, len(labItems))
-			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Warning).Render(labHeader) + "\n")
+			statusNote := "Press [Enter/Space] to Collapse"
+			if isCollapsed {
+				statusNote = "Press [Enter/Space] to Expand"
+			}
 
-			topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
-				fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "#", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
-				"├──────┼──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
+			var headerText string
+			if item.LabPrefix == "UNASSIGNED" {
+				headerText = fmt.Sprintf("%s %s — [%d Workstations]  (%s)", arrowIcon, item.LabName, item.Count, statusNote)
+			} else {
+				headerText = fmt.Sprintf("%s LAB MATRIX: %s (Prefix: %s) — [%d Workstations]  (%s)", arrowIcon, item.LabName, item.LabPrefix, item.Count, statusNote)
+			}
 
+			headerStyle := lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Warning)
+			if isHeaderHovered {
+				headerStyle = headerStyle.Foreground(m.theme.Accent).Bold(true)
+			}
+			b.WriteString(headerStyle.Render(headerText) + "\n")
+
+			i++
+			// If collapsed, no table rows follow for this group
+			if isCollapsed {
+				b.WriteString("\n")
+				continue
+			}
+
+			// Render table for this group
 			var lines []string
 			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
 
-			for i, c := range labItems {
-				isHovered := m.cursor == labIndices[i]
-				stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell("ONLINE", 11))
+			for i < len(items) && items[i].Type == MonitorItemDevice {
+				devItem := items[i]
+				isHovered := !m.filterFocused && m.cursor == i
+				c := devItem.Device
+
+				stText := "ONLINE"
 				if !c.IsActive {
-					stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render(padCell("OFFLINE", 11))
+					stText = "OFFLINE"
 				}
-				cursorMark := fmt.Sprintf("%2d", globalIndex+1)
+
+				cursorMark := fmt.Sprintf("%2d", devItem.GlobalIdx)
 				if isHovered {
-					cursorMark = fmt.Sprintf("►%d", globalIndex+1)
+					cursorMark = fmt.Sprintf("►%d", devItem.GlobalIdx)
 				}
-				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
+
+				var c1, c2, c3, c4, c5, c6 string
+
 				if isHovered {
+					// Entire row turned green / accent highlight to show active selection
 					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
-				}
-				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.Hostname, 16), 16))
-				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.IP, 15), 15))
-				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.ActiveUser, 24), 24))
-				if isHovered {
+					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.Hostname, 16), 16))
+					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.IP, 15), 15))
 					c4 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.ActiveUser, 24), 24))
+					c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(stText, 11))
+					c6 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.LastSeen, 23), 23))
+				} else {
+					// Neutral non-selected row
+					c1 = lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
+					c2 = lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.Hostname, 16), 16))
+					c3 = lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.IP, 15), 15))
+					c4 = lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.ActiveUser, 24), 24))
+					if c.IsActive {
+						c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(stText, 11))
+					} else {
+						c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render(padCell(stText, 11))
+					}
+					c6 = lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.LastSeen, 23), 23))
 				}
-				c5 := stStyled
-				c6 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.LastSeen, 23), 23))
 
 				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5, c6)
 				lines = append(lines, row)
-				globalIndex++
+				i++
 			}
-			botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
-			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
 
+			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
 			for _, l := range lines {
 				b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
 			}
 			b.WriteString("\n")
-		}
-	}
-
-	// General / Unassigned Table
-	var unassigned []ClientInfo
-	var unassignedIndices []int
-	for idx, c := range filtered {
-		if !matchedMap[c.Hostname] {
-			unassigned = append(unassigned, c)
-			unassignedIndices = append(unassignedIndices, idx)
-		}
-	}
-
-	if len(unassigned) > 0 {
-		labHeader := fmt.Sprintf("► GENERAL / UNASSIGNED WORKSTATIONS — [%d Workstations]", len(unassigned))
-		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Secondary).Render(labHeader) + "\n")
-
-		topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬─────────────┬─────────────────────────╮\n" +
-			fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │\n", "#", "HOSTNAME", "IP ADDRESS", "ACTIVE USER", "STATUS", "LAST SEEN") +
-			"├──────┼──────────────────┼─────────────────┼──────────────────────────┼─────────────┼─────────────────────────┤"
-
-		var lines []string
-		lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
-
-		for i, c := range unassigned {
-			isHovered := m.cursor == unassignedIndices[i]
-			stStyled := lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render("ONLINE")
-			if !c.IsActive {
-				stStyled = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Error).Render("OFFLINE")
-			}
-			userStr := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(c.ActiveUser)
-			cursorMark := fmt.Sprintf("%2d", globalIndex+1)
-			if isHovered {
-				cursorMark = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(fmt.Sprintf("►%d", globalIndex+1))
-				userStr = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(c.ActiveUser)
-			}
-			row := fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-11s │ %-23s │",
-				cursorMark, c.Hostname, c.IP, userStr, stStyled, c.LastSeen)
-			lines = append(lines, row)
-			globalIndex++
-		}
-		botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴─────────────┴─────────────────────────╯"
-		lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
-
-		for _, l := range lines {
-			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(l) + "\n")
+		} else {
+			i++
 		}
 	}
 
@@ -1185,9 +1369,9 @@ func (m Model) renderHistoryView(totalWidth int) string {
 				"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
 			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
 		} else {
-			topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
-				fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "HOSTNAME", "IP ADDRESS", "STUDENT / USER", "LOGGED IN AT", "DURATION") +
-				"├──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
+			topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
+				fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "#", "HOSTNAME", "IP ADDRESS", "STUDENT / USER", "LOGGED IN AT", "DURATION") +
+				"├──────┼──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
 			var lines []string
 			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
 
@@ -1197,19 +1381,30 @@ func (m Model) renderHistoryView(totalWidth int) string {
 				if s.DurationMins == 0 {
 					durStr = "< 1 min"
 				}
+				cursorMark := fmt.Sprintf("%2d", i+1)
+				if isHovered {
+					cursorMark = fmt.Sprintf("►%d", i+1)
+				}
+				c0 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
 				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.Hostname, 16), 16))
 				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.IP, 15), 15))
 				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.User, 24), 24))
-				if isHovered {
-					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.User, 24), 24))
-				}
 				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(s.LoginTime, 20), 20))
 				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(durStr, 11), 11))
 
-				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
+				if isHovered {
+					c0 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
+					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.Hostname, 16), 16))
+					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.IP, 15), 15))
+					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.User, 24), 24))
+					c4 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(s.LoginTime, 20), 20))
+					c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(durStr, 11), 11))
+				}
+
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │", c0, c1, c2, c3, c4, c5)
 				lines = append(lines, row)
 			}
-			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
+			botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
 			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
 
 			for _, l := range lines {
@@ -1239,16 +1434,18 @@ func (m Model) renderHistoryView(totalWidth int) string {
 					cursorMark = fmt.Sprintf("►%d", i+1)
 				}
 				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
-				if isHovered {
-					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
-				}
 				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(pkgName, 30), 30))
-				if isHovered {
-					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(pkgName, 30), 30))
-				}
 				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(strings.ToUpper(app.Kind), 7), 7))
 				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(hostsStr, 24), 24))
 				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(app.DiscoveredOn, 20), 20))
+
+				if isHovered {
+					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
+					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(pkgName, 30), 30))
+					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(strings.ToUpper(app.Kind), 7), 7))
+					c4 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(hostsStr, 24), 24))
+					c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(app.DiscoveredOn, 20), 20))
+				}
 
 				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
 				lines = append(lines, row)
@@ -1268,27 +1465,38 @@ func (m Model) renderHistoryView(totalWidth int) string {
 				"╰───────────────────────────────────────────────────────────────────────────────────────────────────╯"
 			b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Foreground(m.theme.Primary).Render(emptyTable) + "\n")
 		} else {
-			topBorder := "╭──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
-				fmt.Sprintf("│ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "HOSTNAME", "IP ADDRESS", "FIRST ENROLLED", "LAST SEEN", "ACTIVE USER") +
-				"├──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
+			topBorder := "╭──────┬──────────────────┬─────────────────┬──────────────────────────┬──────────────────────┬─────────────╮\n" +
+				fmt.Sprintf("│ %-4s │ %-16s │ %-15s │ %-24s │ %-20s │ %-11s │\n", "#", "HOSTNAME", "IP ADDRESS", "FIRST ENROLLED", "LAST SEEN", "ACTIVE USER") +
+				"├──────┼──────────────────┼─────────────────┼──────────────────────────┼──────────────────────┼─────────────┤"
 			var lines []string
 			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(topBorder))
 
 			for i, c := range m.clients {
 				isHovered := m.cursor == i
+				cursorMark := fmt.Sprintf("%2d", i+1)
+				if isHovered {
+					cursorMark = fmt.Sprintf("►%d", i+1)
+				}
+				c0 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(cursorMark, 4))
 				c1 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.Hostname, 16), 16))
 				c2 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.IP, 15), 15))
 				c3 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.FirstRegistered, 24), 24))
 				c4 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.LastSeen, 20), 20))
 				c5 := lipgloss.NewStyle().Foreground(m.theme.Primary).Render(padCell(truncateText(c.ActiveUser, 11), 11))
+
 				if isHovered {
+					c0 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(cursorMark, 4))
+					c1 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.Hostname, 16), 16))
+					c2 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.IP, 15), 15))
+					c3 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.FirstRegistered, 24), 24))
+					c4 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.LastSeen, 20), 20))
 					c5 = lipgloss.NewStyle().Bold(true).Foreground(m.theme.Accent).Render(padCell(truncateText(c.ActiveUser, 11), 11))
 				}
 
-				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │", c1, c2, c3, c4, c5)
+				row := fmt.Sprintf("│ %s │ %s │ %s │ %s │ %s │ %s │", c0, c1, c2, c3, c4, c5)
 				lines = append(lines, row)
 			}
-			botBorder := "╰──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
+			botBorder := "╰──────┴──────────────────┴─────────────────┴──────────────────────────┴──────────────────────┴─────────────╯"
 			lines = append(lines, lipgloss.NewStyle().Foreground(m.theme.Primary).Render(botBorder))
 
 			for _, l := range lines {

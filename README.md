@@ -27,7 +27,8 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 ## 📑 Table of Contents
 - [📖 Overview & Architecture](#-overview--architecture)
 - [✨ Key Features](#-key-features)
-- [🌐 Material 3 Expressive Web Control Center](#-material-3-expressive-web-control-center)
+- [📟 Interactive Remote & Monitoring TUI (`remote`)](#-interactive-remote--monitoring-tui-remote)
+- [💓 Heartbeat Telemetry & Client Verification (`heartbeat`)](#-heartbeat-telemetry--client-verification-heartbeat)
 - [🧩 Configuration & Governance Structure](#-configuration--governance-structure)
 - [🚀 User Installation Engine (`install`)](#-user-installation-engine-install)
 - [🔄 Automated Policy Synchronization (`refresh`)](#-automated-policy-synchronization-refresh)
@@ -46,6 +47,7 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 * **Desktop Environment**: Deploys **Dank Material Shell (DMS)** with Wayland tile compositing (Niri), Greetd login manager, and preconfigured institutional desktop presets.
 * **Granular Application Policy Engine**: Enforces three-tier application rules (Compulsory, Allowed, Blocked) across both native DNF packages and user-level Flatpaks.
 * **Active Guard Daemons**: Continuously scans for blacklisted software, uninstalls unauthorized applications in real-time, logs user violations, and triggers audible siren alerts on repeated infractions.
+* **Terminal Control Center (TUI)**: Fast, keyboard-driven management interface inspired by pVPN for real-time monitoring, instant screenshots, remote commands, and configuration editing.
 
 ---
 
@@ -53,11 +55,12 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 
 | Feature | Description |
 | :--- | :--- |
-| **🌐 Intranet Primary Server** | Prioritizes local intranet host (`GSFCUPLLAB203` / `10.205.18.253`) for instant updates with automated GitHub fallback. |
-| **📟 Interactive 'remote' TUI** | pVPN-inspired terminal monitor for lab filtering, live status, instant screen capture, and safe file edits. |
-| **📸 Instant Screen Capture** | Grabs client screenshot over intranet via DMS/Plasma (`dms screenshot full ...` / `spectacle`). |
+| **🌐 Intranet Primary Server** | Headless API & Telemetry Daemon (`ad-dms-server.service`) on host (`GSFCUPLLAB203` / `10.205.18.253`) for instant updates and client tracking. |
+| **📟 Interactive 'remote' TUI** | Go-powered terminal interface with collapsible lab groups, live telemetry, instant screen capture, and safe file edits. |
+| **💓 Workstation Heartbeat CLI** | `heartbeat` command & background timer sending real-time workstation status, IP, logged user, and DMS session info. |
+| **📸 Instant Screen Capture** | Grabs client screenshot over intranet via DMS/Wayland or Plasma (`dms screenshot full ...` / `spectacle`). |
 | **💾 20-Backup Retention Engine** | Automatically creates backups on edit (max 20 over 7 days, retains last 3 if older than 15 days). |
-| **🚀 Automated Bootstrapper** | Downloads and provisions domain configs, scripts, presets, and dependencies via a single command. |
+| **🚀 Automated Bootstrapper** | One-line installer automatically detects if device is intranet host and provisions domain/host daemons accordingly. |
 | **🏢 Zero-Touch AD Join** | Configures NetworkManager DNS, Kerberos (`krb5.conf`), and SSSD for institutional domains (`gsfcu.local`). |
 | **🎨 DMS Presets & Custom Themes** | Auto-unpacks and configures Dank Material Shell, Niri, Kitty terminal, and custom desktop sessions. |
 | **⚡ Universal User `install` CLI** | Replaces raw package managers with a policy-aware CLI (`install <pkg>` & `install flatpak <id>`). |
@@ -67,52 +70,91 @@ curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/ins
 | **💡 Hardware Governance** | Background timer forces **100% Brightness** and **100% Sound** every 5 minutes (`device-rules.conf`). |
 | **📊 User Infraction Tracker** | Secure per-user tracking via `violation <user> --get` and `violation <user> --set <n>`. |
 | **🔄 Self-Updating Policy Engine** | Running `refresh` updates rules, timer intervals, and remote tasks directly from host/GitHub. |
-| **🌐 Material 3 Web Dashboard** | Local animated web dashboard adhering to Google Material 3 Expressive guidelines. |
 | **🔑 Domain Admin Polkit Auth** | Allows AD `Domain Admins` to authenticate against GUI elevation dialogs alongside local `wheel` admins. |
 
 ---
 
 ## 📟 Interactive Remote & Monitoring TUI (`remote`)
 
-The repository includes a dedicated interactive terminal utility inspired by the **pVPN TUI** interface:
+The repository includes a dedicated Go terminal utility inspired by modern TUI designs:
 
 ```bash
 # Launch the Interactive Monitoring & Governance TUI
+remote
+# or directly run from repo:
 ./remote
 ```
 
-### Key Capabilities:
-* **📊 Live Workstation Scanner & Lab Filtering**:
-  * Filter views: `[1] All Registered Devices`, `[2] Active (Online) Devices`, `[3] Inactive (Offline) Devices`.
-  * Groups devices by academic lab prefix (`GSFCUOSLAB`, `GSFCUPLLAB`, `GSFCUDSLAB`, etc.).
-  * Shows hostname, IP address, logged-in user, session type, online status, and timestamp.
-  * Live refresh without exiting by pressing `r`.
+### Key Capabilities & Keyboard Controls:
+* **📊 Workstation Telemetry & Lab Matrix**:
+  * **Filter Toolbar**: Switch filters using `Tab`, `Shift+Tab`, `F`, or `←`/`→` when focused on the filter bar (`All Devices`, `Online Only`, `Offline Only`).
+  * **Active Selection Highlighting**: When navigating down to table entries, the active row is highlighted with a prominent full-row green accent bar. The filter bar retains clean indicator arrows (`► All Devices ◄`) without distracting background colors.
+  * **Collapsible Lab Groups**: Lab headers display state toggles (`▼` Expanded, `▶` Collapsed). Press `Enter` or `Space` on any lab header row to fold/unfold that lab's devices.
+  * **1-Based Indexing & Quick-Select**: Device entries are numbered sequentially starting from `1`. Press keys `1-9` on your keyboard to instantly select a device and trigger remote actions.
+  * **Live Refresh**: Press `r` at any time to instantly poll active workstation states.
 * **📸 Instant Screen Capture**:
-  * Select any target workstation to take a screenshot of the user's active session (`dms screenshot full --no-notify --no-clipboard --no-file` on Wayland/Niri or `spectacle` on Plasma) and display it directly on the host.
+  * Select any target workstation to take a screenshot of the user's active session (`dms screenshot full --no-notify --no-clipboard --no-file` on Wayland/Niri or `spectacle` on Plasma) and preview/save it on the administrator terminal.
 * **📝 Safe Configuration Editor with Automated Backups**:
   * Safely edit `domain.conf`, `blocked-apps.conf`, `allowed-apps.conf`, `compulsory-apps.conf`, `group-apps.conf`, `device-rules.conf`, and `remote-tasks.sh`.
   * **Backup Retention Rule**: Automatically preserves up to 20 backups over 7 days in `~/.ad-dms-backups/` and prunes older versions (retaining 3 backups if $>15$ days).
   * Validates script syntax on save.
 * **⚡ Targeted Remote Command Execution**:
   * Dispatch commands to single machines, entire lab groups, or all workstations.
+* **📜 Real-Time Audit & History Viewer**:
+  * Switch to History View (`Tab` or menu) to inspect client enrollment records and user session logins with 1-based indexed tables.
 
 ---
 
-## 🌐 Intranet Primary Server & Web Control Center
+## 💓 Heartbeat Telemetry & Client Verification (`heartbeat`)
 
-A modern, animated, Google Material 3 Expressive web application is included to manage domain configurations, policy lists, hardware locks, live device telemetry, and violation records locally.
+Each workstation runs an automated background heartbeat service (`ad-dms-heartbeat.timer`) that checks in with the intranet host every 2 minutes.
 
-### Launching the Host Server:
+### Checking Heartbeat Status:
+Administrators and users can inspect heartbeat configuration, timer countdown, and connectivity at any time:
+
 ```bash
-./start-dashboard.sh
+heartbeat
 ```
-* Access the control center at: **`http://localhost:8080`**
 
-### Dashboard Features:
-* **Interactive M3 Navigation Rail**: Switch smoothly between Overview, Domain Settings, Policy Editor, Device Rules, Violation Tracker, and Lab Matrix.
-* **Material You Theming**: Instant Light / Dark mode toggle with dynamic ambient gradient mesh.
-* **Live Infraction Simulator & Siren Audio Test**: Test `Siren.mp3` volume playback and reset user violation scores.
-* **Config Exporter**: Export generated `domain.conf` and policy files directly from the browser.
+*Sample Output:*
+```text
+======================================================================
+                  AD-DMS WORKSTATION HEARTBEAT STATUS
+======================================================================
+  [DAEMON SERVICE]      Active: active (running) since Thu 2026-09-03 08:30:00 IST
+  [HEARTBEAT TIMER]     Active: active (waiting)
+  [LAST HEARTBEAT TIME] Thu 2026-09-03 10:45:12 IST (12s ago)
+  [NEXT HEARTBEAT TIME] Thu 2026-09-03 10:47:00 IST (in 1min 48s)
+  [HEARTBEAT INTERVAL]  Every 2 minutes
+----------------------------------------------------------------------
+  [CENTRAL HOST URL]    http://GSFCUPLLAB203:8080/api/heartbeat
+  [HOST REACHABILITY]   ● CONNECTED (HTTP 200 OK - Heartbeat registered)
+  [WORKSTATION INFO]    Host: GSFCUOSLAB101 | IP: 10.205.18.101 | User: student01
+======================================================================
+```
+
+To send an immediate one-shot heartbeat ping:
+```bash
+heartbeat --now
+# or
+heartbeat --send
+```
+
+---
+
+## 🌐 Intranet Primary Server Daemon (`ad-dms-server.service`)
+
+The primary host machine (e.g. `GSFCUPLLAB203`) runs a lightweight, headless Python daemon (`web_server.py`) serving as the central REST API and configuration mirror:
+* **Endpoints**:
+  * `/api/heartbeat`: Ingestion endpoint for client telemetry, IP address, logged-in user, and active sessions.
+  * `/api/clients`: Real-time JSON data consumed by the Go TUI (`remote`).
+  * `/api/command/*`: Command queue for remote execution and screenshot capture.
+  * `/config/*` & `/presets/*`: Local distribution mirror for configs, shell scripts, and DMS presets.
+* **Service Management**:
+  ```bash
+  sudo systemctl status ad-dms-server.service
+  sudo systemctl restart ad-dms-server.service
+  ```
 
 ---
 

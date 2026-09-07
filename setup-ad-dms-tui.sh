@@ -688,7 +688,7 @@ if [ -n "$SERVER_SCRIPT" ]; then
     SERVER_DIR="$(dirname "$SERVER_SCRIPT")"
     cat <<EOF > /etc/systemd/system/ad-dms-server.service
 [Unit]
-Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
+Description=AD-DMS Intranet Host Telemetry & API Daemon (Port 8080)
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -707,7 +707,7 @@ EOF
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now ad-dms-server.service 2>/dev/null || true
     systemctl restart ad-dms-server.service 2>/dev/null || true
-    msg_ok "Activated central intranet web & API daemon (ad-dms-server.service on port ${INTRANET_PORT:-8080})."
+    msg_ok "Activated central intranet telemetry & API daemon (ad-dms-server.service on port ${INTRANET_PORT:-8080})."
   fi
 fi
 
