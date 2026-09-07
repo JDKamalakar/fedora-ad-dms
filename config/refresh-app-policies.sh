@@ -634,6 +634,13 @@ if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "
   exit 0
 fi
 
+# Support checking Heartbeat Telemetry status
+if [ "${1:-}" = "-hb" ] || [ "${1:-}" = "--hb" ] || [ "${1:-}" = "-heartbeat" ] || [ "${1:-}" = "--heartbeat" ]; then
+  if [ -x /usr/local/bin/heartbeat ]; then
+    exec /usr/local/bin/heartbeat
+  fi
+fi
+
 # Support checking which service/source was used previously & live ping/probe status
 if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
   echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
@@ -1100,12 +1107,26 @@ print(json.dumps(data))
 " 2>/dev/null || echo "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\"}")
 
   # Send heartbeat (Try Intranet Host, then Fallback IP, then 127.0.0.1 if host)
-  if ! curl -fsSL -m 2 -X POST "/api/heartbeat"     -H "Content-Type: application/json"     -d "" &>/dev/null; then
-    TARGET_URL="http://:"
-    if ! curl -fsSL -m 2 -X POST "/api/heartbeat"       -H "Content-Type: application/json"       -d "" &>/dev/null; then
-      if [ "" = "" ]; then
-        TARGET_URL="http://127.0.0.1:"
-        curl -fsSL -m 2 -X POST "/api/heartbeat"           -H "Content-Type: application/json"           -d "" &>/dev/null || true
+  hb_sent=false
+  for hb_target in "${INTRANET_HOST}:${INTRANET_PORT}" "${INTRANET_HOST}.local:${INTRANET_PORT}" "${INTRANET_IP}:${INTRANET_PORT}"; do
+    if curl -fsSL -m 2 -X POST "http://${hb_target}/api/heartbeat" \
+      -H "Content-Type: application/json" \
+      -d "$PAYLOAD" &>/dev/null; then
+      TARGET_URL="http://${hb_target}"
+      hb_sent=true
+      echo "Host '${hb_target}' - Sent at $(date)" > "${CONF_DIR}/.last_heartbeat" 2>/dev/null || true
+      break
+    fi
+  done
+
+  if [ "$hb_sent" = false ]; then
+    if [ "${MY_HOST,,}" = "${INTRANET_HOST,,}" ] || ( [ -n "$INTRANET_IP" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/" ); then
+      TARGET_URL="http://127.0.0.1:${INTRANET_PORT}"
+      if curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" &>/dev/null; then
+        hb_sent=true
+        echo "Localhost (127.0.0.1:${INTRANET_PORT}) - Sent at $(date)" > "${CONF_DIR}/.last_heartbeat" 2>/dev/null || true
       fi
     fi
   fi
@@ -1268,10 +1289,107 @@ systemctl enable --now ad-dms-device-guard.timer 2>/dev/null || true
 timeout 3 /usr/local/bin/ad-dms-device-enforce 2>/dev/null || true
 echo -e "  -> ${GREEN}[DEVICE GUARD]${NC} Hardware policy guard active (Brightness 100% & Sound 100% locked every 5min)."
 
+# Deploy /usr/local/bin/heartbeat CLI Diagnostics Tool
+cat <<'HB_EOF' > /usr/local/bin/heartbeat
+#!/usr/bin/env bash
+# AD-DMS Heartbeat Status & Telemetry Diagnostic Tool
+set -euo pipefail
+
+BOLD="\033[1m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
+NC="\033[0m"
+
+echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║${NC}                   ${BOLD}${YELLOW}AD-DMS HEARTBEAT & TELEMETRY MONITOR${NC}                   ${CYAN}║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+
+CONF_DIR="/etc/ad-dms"
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
+MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+
+# 1. Daemon / Timer Status
+echo -e "\n${BOLD}${CYAN}[1/4] Heartbeat Daemon & Timer Engine:${NC}"
+if systemctl is-active --quiet ad-dms-gui-scan.timer 2>/dev/null; then
+  SCAN_INFO=$(systemctl list-timers ad-dms-gui-scan.timer --no-pager 2>/dev/null | grep -E "ad-dms-gui-scan\.timer" || true)
+  SCAN_LEFT=$(echo "$SCAN_INFO" | awk '{print $3}' || echo "unknown")
+  SCAN_NEXT=$(echo "$SCAN_INFO" | awk '{print $1, $2}' || echo "unknown")
+  echo -e "  ● ${GREEN}ad-dms-gui-scan.timer:${NC} ${BOLD}ACTIVE${NC} (Runs every 1min)"
+  echo -e "    -> Next heartbeat scheduled in: ${GREEN}${SCAN_LEFT}${NC} (Next run: ${SCAN_NEXT})"
+else
+  echo -e "  ○ ${YELLOW}ad-dms-gui-scan.timer:${NC} ${YELLOW}INACTIVE${NC} (Background daemon not running)"
+fi
+
+if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+  REF_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+  REF_LEFT=$(echo "$REF_INFO" | awk '{print $3}' || echo "unknown")
+  echo -e "  ● ${GREEN}ad-dms-refresh.timer:${NC}  ${BOLD}ACTIVE${NC} (Scheduled refresh in ${REF_LEFT})"
+fi
+
+# 2. Upstream Intranet Host Configuration
+echo -e "\n${BOLD}${CYAN}[2/4] Configured Intranet Telemetry Host:${NC}"
+echo -e "  ■ Target Host:  ${BOLD}${INTRANET_HOST}${NC}"
+echo -e "  ■ Fallback IP:  ${BOLD}${INTRANET_IP}${NC}"
+echo -e "  ■ Port:         ${BOLD}${INTRANET_PORT}${NC}"
+
+# 3. Last Heartbeat Transmission Record
+echo -e "\n${BOLD}${CYAN}[3/4] Last Transmission Log:${NC}"
+LAST_HB_FILE="${CONF_DIR}/.last_heartbeat"
+if [ -f "$LAST_HB_FILE" ]; then
+  LAST_LOG=$(cat "$LAST_HB_FILE" 2>/dev/null || echo "No details recorded")
+  echo -e "  -> ${GREEN}[SUCCESS]${NC} ${LAST_LOG}"
+else
+  echo -e "  -> ${YELLOW}[INFO]${NC} No previous heartbeat record found at '${LAST_HB_FILE}'."
+fi
+
+# 4. Live Server Connectivity Probe
+echo -e "\n${BOLD}${CYAN}[4/4] Live Telemetry Server Probe:${NC}"
+probe_success=false
+PROBE_TARGETS=()
+
+if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
+  PROBE_TARGETS+=("127.0.0.1:${INTRANET_PORT}")
+fi
+PROBE_TARGETS+=("${INTRANET_HOST}:${INTRANET_PORT}" "${INTRANET_HOST}.local:${INTRANET_PORT}" "${INTRANET_IP}:${INTRANET_PORT}")
+
+for target in "${PROBE_TARGETS[@]}"; do
+  HTTP_CODE=$(curl -fsSL -m 2 -o /dev/null -w "%{http_code}" "http://${target}/api/clients" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo -e "  -> ${GREEN}● ONLINE & CONNECTED:${NC} Successfully reached host at ${BOLD}http://${target}${NC} (HTTP 200 OK)"
+    probe_success=true
+    break
+  fi
+done
+
+if [ "$probe_success" = false ]; then
+  echo -e "  -> ${RED}○ UNREACHABLE:${NC} Cannot connect to central intranet server at ${INTRANET_HOST}:${INTRANET_PORT}."
+  echo -e "     ${YELLOW}(Check if ad-dms-server.service is running on the host machine or check network cables)${NC}"
+fi
+echo ""
+HB_EOF
+chmod +x /usr/local/bin/heartbeat
+echo -e "  -> ${GREEN}[HEARTBEAT CLI]${NC} Telemetry monitor active at /usr/local/bin/heartbeat"
+
 # F. Deploy Interactive Shell Interceptors & Aliases (/etc/profile.d/99-ad-dms-aliases.sh)
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 # AD-DMS Command Redirections & User Helpers
 alias refresh='sudo /usr/local/bin/refresh'
+alias heartbeat='/usr/local/bin/heartbeat'
 alias violation='sudo /usr/local/bin/ad-dms-record-violation'
 alias violations='sudo /usr/local/bin/ad-dms-record-violation'
 

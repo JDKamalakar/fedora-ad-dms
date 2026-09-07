@@ -89,6 +89,26 @@ fetch_file "config/group-apps.conf" "true"
 cp -f config/* . 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
+# Check if this machine is the Intranet Host Server (Domain Configuration Host)
+# ------------------------------------------------------------------------------
+MY_LOCAL_HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo '')"
+MY_HOST_CONF="${INTRANET_HOST:-GSFCUPLLAB203}"
+if [ -f "domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "domain.conf" 2>/dev/null || true
+  MY_HOST_CONF="${INTRANET_HOST_NAME:-${INTRANET_HOST:-$MY_HOST_CONF}}"
+fi
+
+if [ "${MY_LOCAL_HOST,,}" = "${MY_HOST_CONF,,}" ] || ( [ -n "${INTRANET_IP:-}" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/" ); then
+  echo -e "\n${BOLD}${GREEN}[HOST DETECTED] Machine '${MY_LOCAL_HOST}' matches Intranet Host '${MY_HOST_CONF}'. Preparing Central Server components...${NC}"
+  fetch_file "web_server.py" "true"
+  mkdir -p web
+  fetch_file "web/index.html" "true"
+  fetch_file "web/styles.css" "true"
+  fetch_file "web/app.js" "true"
+fi
+
+# ------------------------------------------------------------------------------
 # 2. Dynamically Auto-Discover and Fetch All Presets
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}${CYAN}[2/3] Querying repository for desktop preset archives...${NC}"

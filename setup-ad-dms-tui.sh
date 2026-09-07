@@ -243,6 +243,13 @@ if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "
   exit 0
 fi
 
+# Support checking Heartbeat Telemetry status
+if [ "${1:-}" = "-hb" ] || [ "${1:-}" = "--hb" ] || [ "${1:-}" = "-heartbeat" ] || [ "${1:-}" = "--heartbeat" ]; then
+  if [ -x /usr/local/bin/heartbeat ]; then
+    exec /usr/local/bin/heartbeat
+  fi
+fi
+
 # Support checking which service/source was used previously & live ping/probe status
 if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
   echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
@@ -494,10 +501,110 @@ EOF
 chmod +x /usr/local/bin/refresh
 msg_ok "Deployed: /usr/local/bin/refresh"
 
+# ------------------------------------------------------------------------------
+# Deploy /usr/local/bin/heartbeat CLI Tool
+# ------------------------------------------------------------------------------
+msg_info "Deploying heartbeat telemetry monitor (/usr/local/bin/heartbeat)..."
+cat <<'HB_EOF' > /usr/local/bin/heartbeat
+#!/usr/bin/env bash
+# AD-DMS Heartbeat Status & Telemetry Diagnostic Tool
+set -euo pipefail
+
+BOLD="\033[1m"
+CYAN="\033[1;36m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+RED="\033[1;31m"
+NC="\033[0m"
+
+echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║${NC}                   ${BOLD}${YELLOW}AD-DMS HEARTBEAT & TELEMETRY MONITOR${NC}                   ${CYAN}║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
+
+CONF_DIR="/etc/ad-dms"
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
+MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+
+# 1. Daemon / Timer Status
+echo -e "\n${BOLD}${CYAN}[1/4] Heartbeat Daemon & Timer Engine:${NC}"
+if systemctl is-active --quiet ad-dms-gui-scan.timer 2>/dev/null; then
+  SCAN_INFO=$(systemctl list-timers ad-dms-gui-scan.timer --no-pager 2>/dev/null | grep -E "ad-dms-gui-scan\.timer" || true)
+  SCAN_LEFT=$(echo "$SCAN_INFO" | awk '{print $3}' || echo "unknown")
+  SCAN_NEXT=$(echo "$SCAN_INFO" | awk '{print $1, $2}' || echo "unknown")
+  echo -e "  ● ${GREEN}ad-dms-gui-scan.timer:${NC} ${BOLD}ACTIVE${NC} (Runs every 1min)"
+  echo -e "    -> Next heartbeat scheduled in: ${GREEN}${SCAN_LEFT}${NC} (Next run: ${SCAN_NEXT})"
+else
+  echo -e "  ○ ${YELLOW}ad-dms-gui-scan.timer:${NC} ${YELLOW}INACTIVE${NC} (Background daemon not running)"
+fi
+
+if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+  REF_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+  REF_LEFT=$(echo "$REF_INFO" | awk '{print $3}' || echo "unknown")
+  echo -e "  ● ${GREEN}ad-dms-refresh.timer:${NC}  ${BOLD}ACTIVE${NC} (Scheduled refresh in ${REF_LEFT})"
+fi
+
+# 2. Upstream Intranet Host Configuration
+echo -e "\n${BOLD}${CYAN}[2/4] Configured Intranet Telemetry Host:${NC}"
+echo -e "  ■ Target Host:  ${BOLD}${INTRANET_HOST}${NC}"
+echo -e "  ■ Fallback IP:  ${BOLD}${INTRANET_IP}${NC}"
+echo -e "  ■ Port:         ${BOLD}${INTRANET_PORT}${NC}"
+
+# 3. Last Heartbeat Transmission Record
+echo -e "\n${BOLD}${CYAN}[3/4] Last Transmission Log:${NC}"
+LAST_HB_FILE="${CONF_DIR}/.last_heartbeat"
+if [ -f "$LAST_HB_FILE" ]; then
+  LAST_LOG=$(cat "$LAST_HB_FILE" 2>/dev/null || echo "No details recorded")
+  echo -e "  -> ${GREEN}[SUCCESS]${NC} ${LAST_LOG}"
+else
+  echo -e "  -> ${YELLOW}[INFO]${NC} No previous heartbeat record found at '${LAST_HB_FILE}'."
+fi
+
+# 4. Live Server Connectivity Probe
+echo -e "\n${BOLD}${CYAN}[4/4] Live Telemetry Server Probe:${NC}"
+probe_success=false
+PROBE_TARGETS=()
+
+if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
+  PROBE_TARGETS+=("127.0.0.1:${INTRANET_PORT}")
+fi
+PROBE_TARGETS+=("${INTRANET_HOST}:${INTRANET_PORT}" "${INTRANET_HOST}.local:${INTRANET_PORT}" "${INTRANET_IP}:${INTRANET_PORT}")
+
+for target in "${PROBE_TARGETS[@]}"; do
+  HTTP_CODE=$(curl -fsSL -m 2 -o /dev/null -w "%{http_code}" "http://${target}/api/clients" 2>/dev/null || echo "000")
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo -e "  -> ${GREEN}● ONLINE & CONNECTED:${NC} Successfully reached host at ${BOLD}http://${target}${NC} (HTTP 200 OK)"
+    probe_success=true
+    break
+  fi
+done
+
+if [ "$probe_success" = false ]; then
+  echo -e "  -> ${RED}○ UNREACHABLE:${NC} Cannot connect to central intranet server at ${INTRANET_HOST}:${INTRANET_PORT}."
+  echo -e "     ${YELLOW}(Check if ad-dms-server.service is running on the host machine or check network cables)${NC}"
+fi
+echo ""
+HB_EOF
+chmod +x /usr/local/bin/heartbeat
+msg_ok "Deployed: /usr/local/bin/heartbeat"
+
 msg_info "Creating user command redirections and aliases..."
 cat <<'EOF' > /etc/profile.d/99-ad-dms-aliases.sh
 # AD-DMS Command Redirections & User Helpers
 alias refresh='sudo /usr/local/bin/refresh'
+alias heartbeat='/usr/local/bin/heartbeat'
 alias violation='sudo /usr/local/bin/ad-dms-record-violation'
 alias violations='sudo /usr/local/bin/ad-dms-record-violation'
 
@@ -564,8 +671,22 @@ msg_ok "Systemd background timer 'ad-dms-refresh.timer' activated (${INTERVAL} i
 # ------------------------------------------------------------------------------
 # Step 3b: Intranet Host Central Server Daemon (Auto-Start web_server.py on port 8080)
 # ------------------------------------------------------------------------------
-if [ -f "/web_server.py" ]; then
-  cat <<EOF > /etc/systemd/system/ad-dms-server.service
+SERVER_SCRIPT=""
+for candidate in "${SCRIPT_DIR}/web_server.py" "/etc/ad-dms/web_server.py" "${PWD}/web_server.py" "/home/jk/Projects/fedora-ad-dms/web_server.py"; do
+  if [ -f "$candidate" ]; then
+    SERVER_SCRIPT="$candidate"
+    break
+  fi
+done
+
+MY_CURR_HOST="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo '')"
+INTRANET_HOST_VAL="${INTRANET_HOST_NAME:-${INTRANET_HOST:-GSFCUPLLAB203}}"
+INTRANET_IP_VAL="${INTRANET_FALLBACK_IP:-${INTRANET_IP:-10.205.18.253}}"
+
+if [ -n "$SERVER_SCRIPT" ]; then
+  if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST_VAL,,}" ] || ( [ -n "$INTRANET_IP_VAL" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP_VAL}/" ); then
+    SERVER_DIR="$(dirname "$SERVER_SCRIPT")"
+    cat <<EOF > /etc/systemd/system/ad-dms-server.service
 [Unit]
 Description=AD-DMS Intranet Host Server & Live Control Center (Port 8080)
 After=network.target network-online.target
@@ -573,8 +694,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=
-ExecStart=/usr/bin/python3 /web_server.py
+WorkingDirectory=${SERVER_DIR}
+ExecStart=/usr/bin/python3 ${SERVER_SCRIPT}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -583,9 +704,11 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable --now ad-dms-server.service 2>/dev/null || true
-  msg_ok "Activated central intranet web & API daemon (ad-dms-server.service on port 8080)."
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable --now ad-dms-server.service 2>/dev/null || true
+    systemctl restart ad-dms-server.service 2>/dev/null || true
+    msg_ok "Activated central intranet web & API daemon (ad-dms-server.service on port ${INTRANET_PORT:-8080})."
+  fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -665,8 +788,7 @@ deploy_presets() {
   if [ -f "$niri_conf" ]; then
     # Do not prepend if already spawned or already configured in niri config
     if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' "$niri_conf"; then
-      sed -i '1s/^/spawn-at-startup "dms" "run"
-/' "$niri_conf"
+      sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_conf"
     fi
   fi
 
@@ -695,6 +817,12 @@ AUTOS_EOF
 
 msg_info "Deploying all preset archives from '${PRESETS_DIR:-presets/}' to '/etc/skel' and all user accounts..."
 deploy_presets "/etc/skel"
+# Ensure skel files are owned by root:root with proper permissions for new AD users
+chown -R root:root /etc/skel 2>/dev/null || true
+chmod 755 /etc/skel 2>/dev/null || true
+[ -d /etc/skel/.config ] && chmod 755 /etc/skel/.config 2>/dev/null || true
+find /etc/skel -type d -exec chmod 755 {} + 2>/dev/null || true
+find /etc/skel -type f -exec chmod 644 {} + 2>/dev/null || true
 
 # Deploy to ALL existing user home directories in /home/*
 for udir in /home/*; do
@@ -970,7 +1098,10 @@ fi
 usermod -aG video,input greeter 2>/dev/null || true
 
 mkdir -p /var/cache/dms-greeter/users
-chmod -R 777 /var/cache/dms-greeter 2>/dev/null || true
+chmod 1777 /var/cache/dms-greeter 2>/dev/null || true
+chmod 1777 /var/cache/dms-greeter/users 2>/dev/null || true
+chown -R greeter:greeter /var/cache/dms-greeter 2>/dev/null || true
+chmod -R a+rwX /var/cache/dms-greeter 2>/dev/null || true
 
 if [ -n "${TARGET_ADMIN}" ]; then
   mkdir -p "/var/cache/dms-greeter/users/${TARGET_ADMIN}"
@@ -980,12 +1111,24 @@ if [ -n "${TARGET_ADMIN}" ]; then
   chmod -R 777 "/var/cache/dms-greeter/users/${TARGET_ADMIN}" 2>/dev/null || true
 fi
 
+# Set scale factor to prevent WINIT_HIDPI_FACTOR deprecation warning in Niri sessions
+if [ -f /etc/environment ]; then
+  if ! grep -q "WINIT_X11_SCALE_FACTOR" /etc/environment 2>/dev/null; then
+    echo "WINIT_X11_SCALE_FACTOR=1" >> /etc/environment
+  fi
+else
+  echo "WINIT_X11_SCALE_FACTOR=1" > /etc/environment
+fi
+
 setsebool -P allow_polyinstantiation 1 2>/dev/null || true
 setsebool -P nis_enabled 1 2>/dev/null || true
 setsebool -P use_nfs_home_dirs 1 2>/dev/null || true
 restorecon -R /etc/skel /etc/sssd /etc/pam.d /var/cache/dms-greeter /etc/greetd /etc/ad-dms 2>/dev/null || true
 
-if command -v dms &>/dev/null; then
+if command -v dms-greeter &>/dev/null; then
+  msg_info "Synchronizing DMS greeter desktop sessions..."
+  DMS_PRIVESC=sudo dms-greeter sync --yes 2>/dev/null || true
+elif command -v dms &>/dev/null; then
   msg_info "Synchronizing DMS greeter desktop sessions..."
   dms greeter sync 2>/dev/null || true
 fi
