@@ -2,38 +2,26 @@
   "user_sessions": [
     {
       "hostname": "GSFCUPLLAB203",
-      "ip": "10.205.18.253",
+      "ip": "127.0.0.1",
       "user": "jk",
       "session_type": "wayland",
-      "login_time": "2026-09-07 15:28:50",
-      "start_ts": 1788775130.9261317,
-      "last_seen": "2026-09-07 15:48:22",
-      "last_seen_ts": 1788776302.4053688,
-      "duration_mins": 19,
-      "status": "Active"
-    },
-    {
-      "hostname": "GSFCUPLLAB203",
-      "ip": "10.205.18.253",
-      "user": "jk",
-      "session_type": "wayland",
-      "login_time": "2026-09-07 16:28:52",
-      "start_ts": 1788778732.1084335,
-      "last_seen": "2026-09-08 08:29:14",
-      "last_seen_ts": 1788836354.9128802,
-      "duration_mins": 960,
+      "login_time": "2026-09-08 16:00:44",
+      "start_ts": 1788863444.5227106,
+      "last_seen": "2026-09-08 16:12:05",
+      "last_seen_ts": 1788864125.4107294,
+      "duration_mins": 11,
       "status": "Active"
     },
     {
       "hostname": "GSFCUOSLAB172",
       "ip": "10.205.18.230",
-      "user": "oslab",
+      "user": "25bt04047",
       "session_type": "wayland",
-      "login_time": "2026-09-07 16:29:38",
-      "start_ts": 1788778778.5321133,
-      "last_seen": "2026-09-08 08:28:55",
-      "last_seen_ts": 1788836335.6648924,
-      "duration_mins": 959,
+      "login_time": "2026-09-08 16:11:02",
+      "start_ts": 1788864062.5720026,
+      "last_seen": "2026-09-08 16:12:45",
+      "last_seen_ts": 1788864165.0965586,
+      "duration_mins": 1,
       "status": "Active"
     }
   ],
@@ -41,192 +29,20 @@
     "com.vscodium.codium": {
       "name": "com.vscodium.codium",
       "kind": "flatpak",
-      "discovered_on": "2026-09-07 15:28:50",
+      "discovered_on": "2026-09-08 16:00:44",
       "hosts": [
         "GSFCUPLLAB203",
         "GSFCUOSLAB172"
       ],
       "users": [
         "jk",
-        "oslab"
+        "25bt04047"
       ]
     },
-    "cups-filters-driverless": {
-      "name": "cups-filters-driverless",
+    "gpg-pubkey": {
+      "name": "gpg-pubkey",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "cups-filters": {
-      "name": "cups-filters",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "chrony": {
-      "name": "chrony",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
-      ]
-    },
-    "ibus-table": {
-      "name": "ibus-table",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "dgop": {
-      "name": "dgop",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "danksearch": {
-      "name": "danksearch",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "libwmf-lite": {
-      "name": "libwmf-lite",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "libjaylink": {
-      "name": "libjaylink",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
-      ]
-    },
-    "libcloudproviders": {
-      "name": "libcloudproviders",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
-      ]
-    },
-    "ibus-typing-booster": {
-      "name": "ibus-typing-booster",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
-      ]
-    },
-    "localsearch": {
-      "name": "localsearch",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "python3-perf": {
-      "name": "python3-perf",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "wireless-regdb": {
-      "name": "wireless-regdb",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203",
-        "GSFCUOSLAB172"
-      ],
-      "users": [
-        "jk",
-        "oslab"
-      ]
-    },
-    "srt-libs": {
-      "name": "srt-libs",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
-      ]
-    },
-    "qt6-qttranslations": {
-      "name": "qt6-qttranslations",
-      "kind": "dnf",
-      "discovered_on": "2026-09-07 15:28:50",
+      "discovered_on": "2026-09-08 16:00:44",
       "hosts": [
         "GSFCUPLLAB203"
       ],
@@ -237,7 +53,59 @@
     "dms": {
       "name": "dms",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:28:52",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "dms-cli": {
+      "name": "dms-cli",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "cups-filters-driverless": {
+      "name": "cups-filters-driverless",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "cups-filters": {
+      "name": "cups-filters",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "chrony": {
+      "name": "chrony",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
       "hosts": [
         "GSFCUPLLAB203"
       ],
@@ -245,10 +113,108 @@
         "jk"
       ]
     },
-    "dms-cli": {
-      "name": "dms-cli",
+    "ibus-table": {
+      "name": "ibus-table",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:28:52",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "dgop": {
+      "name": "dgop",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "danksearch": {
+      "name": "danksearch",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "libwmf-lite": {
+      "name": "libwmf-lite",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "libjaylink": {
+      "name": "libjaylink",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "libcloudproviders": {
+      "name": "libcloudproviders",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "ibus-typing-booster": {
+      "name": "ibus-typing-booster",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "jk"
+      ]
+    },
+    "localsearch": {
+      "name": "localsearch",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
+      "hosts": [
+        "GSFCUPLLAB203",
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "jk",
+        "25bt04047"
+      ]
+    },
+    "python3-perf": {
+      "name": "python3-perf",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:00:44",
       "hosts": [
         "GSFCUPLLAB203"
       ],
@@ -259,78 +225,67 @@
     "ca-certificates": {
       "name": "ca-certificates",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
+        "25bt04047"
       ]
     },
     "dankcalendar-git": {
       "name": "dankcalendar-git",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
+        "25bt04047"
       ]
     },
     "dms-greeter": {
       "name": "dms-greeter",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
+        "25bt04047"
       ]
     },
     "librepo": {
       "name": "librepo",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
+        "25bt04047"
       ]
     },
     "openldap": {
       "name": "openldap",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
+        "25bt04047"
       ]
     },
-    "openxr-libs": {
-      "name": "openxr-libs",
+    "wireless-regdb": {
+      "name": "wireless-regdb",
       "kind": "dnf",
-      "discovered_on": "2026-09-07 16:29:38",
+      "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
         "GSFCUOSLAB172"
       ],
       "users": [
-        "oslab"
-      ]
-    },
-    "gpg-pubkey": {
-      "name": "gpg-pubkey",
-      "kind": "dnf",
-      "discovered_on": "2026-09-08 03:14:30",
-      "hosts": [
-        "GSFCUPLLAB203"
-      ],
-      "users": [
-        "jk"
+        "25bt04047"
       ]
     }
   }

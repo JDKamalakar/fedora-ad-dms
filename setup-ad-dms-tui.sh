@@ -222,10 +222,7 @@ done
 
 chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 
-# ------------------------------------------------------------------------------
-# Step 3a: System-Wide Refresh Command, Alias & Headless Background Timer
-# ------------------------------------------------------------------------------
-msg_info "Deploying refresh utility launcher (Go UI for interactive, Shell for flags)..."
+# Deploy /usr/local/bin/refresh utility launcher (Go UI for interactive, Shell for flags)
 # Compile or install Go refresh-ui binary
 REFRESH_GO_SRC="${SCRIPT_DIR:-/etc/ad-dms}/tui/refresh"
 [ ! -d "$REFRESH_GO_SRC" ] && REFRESH_GO_SRC="/home/jk/Projects/fedora-ad-dms/tui/refresh"
@@ -233,16 +230,14 @@ if command -v go &>/dev/null && [ -d "$REFRESH_GO_SRC" ]; then
   (cd "$REFRESH_GO_SRC" && go build -o /usr/local/bin/refresh-ui main.go 2>/dev/null || true)
 fi
 
-# Fallback: check if pre-compiled refresh-tui or /usr/local/bin/refresh-ui exists
-if [ ! -f /usr/local/bin/refresh-ui ]; then
-  for cand_ui in "${SCRIPT_DIR:-}/refresh-tui" "${SCRIPT_DIR:-}/config/refresh-tui" "/home/jk/Projects/fedora-ad-dms/config/refresh-tui"; do
-    if [ -f "$cand_ui" ]; then
-      cp -f "$cand_ui" /usr/local/bin/refresh-ui
-      chmod +x /usr/local/bin/refresh-ui
-      break
-    fi
-  done
-fi
+# Fallback / Direct update: check if pre-compiled refresh-tui or /usr/local/bin/refresh-ui exists
+for cand_ui in "${SCRIPT_DIR:-}/refresh-tui" "${SCRIPT_DIR:-}/config/refresh-tui" "/etc/ad-dms/refresh-tui" "/home/jk/Projects/fedora-ad-dms/config/refresh-tui"; do
+  if [ -f "$cand_ui" ]; then
+    cp -f "$cand_ui" /usr/local/bin/refresh-ui 2>/dev/null || true
+    chmod +x /usr/local/bin/refresh-ui 2>/dev/null || true
+    break
+  fi
+done
 
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
@@ -373,9 +368,33 @@ if [ $# -gt 0 ]; then
   fi
 fi
 
-# If interactive TTY and Go refresh-ui is installed, launch the Go Bubble Tea TUI
-if [ -t 1 ] && [ -x /usr/local/bin/refresh-ui ]; then
-  exec /usr/local/bin/refresh-ui "$@"
+# Auto-sync latest Go refresh-ui binary before launching if on intranet or GitHub
+if [ -t 1 ]; then
+  _REFRESH_BIN="/usr/local/bin/refresh-ui"
+  _NEED_SYNC=false
+  if [ ! -x "$_REFRESH_BIN" ]; then
+    _NEED_SYNC=true
+  fi
+
+  # Fast probe for intranet server binary update
+  _INTRANET_TARGET="${INTRANET_HOST:-GSFCUPLLAB203}:${INTRANET_PORT:-8080}"
+  if [ -n "${INTRANET_IP:-}" ] && ! curl -fsSL -m 1 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
+    _INTRANET_TARGET="${INTRANET_IP}:${INTRANET_PORT:-8080}"
+  fi
+
+  if curl -fsSL -m 2 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
+    # Fetch latest binary silently with header timestamp comparison (-z)
+    curl -fsSL -m 4 -z "$_REFRESH_BIN" "http://${_INTRANET_TARGET}/config/refresh-tui" -o "${_REFRESH_BIN}.tmp" 2>/dev/null || true
+    if [ -s "${_REFRESH_BIN}.tmp" ]; then
+      mv -f "${_REFRESH_BIN}.tmp" "$_REFRESH_BIN" 2>/dev/null || true
+      chmod +x "$_REFRESH_BIN" 2>/dev/null || true
+    fi
+    rm -f "${_REFRESH_BIN}.tmp"
+  fi
+
+  if [ -x "$_REFRESH_BIN" ]; then
+    exec "$_REFRESH_BIN" "$@"
+  fi
 fi
 
 # Fallback or headless execution: execute sync engine directly
@@ -398,16 +417,6 @@ fi
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
-fi
-
-# Broadcast notification to active desktop user session if present
-ACTIVE_GUI_USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 !~ /root|greeter|gdm|sddm|lightdm/ {print $3; exit}' || who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' || true)
-if [ -n "$ACTIVE_GUI_USER" ]; then
-  ACTIVE_UID=$(id -u "$ACTIVE_GUI_USER" 2>/dev/null || echo 1000)
-  GUI_BUS="/run/user/${ACTIVE_UID}/bus"
-  if [ -S "$GUI_BUS" ] && command -v notify-send &>/dev/null; then
-    DBUS_SESSION_BUS_ADDRESS="unix:path=${GUI_BUS}" timeout 3 su - "$ACTIVE_GUI_USER" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations and software policies are synchronizing...'" < /dev/null 2>/dev/null || true
-  fi
 fi
 
 # Detect if running in headless background mode (no TTY)
@@ -496,6 +505,35 @@ if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
   else
     [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
   fi
+fi
+
+# Sync refresh UI binary (refresh-tui) so clients get the latest TUI interface
+[ -t 1 ] && echo -n -e "  -> Syncing Refresh TUI UI binary (refresh-ui)... "
+tui_fetched=false
+if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
+  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
+    [ -z "$host_target" ] && continue
+    if curl -fsSL -m 8 "http://${host_target}:${INTRANET_PORT}/config/refresh-tui" -o /usr/local/bin/refresh-ui 2>/dev/null; then
+      if [ -s /usr/local/bin/refresh-ui ]; then
+        chmod +x /usr/local/bin/refresh-ui
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
+        tui_fetched=true
+        break
+      fi
+    fi
+  done
+fi
+if [ "$tui_fetched" = false ]; then
+  if curl -fsSL -m 12 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config/refresh-tui?$(date +%s)" -o /usr/local/bin/refresh-ui 2>/dev/null; then
+    if [ -s /usr/local/bin/refresh-ui ]; then
+      chmod +x /usr/local/bin/refresh-ui
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      tui_fetched=true
+    fi
+  fi
+fi
+if [ "$tui_fetched" = false ]; then
+  [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
 fi
 
 # Dynamically synchronize ad-dms-refresh.timer interval if domain.conf was updated

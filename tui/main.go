@@ -45,30 +45,31 @@ func acquireSingleInstanceLock() {
 // Dynamic DMS / Matugen Theme Parser
 // ------------------------------------------------------------------------------
 type DMSTheme struct {
-	Primary   lipgloss.Color
-	Secondary lipgloss.Color
-	Accent    lipgloss.Color
-	Warning   lipgloss.Color
-	Error     lipgloss.Color
-	Border    lipgloss.Color
-	Bg        lipgloss.Color
-	Fg        lipgloss.Color
-	FgMuted   lipgloss.Color
-	Selected  lipgloss.Color
+	Primary   lipgloss.AdaptiveColor
+	Secondary lipgloss.AdaptiveColor
+	Accent    lipgloss.AdaptiveColor
+	Warning   lipgloss.AdaptiveColor
+	Error     lipgloss.AdaptiveColor
+	Border    lipgloss.AdaptiveColor
+	Bg        lipgloss.AdaptiveColor
+	Fg        lipgloss.AdaptiveColor
+	FgMuted   lipgloss.AdaptiveColor
+	Selected  lipgloss.AdaptiveColor
 }
 
 func loadDMSTheme() DMSTheme {
+	// Adaptive light/dark pairs — always readable regardless of terminal background
 	theme := DMSTheme{
-		Primary:   lipgloss.Color("#4285F4"),
-		Secondary: lipgloss.Color("#1976D2"),
-		Accent:    lipgloss.Color("#00C853"),
-		Warning:   lipgloss.Color("#FFB300"),
-		Error:     lipgloss.Color("#D32F2F"),
-		Border:    lipgloss.Color("#4285F4"),
-		Bg:        lipgloss.Color("#1A1A2E"),
-		Fg:        lipgloss.Color("#FFFFFF"),
-		FgMuted:   lipgloss.Color("#9E9E9E"),
-		Selected:  lipgloss.Color("#00E676"),
+		Primary:   lipgloss.AdaptiveColor{Light: "#1565C0", Dark: "#4FC3F7"},
+		Secondary: lipgloss.AdaptiveColor{Light: "#1976D2", Dark: "#81D4FA"},
+		Accent:    lipgloss.AdaptiveColor{Light: "#2E7D32", Dark: "#69F0AE"},
+		Warning:   lipgloss.AdaptiveColor{Light: "#E65100", Dark: "#FFB300"},
+		Error:     lipgloss.AdaptiveColor{Light: "#B71C1C", Dark: "#EF5350"},
+		Border:    lipgloss.AdaptiveColor{Light: "#1565C0", Dark: "#4FC3F7"},
+		Bg:        lipgloss.AdaptiveColor{Light: "#F5F5F5", Dark: "#1A1A2E"},
+		Fg:        lipgloss.AdaptiveColor{Light: "#212121", Dark: "#ECEFF1"},
+		FgMuted:   lipgloss.AdaptiveColor{Light: "#616161", Dark: "#90A4AE"},
+		Selected:  lipgloss.AdaptiveColor{Light: "#00695C", Dark: "#00E676"},
 	}
 
 	home, err := os.UserHomeDir()
@@ -81,17 +82,20 @@ func loadDMSTheme() DMSTheme {
 		text := string(content)
 		accentRe := regexp.MustCompile(`@define-color\s+accent_color\s+(#[0-9a-fA-F]{6})`)
 		if m := accentRe.FindStringSubmatch(text); len(m) > 1 {
-			theme.Primary = lipgloss.Color(m[1])
-			theme.Border = lipgloss.Color(m[1])
-			theme.Selected = lipgloss.Color(m[1])
+			c := m[1]
+			theme.Primary = lipgloss.AdaptiveColor{Light: c, Dark: c}
+			theme.Border = lipgloss.AdaptiveColor{Light: c, Dark: c}
+			theme.Selected = lipgloss.AdaptiveColor{Light: c, Dark: c}
 		}
 		bgRe := regexp.MustCompile(`@define-color\s+window_bg_color\s+(#[0-9a-fA-F]{6})`)
 		if m := bgRe.FindStringSubmatch(text); len(m) > 1 {
-			theme.Bg = lipgloss.Color(m[1])
+			c := m[1]
+			theme.Bg = lipgloss.AdaptiveColor{Light: c, Dark: c}
 		}
 		fgRe := regexp.MustCompile(`@define-color\s+window_fg_color\s+(#[0-9a-fA-F]{6})`)
 		if m := fgRe.FindStringSubmatch(text); len(m) > 1 {
-			theme.Fg = lipgloss.Color(m[1])
+			c := m[1]
+			theme.Fg = lipgloss.AdaptiveColor{Light: c, Dark: c}
 		}
 	}
 
@@ -100,13 +104,15 @@ func loadDMSTheme() DMSTheme {
 		text := string(content)
 		activeRe := regexp.MustCompile(`active-color\s+"(#[0-9a-fA-F]{6})"`)
 		if m := activeRe.FindStringSubmatch(text); len(m) > 1 {
-			theme.Primary = lipgloss.Color(m[1])
-			theme.Border = lipgloss.Color(m[1])
-			theme.Selected = lipgloss.Color(m[1])
+			c := m[1]
+			theme.Primary = lipgloss.AdaptiveColor{Light: c, Dark: c}
+			theme.Border = lipgloss.AdaptiveColor{Light: c, Dark: c}
+			theme.Selected = lipgloss.AdaptiveColor{Light: c, Dark: c}
 		}
 		urgentRe := regexp.MustCompile(`urgent-color\s+"(#[0-9a-fA-F]{6})"`)
 		if m := urgentRe.FindStringSubmatch(text); len(m) > 1 {
-			theme.Error = lipgloss.Color(m[1])
+			c := m[1]
+			theme.Error = lipgloss.AdaptiveColor{Light: c, Dark: c}
 		}
 	}
 
@@ -126,6 +132,7 @@ const (
 	ViewHistory
 	ViewCommand
 	ViewDeviceActionModal
+	ViewPowerModal
 	ViewPackageActionModal
 )
 
@@ -200,28 +207,34 @@ type MonitorItem struct {
 	GlobalIdx int        // 1-based sequential visible index
 }
 
+type screenshotReadyMsg struct{ filePath string }
+type screenshotErrorMsg struct{ host string }
+
 type Model struct {
-	width          int
-	height         int
-	view           ViewMode
-	cursor         int
-	modalCursor    int
-	filterMode     string // "all", "active", "inactive"
-	filterFocused  bool   // true if user focus is currently on the top filter bar
-	collapsedLabs  map[string]bool
-	auditFilter    string // "all", "users", "installs"
-	clients        []ClientInfo
-	userSessions   []UserSessionRecord
-	installedApps  []InstalledAppRecord
-	labs           []LabDefinition
-	statusMsg      string
-	repoDir        string
-	backupDir      string
-	apiURL         string
-	menuItems      []MenuItem
-	theme          DMSTheme
-	selectedDevice ClientInfo
-	selectedApp    InstalledAppRecord
+	width               int
+	height              int
+	view                ViewMode
+	cursor              int
+	modalCursor         int
+	filterMode          string // "all", "active", "inactive"
+	filterFocused       bool   // true if user focus is currently on the top filter bar
+	expandedLabs        map[string]bool
+	searchMode          bool   // true if Ctrl+F search input is open
+	searchQuery         string // active search filter text
+	auditFilter         string // "all", "users", "installs"
+	clients             []ClientInfo
+	userSessions        []UserSessionRecord
+	installedApps       []InstalledAppRecord
+	labs                []LabDefinition
+	statusMsg           string
+	repoDir             string
+	backupDir           string
+	apiURL              string
+	menuItems           []MenuItem
+	theme               DMSTheme
+	selectedDevice      ClientInfo
+	selectedApp         InstalledAppRecord
+	screenshotPending   string // hostname we're waiting a screenshot for; empty = none
 }
 
 func initialModel() Model {
@@ -242,7 +255,9 @@ func initialModel() Model {
 		cursor:        0,
 		filterMode:    "all",
 		filterFocused: false,
-		collapsedLabs: make(map[string]bool),
+		expandedLabs:  make(map[string]bool),
+		searchMode:    false,
+		searchQuery:   "",
 		auditFilter:   "all",
 		repoDir:       rDir,
 		backupDir:     bDir,
@@ -275,6 +290,52 @@ func (m Model) Init() tea.Cmd {
 
 type clientsMsg []ClientInfo
 type auditMsg AuditResponse
+
+// pollScreenshotCmd polls the server every second for up to 30 seconds until
+// the screenshot for the given host is available, then downloads it to /tmp and
+// opens it immediately with xdg-open.
+func pollScreenshotCmd(apiURL, host string) tea.Cmd {
+	dispatchTime := time.Now().Unix()
+	return func() tea.Msg {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(1 * time.Second)
+			pollURL := fmt.Sprintf("%s/api/screenshot/get?host=%s&since=%d",
+				apiURL, url.QueryEscape(host), dispatchTime)
+			resp, err := http.Get(pollURL)
+			if err != nil {
+				continue
+			}
+			var result map[string]interface{}
+			_ = json.NewDecoder(resp.Body).Decode(&result)
+			resp.Body.Close()
+			has, _ := result["has_screenshot"].(bool)
+			if !has {
+				continue
+			}
+			// Download raw PNG
+			rawURL := fmt.Sprintf("%s/api/screenshot/get?host=%s&since=%d&raw=1",
+				apiURL, url.QueryEscape(host), dispatchTime)
+			rawResp, err := http.Get(rawURL)
+			if err != nil {
+				continue
+			}
+			imgPath := filepath.Join(os.TempDir(), "ad-dms-ss-"+strings.ToLower(host)+".png")
+			f, err := os.Create(imgPath)
+			if err != nil {
+				rawResp.Body.Close()
+				continue
+			}
+			bufio.NewReader(rawResp.Body).WriteTo(f)
+			f.Close()
+			rawResp.Body.Close()
+			// Open immediately with system image viewer
+			_ = exec.Command("xdg-open", imgPath).Start()
+			return screenshotReadyMsg{filePath: imgPath}
+		}
+		return screenshotErrorMsg{host: host}
+	}
+}
 
 func fetchClientsCmd(apiURL string) tea.Cmd {
 	return func() tea.Msg {
@@ -324,12 +385,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.installedApps = msg.InstalledApps
 		return m, nil
 
+	case screenshotReadyMsg:
+		m.screenshotPending = ""
+		m.statusMsg = fmt.Sprintf("📸 Screenshot received and opened: %s", msg.filePath)
+		return m, nil
+
+	case screenshotErrorMsg:
+		m.screenshotPending = ""
+		m.statusMsg = fmt.Sprintf("⚠️  Screenshot timed out for %s — device may be offline or grim unavailable", msg.host)
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 
+		case "ctrl+f", "ctrl+s":
+			if m.view == ViewMonitor {
+				m.searchMode = !m.searchMode
+				return m, nil
+			}
+
 		case "esc", "b":
+			if m.view == ViewMonitor && m.searchMode {
+				m.searchMode = false
+				return m, nil
+			}
+			if m.view == ViewPowerModal {
+				m.view = ViewDeviceActionModal
+				m.modalCursor = 2 // focus on Power Options
+				return m, nil
+			}
 			if m.view == ViewDeviceActionModal || m.view == ViewPackageActionModal {
 				if m.view == ViewDeviceActionModal {
 					m.view = ViewMonitor
@@ -345,12 +431,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+		case "backspace":
+			if m.view == ViewMonitor && m.searchMode {
+				if len(m.searchQuery) > 0 {
+					m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+					m.cursor = 0
+				}
+				return m, nil
+			}
+
 		case "r":
+			if m.view == ViewMonitor && m.searchMode {
+				m.searchQuery += "r"
+				m.cursor = 0
+				return m, nil
+			}
 			m.statusMsg = "Telemetry Refreshed"
 			return m, tea.Batch(fetchClientsCmd(m.apiURL), fetchAuditCmd(m.apiURL))
 
 		case "up", "k":
-			if m.view == ViewDeviceActionModal || m.view == ViewPackageActionModal {
+			if m.view == ViewMonitor && m.searchMode {
+				return m, nil
+			}
+			if m.view == ViewDeviceActionModal || m.view == ViewPowerModal || m.view == ViewPackageActionModal {
 				if m.modalCursor > 0 {
 					m.modalCursor--
 				}
@@ -380,8 +483,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "down", "j":
+			if m.view == ViewMonitor && m.searchMode {
+				return m, nil
+			}
 			if m.view == ViewDeviceActionModal {
 				if m.modalCursor < 3 {
+					m.modalCursor++
+				}
+				return m, nil
+			} else if m.view == ViewPowerModal {
+				if m.modalCursor < 5 {
 					m.modalCursor++
 				}
 				return m, nil
@@ -436,6 +547,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "left", "h":
+			if m.view == ViewMonitor && m.searchMode {
+				return m, nil
+			}
 			if (m.view == ViewMain || m.view == ViewSafeEditor) && m.cursor > 0 {
 				m.cursor--
 			} else if m.view == ViewMonitor {
@@ -461,6 +575,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "right", "l":
+			if m.view == ViewMonitor && m.searchMode {
+				return m, nil
+			}
 			if m.view == ViewMain && m.cursor < len(m.menuItems)-1 {
 				m.cursor++
 			} else if m.view == ViewSafeEditor && m.cursor < 6 {
@@ -489,6 +606,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "tab", "f":
 			if m.view == ViewMonitor {
+				if m.searchMode {
+					m.searchQuery += msg.String()
+					m.cursor = 0
+					return m, nil
+				}
 				if m.filterMode == "all" {
 					m.filterMode = "active"
 				} else if m.filterMode == "active" {
@@ -514,26 +636,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			if m.view == ViewMonitor && m.searchMode {
+				m.searchQuery += msg.String()
+				m.cursor = 0
+				return m, nil
+			}
 			if m.view == ViewMain {
 				idx := int(msg.String()[0] - '1')
 				return m.handleMainMenuSelect(idx)
 			} else if m.view == ViewSafeEditor {
 				idx := int(msg.String()[0] - '1')
 				return m.handleEditorSelect(idx)
-			} else if m.view == ViewMonitor {
-				targetNum := int(msg.String()[0] - '0')
-				items := m.getMonitorItems()
-				for idx, it := range items {
-					if it.Type == MonitorItemDevice && it.GlobalIdx == targetNum {
-						m.filterFocused = false
-						m.cursor = idx
-						m.selectedDevice = it.Device
-						m.view = ViewDeviceActionModal
-						m.modalCursor = 0
-						return m, nil
-					}
-				}
-				return m, nil
 			} else if m.view == ViewHistory {
 				switch msg.String() {
 				case "1":
@@ -547,19 +660,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchAuditCmd(m.apiURL)
 			}
 
-		case " ", "space":
-			if m.view == ViewMonitor {
-				items := m.getMonitorItems()
-				if !m.filterFocused && len(items) > 0 && m.cursor >= 0 && m.cursor < len(items) {
-					curItem := items[m.cursor]
-					if curItem.Type == MonitorItemHeader {
-						m.collapsedLabs[curItem.LabPrefix] = !m.collapsedLabs[curItem.LabPrefix]
-						return m, nil
-					}
-				}
-			}
-
 		case "enter":
+			if m.view == ViewMonitor && m.searchMode {
+				m.searchMode = false
+				return m, nil
+			}
 			if m.view == ViewMain {
 				return m.handleMainMenuSelect(m.cursor)
 			} else if m.view == ViewMonitor {
@@ -576,7 +681,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					curItem := items[m.cursor]
 					if curItem.Type == MonitorItemHeader {
 						// Toggle collapse/expand on group header!
-						m.collapsedLabs[curItem.LabPrefix] = !m.collapsedLabs[curItem.LabPrefix]
+						m.expandedLabs[curItem.LabPrefix] = !m.expandedLabs[curItem.LabPrefix]
 						return m, nil
 					} else if curItem.Type == MonitorItemDevice {
 						m.selectedDevice = curItem.Device
@@ -594,6 +699,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			} else if m.view == ViewDeviceActionModal {
 				return m.handleDeviceModalSelect()
+			} else if m.view == ViewPowerModal {
+				return m.handlePowerModalSelect()
 			} else if m.view == ViewHistory {
 				if m.auditFilter == "installs" && len(m.installedApps) > 0 && m.cursor < len(m.installedApps) {
 					m.selectedApp = m.installedApps[m.cursor]
@@ -605,6 +712,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.handlePackageModalSelect()
 			} else if m.view == ViewSafeEditor {
 				return m.handleEditorSelect(m.cursor)
+			}
+
+		default:
+			// If in searchMode inside ViewMonitor, append typed runes
+			if m.view == ViewMonitor && m.searchMode {
+				str := msg.String()
+				if len(str) == 1 && str[0] >= 32 && str[0] <= 126 {
+					m.searchQuery += str
+					m.cursor = 0
+					return m, nil
+				}
 			}
 		}
 	}
@@ -632,14 +750,25 @@ func (m Model) getMonitorItems() []MonitorItem {
 		return nil
 	}
 
+	search := strings.ToLower(strings.TrimSpace(m.searchQuery))
+
 	var items []MonitorItem
 	matchedMap := make(map[string]bool)
-	globalNum := 1
 
 	for _, lab := range m.labs {
 		var labItems []ClientInfo
 		for _, c := range filtered {
 			if strings.Contains(strings.ToUpper(c.Hostname), strings.ToUpper(lab.Prefix)) {
+				// If search is active, match against Hostname, IP, ActiveUser, or LabPrefix/Name
+				if search != "" {
+					hMatch := strings.Contains(strings.ToLower(c.Hostname), search)
+					ipMatch := strings.Contains(strings.ToLower(c.IP), search)
+					uMatch := strings.Contains(strings.ToLower(c.ActiveUser), search)
+					lMatch := strings.Contains(strings.ToLower(lab.Prefix), search) || strings.Contains(strings.ToLower(lab.Name), search)
+					if !hMatch && !ipMatch && !uMatch && !lMatch {
+						continue
+					}
+				}
 				labItems = append(labItems, c)
 				matchedMap[c.Hostname] = true
 			}
@@ -654,16 +783,18 @@ func (m Model) getMonitorItems() []MonitorItem {
 				Count:     len(labItems),
 			})
 
-			// If not collapsed, include device items
-			if !m.collapsedLabs[lab.Prefix] {
+			// Collapsed by default unless user expanded it OR search query matches
+			isExpanded := m.expandedLabs[lab.Prefix] || search != ""
+			if isExpanded {
+				tableIdx := 1
 				for _, c := range labItems {
 					items = append(items, MonitorItem{
 						Type:      MonitorItemDevice,
 						LabPrefix: lab.Prefix,
 						Device:    c,
-						GlobalIdx: globalNum,
+						GlobalIdx: tableIdx,
 					})
-					globalNum++
+					tableIdx++
 				}
 			}
 		}
@@ -673,6 +804,15 @@ func (m Model) getMonitorItems() []MonitorItem {
 	var unassigned []ClientInfo
 	for _, c := range filtered {
 		if !matchedMap[c.Hostname] {
+			if search != "" {
+				hMatch := strings.Contains(strings.ToLower(c.Hostname), search)
+				ipMatch := strings.Contains(strings.ToLower(c.IP), search)
+				uMatch := strings.Contains(strings.ToLower(c.ActiveUser), search)
+				lMatch := strings.Contains(strings.ToLower("UNASSIGNED"), search) || strings.Contains(strings.ToLower("GENERAL"), search)
+				if !hMatch && !ipMatch && !uMatch && !lMatch {
+					continue
+				}
+			}
 			unassigned = append(unassigned, c)
 		}
 	}
@@ -685,15 +825,17 @@ func (m Model) getMonitorItems() []MonitorItem {
 			Count:     len(unassigned),
 		})
 
-		if !m.collapsedLabs["UNASSIGNED"] {
+		isExpanded := m.expandedLabs["UNASSIGNED"] || search != ""
+		if isExpanded {
+			tableIdx := 1
 			for _, c := range unassigned {
 				items = append(items, MonitorItem{
 					Type:      MonitorItemDevice,
 					LabPrefix: "UNASSIGNED",
 					Device:    c,
-					GlobalIdx: globalNum,
+					GlobalIdx: tableIdx,
 				})
-				globalNum++
+				tableIdx++
 			}
 		}
 	}
@@ -737,19 +879,73 @@ func (m Model) handleDeviceModalSelect() (tea.Model, tea.Cmd) {
 	host := m.selectedDevice.Hostname
 	switch m.modalCursor {
 	case 0: // Instant Screen Capture
-		m.statusMsg = fmt.Sprintf("📸 Requested silent screen capture for %s...", host)
+		m.statusMsg = fmt.Sprintf("📸 Capturing screen on %s — will open automatically when ready...", host)
+		m.screenshotPending = host
 		m.view = ViewMonitor
-		return m, dispatchCommandCmd(m.apiURL, host, "screenshot", "")
+		return m, tea.Batch(
+			dispatchCommandCmd(m.apiURL, host, "screenshot", ""),
+			pollScreenshotCmd(m.apiURL, host),
+		)
 	case 1: // Refresh Policies on Device
 		m.statusMsg = fmt.Sprintf("🔄 Policy refresh command dispatched to %s", host)
 		m.view = ViewMonitor
 		return m, dispatchCommandCmd(m.apiURL, host, "exec", "/usr/local/bin/refresh &")
-	case 2: // Reboot Workstation
-		m.statusMsg = fmt.Sprintf("⚡ Reboot command dispatched to %s", host)
-		m.view = ViewMonitor
-		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl reboot")
+	case 2: // Power Options Submenu
+		m.view = ViewPowerModal
+		m.modalCursor = 0
+		return m, nil
 	case 3: // Close Modal
 		m.view = ViewMonitor
+	}
+	return m, nil
+}
+
+func (m Model) handlePowerModalSelect() (tea.Model, tea.Cmd) {
+	host := m.selectedDevice.Hostname
+	user := m.selectedDevice.ActiveUser
+
+	switch m.modalCursor {
+	case 0: // Logout / Sign Out
+		var cmdStr string
+		if user != "" && user != "none" {
+			cmdStr = fmt.Sprintf("loginctl terminate-user %s || (command -v niri &>/dev/null && su - %s -c 'niri msg action quit --skip-confirmation')", user, user)
+		} else {
+			cmdStr = "pkill -KILL -u 1000 2>/dev/null || pkill -KILL -u 1001 2>/dev/null || true"
+		}
+		m.statusMsg = fmt.Sprintf("🚪 Sign out command dispatched to %s (%s)", host, user)
+		m.view = ViewMonitor
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", cmdStr)
+
+	case 1: // Power Off / Shutdown
+		m.statusMsg = fmt.Sprintf("⚡ Poweroff command dispatched to %s", host)
+		m.view = ViewMonitor
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl poweroff")
+
+	case 2: // Reboot Workstation
+		m.statusMsg = fmt.Sprintf("🔄 Reboot command dispatched to %s", host)
+		m.view = ViewMonitor
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl reboot")
+
+	case 3: // Restart DMS Shell
+		var cmdStr string
+		if user != "" && user != "none" {
+			cmdStr = fmt.Sprintf("su - %s -c 'dms restart'", user)
+		} else {
+			cmdStr = "dms restart"
+		}
+		m.statusMsg = fmt.Sprintf("🎨 DMS restart dispatched to %s", host)
+		m.view = ViewMonitor
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", cmdStr)
+
+	case 4: // Soft Reboot
+		m.statusMsg = fmt.Sprintf("🔄 Soft reboot dispatched to %s", host)
+		m.view = ViewMonitor
+		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl soft-reboot")
+
+	case 5: // Back to Device Modal
+		m.view = ViewDeviceActionModal
+		m.modalCursor = 2 // focus on Power Options
+		return m, nil
 	}
 	return m, nil
 }
@@ -924,6 +1120,8 @@ func (m Model) View() string {
 		bodyInner = m.renderCommandView(boxWidth)
 	case ViewDeviceActionModal:
 		bodyInner = m.renderDeviceModal(boxWidth)
+	case ViewPowerModal:
+		bodyInner = m.renderPowerModal(boxWidth)
 	case ViewPackageActionModal:
 		bodyInner = m.renderPackageModal(boxWidth)
 	}
@@ -961,10 +1159,14 @@ func (m Model) View() string {
 			descText = "Auto-creates timestamped backups before editing files"
 		}
 	} else if m.view == ViewMonitor {
-		if m.filterFocused {
+		if m.searchMode {
+			descText = fmt.Sprintf("Fuzzy Search Active: Type to filter hostnames, users, IPs, or labs • [Enter/Esc] Confirm search • [Ctrl+F] Close")
+		} else if m.searchQuery != "" {
+			descText = fmt.Sprintf("Search Filter: '%s' • [Ctrl+F] Edit Search • [Tab/F] Change Filter • [Enter] Select / Action", m.searchQuery)
+		} else if m.filterFocused {
 			descText = "Filter Toolbar Active: Use [←/→] to change filter • [↓] or [Enter] to enter workstations table"
 		} else {
-			descText = "Workstations Table: [Enter] Action / Expand • [Space] Expand/Collapse Lab • [Tab/F] Change Filter • [1-9] Quick Select • [↑] to Filter"
+			descText = "Workstations Table: [Enter] Action / Expand • [Ctrl+F] Search • [Tab/F] Filter • [↑] to Filter"
 		}
 	} else if m.view == ViewScreenshot {
 		descText = "Screen Capture: [Enter] Trigger Instant Silent Capture on Selected Workstation • [Esc/B] Return"
@@ -977,7 +1179,31 @@ func (m Model) View() string {
 			descText = "Chronological enrollment and join records of all lab workstations"
 		}
 	} else if m.view == ViewDeviceActionModal {
-		descText = fmt.Sprintf("Targeting Workstation: %s (%s) — Select Action", m.selectedDevice.Hostname, m.selectedDevice.IP)
+		actionDescs := []string{
+			"📸 Instant Screen Capture: Triggers immediate silent screen capture and downloads frame",
+			"🔄 Policy Refresh: Executes /usr/local/bin/refresh to re-apply configs & clean apps",
+			"⚡ Power Options: Open power actions (Logout, Poweroff, Reboot, DMS restart, Soft reboot)",
+			"🔙 Return: Close action dialog and return to workstation monitor",
+		}
+		actDesc := "Select an action"
+		if m.modalCursor >= 0 && m.modalCursor < len(actionDescs) {
+			actDesc = actionDescs[m.modalCursor]
+		}
+		descText = fmt.Sprintf("Target: %s (%s) • %s", m.selectedDevice.Hostname, m.selectedDevice.IP, actDesc)
+	} else if m.view == ViewPowerModal {
+		powerDescs := []string{
+			"🚪 Logout / Sign Out: Terminates current user session and returns to login greeter",
+			"⚡ Power Off: Shuts down workstation machine immediately",
+			"🔄 System Reboot: Full operating system reboot",
+			"🎨 Restart DMS: Reloads DMS desktop shell / bar / notifications for user",
+			"🔄 Soft Reboot: Reboots system userspace without firmware re-initialization",
+			"🔙 Return: Go back to workstation action menu",
+		}
+		pDesc := "Select a power action"
+		if m.modalCursor >= 0 && m.modalCursor < len(powerDescs) {
+			pDesc = powerDescs[m.modalCursor]
+		}
+		descText = fmt.Sprintf("Target: %s (%s) • %s", m.selectedDevice.Hostname, m.selectedDevice.IP, pDesc)
 	} else if m.view == ViewPackageActionModal {
 		descText = fmt.Sprintf("Package: %s (%s) — Select Action", m.selectedApp.Name, m.selectedApp.Kind)
 	} else {
@@ -993,7 +1219,12 @@ func (m Model) View() string {
 		Render(lipgloss.NewStyle().Foreground(m.theme.Accent).Bold(true).Render(descText))
 
 	// 4. NAVIGATION / FOOTER BOX
-	navText := "[↑/↓/←/→] Navigate   •   [Enter] Select / Action   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
+	var navText string
+	if m.view == ViewMonitor {
+		navText = "[↑/↓/←/→] Navigate   •   [Enter] Select / Expand   •   [Ctrl+F] Search   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
+	} else {
+		navText = "[↑/↓/←/→] Navigate   •   [Enter] Select / Action   •   [r] Refresh   •   [esc/b] Back   •   [q] Quit"
+	}
 	footerBox := lipgloss.NewStyle().
 		Width(boxWidth).
 		Border(lipgloss.RoundedBorder()).
@@ -1089,11 +1320,64 @@ func (m Model) renderMainMenu(contentWidth int) string {
 func (m Model) renderMonitorView(totalWidth int) string {
 	var b strings.Builder
 
-	title := lipgloss.NewStyle().
+	// Account for mainBox borders (2) and padding (2)
+	contentWidth := totalWidth - 4
+	if contentWidth < 70 {
+		contentWidth = 70
+	}
+
+	titleText := "WORKSTATION TELEMETRY & LAB MATRIX"
+	titleLen := len(titleText)
+	leftPad := (contentWidth - titleLen) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	rightSpace := contentWidth - (leftPad + titleLen)
+
+	titleStyled := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(m.theme.Primary).
-		Render("WORKSTATION TELEMETRY & LAB MATRIX")
-	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(title) + "\n\n")
+		Render(titleText)
+
+	var headerRow string
+	if m.searchMode || m.searchQuery != "" {
+		searchIcon := "🔍 "
+		queryDisplay := m.searchQuery
+		if m.searchMode {
+			queryDisplay += "█"
+		}
+		searchPill := lipgloss.NewStyle().
+			Foreground(m.theme.Accent).
+			Bold(true).
+			Render(fmt.Sprintf("[%s%s]", searchIcon, queryDisplay))
+		searchWidth := lipgloss.Width(searchPill)
+
+		if rightSpace >= searchWidth+3 {
+			gap := rightSpace - searchWidth - 2
+			if gap < 0 {
+				gap = 0
+			}
+			headerRow = strings.Repeat(" ", leftPad) + titleStyled + strings.Repeat(" ", gap) + searchPill
+		} else {
+			headerRow = strings.Repeat(" ", leftPad) + titleStyled
+		}
+	} else {
+		// When not searching, show a subtle shortcut indicator on the right if space permits
+		hintPill := lipgloss.NewStyle().
+			Foreground(m.theme.Secondary).
+			Render("[Ctrl+F: Search]")
+		hintWidth := lipgloss.Width(hintPill)
+		if rightSpace >= hintWidth+3 {
+			gap := rightSpace - hintWidth - 2
+			if gap < 0 {
+				gap = 0
+			}
+			headerRow = strings.Repeat(" ", leftPad) + titleStyled + strings.Repeat(" ", gap) + hintPill
+		} else {
+			headerRow = strings.Repeat(" ", leftPad) + titleStyled
+		}
+	}
+	b.WriteString(headerRow + "\n\n")
 
 	filterLabels := []string{"All Devices", "Active Only", "Inactive Only"}
 	var filterBadges []string
@@ -1160,7 +1444,8 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		item := items[i]
 		if item.Type == MonitorItemHeader {
 			isHeaderHovered := !m.filterFocused && m.cursor == i
-			isCollapsed := m.collapsedLabs[item.LabPrefix]
+			isExpanded := m.expandedLabs[item.LabPrefix] || strings.TrimSpace(m.searchQuery) != ""
+			isCollapsed := !isExpanded
 
 			arrowIcon := "▼"
 			if isCollapsed {
@@ -1256,18 +1541,17 @@ func (m Model) renderDeviceModal(totalWidth int) string {
 	actions := []struct {
 		icon string
 		name string
-		desc string
 	}{
-		{"📸", "Capture Live Screen Now", "Triggers immediate silent screen capture and downloads frame"},
-		{"🔄", "Trigger Policy Refresh on Endpoint", "Executes /usr/local/bin/refresh to re-apply configs & clean apps"},
-		{"⚡", "Reboot Workstation", "Safely triggers system restart over network"},
-		{"🔙", "Return to Workstation Monitor", "Close action dialog"},
+		{"📸", "Capture Live Screen Now"},
+		{"🔄", "Trigger Policy Refresh on Endpoint"},
+		{"⚡", "Power Options"},
+		{"🔙", "Return to Workstation Monitor"},
 	}
 
 	for i, act := range actions {
 		isSelected := m.modalCursor == i
 		boxStyle := lipgloss.NewStyle().
-			Width(65).
+			Width(44).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(m.theme.Border).
 			Padding(0, 1)
@@ -1279,9 +1563,52 @@ func (m Model) renderDeviceModal(totalWidth int) string {
 		keyBadge := fmt.Sprintf("[%d]", i+1)
 		var line string
 		if isSelected {
-			line = fmt.Sprintf("► %s %s %-28s — %s ◄", keyBadge, act.icon, act.name, act.desc)
+			line = fmt.Sprintf("► %s %s %-30s ◄", keyBadge, act.icon, act.name)
 		} else {
-			line = fmt.Sprintf("  %s %s %-28s — %s  ", keyBadge, act.icon, act.name, act.desc)
+			line = fmt.Sprintf("  %s %s %-30s  ", keyBadge, act.icon, act.name)
+		}
+
+		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) renderPowerModal(totalWidth int) string {
+	var b strings.Builder
+	title := fmt.Sprintf("⚡ POWER MANAGEMENT: %s (%s)", m.selectedDevice.Hostname, m.selectedDevice.IP)
+	b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Accent).Render(title) + "\n\n")
+
+	actions := []struct {
+		icon string
+		name string
+	}{
+		{"🚪", "Logout / Sign Out Active User"},
+		{"⚡", "Power Off / Shutdown System"},
+		{"🔄", "System Reboot"},
+		{"🎨", "Restart DMS Shell"},
+		{"🔄", "System Soft Reboot"},
+		{"🔙", "Return to Remote Action Menu"},
+	}
+
+	for i, act := range actions {
+		isSelected := m.modalCursor == i
+		boxStyle := lipgloss.NewStyle().
+			Width(48).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Border).
+			Padding(0, 1)
+
+		if isSelected {
+			boxStyle = boxStyle.BorderForeground(m.theme.Accent).Bold(true)
+		}
+
+		keyBadge := fmt.Sprintf("[%d]", i+1)
+		var line string
+		if isSelected {
+			line = fmt.Sprintf("► %s %s %-32s ◄", keyBadge, act.icon, act.name)
+		} else {
+			line = fmt.Sprintf("  %s %s %-32s  ", keyBadge, act.icon, act.name)
 		}
 
 		b.WriteString(lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(boxStyle.Render(line)) + "\n")

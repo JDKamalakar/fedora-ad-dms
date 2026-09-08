@@ -624,16 +624,14 @@ if command -v go &>/dev/null && [ -d "$REFRESH_GO_SRC" ]; then
   (cd "$REFRESH_GO_SRC" && go build -o /usr/local/bin/refresh-ui main.go 2>/dev/null || true)
 fi
 
-# Fallback: check if pre-compiled refresh-tui or /usr/local/bin/refresh-ui exists
-if [ ! -f /usr/local/bin/refresh-ui ]; then
-  for cand_ui in "${SCRIPT_DIR:-}/refresh-tui" "${SCRIPT_DIR:-}/config/refresh-tui" "/home/jk/Projects/fedora-ad-dms/config/refresh-tui"; do
-    if [ -f "$cand_ui" ]; then
-      cp -f "$cand_ui" /usr/local/bin/refresh-ui
-      chmod +x /usr/local/bin/refresh-ui
-      break
-    fi
-  done
-fi
+# Fallback / Direct update: check if pre-compiled refresh-tui or /usr/local/bin/refresh-ui exists
+for cand_ui in "${SCRIPT_DIR:-}/refresh-tui" "${SCRIPT_DIR:-}/config/refresh-tui" "/etc/ad-dms/refresh-tui" "/home/jk/Projects/fedora-ad-dms/config/refresh-tui"; do
+  if [ -f "$cand_ui" ]; then
+    cp -f "$cand_ui" /usr/local/bin/refresh-ui 2>/dev/null || true
+    chmod +x /usr/local/bin/refresh-ui 2>/dev/null || true
+    break
+  fi
+done
 
 cat <<'REFRESH_UTIL_EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
@@ -764,9 +762,33 @@ if [ $# -gt 0 ]; then
   fi
 fi
 
-# If interactive TTY and Go refresh-ui is installed, launch the Go Bubble Tea TUI
-if [ -t 1 ] && [ -x /usr/local/bin/refresh-ui ]; then
-  exec /usr/local/bin/refresh-ui "$@"
+# Auto-sync latest Go refresh-ui binary before launching if on intranet or GitHub
+if [ -t 1 ]; then
+  _REFRESH_BIN="/usr/local/bin/refresh-ui"
+  _NEED_SYNC=false
+  if [ ! -x "$_REFRESH_BIN" ]; then
+    _NEED_SYNC=true
+  fi
+
+  # Fast probe for intranet server binary update
+  _INTRANET_TARGET="${INTRANET_HOST:-GSFCUPLLAB203}:${INTRANET_PORT:-8080}"
+  if [ -n "${INTRANET_IP:-}" ] && ! curl -fsSL -m 1 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
+    _INTRANET_TARGET="${INTRANET_IP}:${INTRANET_PORT:-8080}"
+  fi
+
+  if curl -fsSL -m 2 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
+    # Fetch latest binary silently with header timestamp comparison (-z)
+    curl -fsSL -m 4 -z "$_REFRESH_BIN" "http://${_INTRANET_TARGET}/config/refresh-tui" -o "${_REFRESH_BIN}.tmp" 2>/dev/null || true
+    if [ -s "${_REFRESH_BIN}.tmp" ]; then
+      mv -f "${_REFRESH_BIN}.tmp" "$_REFRESH_BIN" 2>/dev/null || true
+      chmod +x "$_REFRESH_BIN" 2>/dev/null || true
+    fi
+    rm -f "${_REFRESH_BIN}.tmp"
+  fi
+
+  if [ -x "$_REFRESH_BIN" ]; then
+    exec "$_REFRESH_BIN" "$@"
+  fi
 fi
 
 # Fallback or headless execution: execute sync engine directly
@@ -789,16 +811,6 @@ fi
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
-fi
-
-# Broadcast notification to active desktop user session if present
-ACTIVE_GUI_USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 !~ /root|greeter|gdm|sddm|lightdm/ {print $3; exit}' || who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' || true)
-if [ -n "$ACTIVE_GUI_USER" ]; then
-  ACTIVE_UID=$(id -u "$ACTIVE_GUI_USER" 2>/dev/null || echo 1000)
-  GUI_BUS="/run/user/${ACTIVE_UID}/bus"
-  if [ -S "$GUI_BUS" ] && command -v notify-send &>/dev/null; then
-    DBUS_SESSION_BUS_ADDRESS="unix:path=${GUI_BUS}" timeout 3 su - "$ACTIVE_GUI_USER" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations and software policies are synchronizing...'" < /dev/null 2>/dev/null || true
-  fi
 fi
 
 # Detect if running in headless background mode (no TTY)
@@ -889,6 +901,84 @@ if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
   fi
 fi
 
+# Sync all Desktop & Shell preset archives from Intranet server / GitHub into ${CONF_DIR}/presets
+mkdir -p "${CONF_DIR}/presets"
+PRESET_LIST_JSON=$(curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || true)
+REMOTE_PRESETS=()
+if [ -n "$PRESET_LIST_JSON" ]; then
+  while read -r p_name; do
+    [ -n "$p_name" ] && REMOTE_PRESETS+=("$p_name")
+  done < <(echo "$PRESET_LIST_JSON" | python3 -c "import sys, json; [print(x['name']) for x in json.load(sys.stdin).get('presets', [])]" 2>/dev/null || true)
+fi
+
+# Fallback to standard package names if API list offline
+if [ "${#REMOTE_PRESETS[@]}" -eq 0 ]; then
+  REMOTE_PRESETS=("DankMaterialShell.tar.gz" "niri-dms-config.tar.gz")
+fi
+
+for pf in "${REMOTE_PRESETS[@]}"; do
+  [ -t 1 ] && echo -n -e "  -> Fetching Desktop Preset: ${pf}... "
+  pf_fetched=false
+  # 1. Try intranet host
+  if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
+      [ -z "$host_target" ] && continue
+      if curl -fsSL -m 8 -z "${CONF_DIR}/presets/${pf}" "http://${host_target}:${INTRANET_PORT}/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
+        if [ -s "${CONF_DIR}/presets/${pf}" ]; then
+          [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
+          pf_fetched=true
+          break
+        fi
+      fi
+    done
+  fi
+  # 2. Try GitHub fallback
+  if [ "$pf_fetched" = false ]; then
+    if curl -fsSL -m 12 -z "${CONF_DIR}/presets/${pf}" "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
+      if [ -s "${CONF_DIR}/presets/${pf}" ]; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+        pf_fetched=true
+      fi
+    fi
+  fi
+  if [ "$pf_fetched" = false ]; then
+    if [ -f "${CONF_DIR}/presets/${pf}" ]; then
+      [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
+    else
+      [ -t 1 ] && echo -e "\033[1;33m[OFFLINE]\033[0m"
+    fi
+  fi
+done
+
+# Sync refresh UI binary (refresh-tui) so clients get the latest TUI interface
+[ -t 1 ] && echo -n -e "  -> Syncing Refresh TUI UI binary (refresh-ui)... "
+tui_fetched=false
+if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
+  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
+    [ -z "$host_target" ] && continue
+    if curl -fsSL -m 8 "http://${host_target}:${INTRANET_PORT}/config/refresh-tui" -o /usr/local/bin/refresh-ui 2>/dev/null; then
+      if [ -s /usr/local/bin/refresh-ui ]; then
+        chmod +x /usr/local/bin/refresh-ui
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
+        tui_fetched=true
+        break
+      fi
+    fi
+  done
+fi
+if [ "$tui_fetched" = false ]; then
+  if curl -fsSL -m 12 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config/refresh-tui?$(date +%s)" -o /usr/local/bin/refresh-ui 2>/dev/null; then
+    if [ -s /usr/local/bin/refresh-ui ]; then
+      chmod +x /usr/local/bin/refresh-ui
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      tui_fetched=true
+    fi
+  fi
+fi
+if [ "$tui_fetched" = false ]; then
+  [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
+fi
+
 # Dynamically synchronize ad-dms-refresh.timer interval if domain.conf was updated
 if [ -f "${CONF_DIR}/domain.conf" ]; then
   # shellcheck source=/dev/null
@@ -937,6 +1027,154 @@ set -euo pipefail
 CONF_DIR="/etc/ad-dms"
 [ -f "${CONF_DIR}/refresh-app-policies.sh" ] || exit 0
 
+# Helper to find currently active graphical login users
+get_active_sessions() {
+  loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1, $3}' || true
+}
+
+# ------------------------------------------------------------------------------
+# 1. Immediate Remote Command / Screenshot & Telemetry Check (RUNS FIRST!)
+# ------------------------------------------------------------------------------
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+
+if [ -f "/etc/ad-dms/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "/etc/ad-dms/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
+
+MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+ACTIVE_USR="none"
+ACTIVE_SESSION="none"
+UPTIME_STR=$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "up")
+DMS_VER="2.0.0"
+
+# Inspect active and graphical user sessions from loginctl
+while read -r s_id s_uid s_user s_seat s_leader s_class s_tty s_idle; do
+  [ -z "$s_user" ] || [ "$s_user" = "USER" ] && continue
+  if [ "$s_user" != "greeter" ] && [ "$s_user" != "gdm" ] && [ "$s_user" != "sddm" ] && [ "$s_user" != "lightdm" ] && [ "$s_user" != "root" ]; then
+    s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
+    s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
+    s_class=$(loginctl show-session -p Class "$s_id" 2>/dev/null | cut -d= -f2)
+    if [ "$s_state" = "active" ] || [ "$s_class" = "user" ]; then
+      ACTIVE_USR="$s_user"
+      ACTIVE_SESSION="${s_type:-desktop}"
+      [ "$s_state" = "active" ] && break
+    fi
+  fi
+done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+
+if [ "$ACTIVE_USR" = "none" ]; then
+  ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
+fi
+if [ -z "$ACTIVE_USR" ] || [ "$ACTIVE_USR" = "none" ]; then
+  ACTIVE_USR=$(ps -eo user,comm 2>/dev/null | grep -E "gnome-shell|sway|niri|hyprland|kwin|plasma|xfce4-session|wayfire|labwc|Xorg" | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
+fi
+
+[ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+[ "$ACTIVE_SESSION" = "none" ] && ACTIVE_SESSION="desktop"
+
+# Resolve Intranet Server Target URL
+TARGET_URL=""
+if [ "$USE_INTRANET" = "yes" ]; then
+  if [ "${MY_HOST,,}" = "${INTRANET_HOST,,}" ] || ( [ -n "$INTRANET_IP" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/" ); then
+    TARGET_URL="http://127.0.0.1:${INTRANET_PORT}"
+  else
+    for hb_target in "${INTRANET_HOST}:${INTRANET_PORT}" "${INTRANET_HOST}.local:${INTRANET_PORT}" "${INTRANET_IP}:${INTRANET_PORT}"; do
+      if curl -fsSL -m 1 "http://${hb_target}/api/health" &>/dev/null; then
+        TARGET_URL="http://${hb_target}"
+        break
+      fi
+    done
+  fi
+fi
+
+# Poll & execute any pending commands immediately
+execute_pending_command() {
+  local cmd_json="$1"
+  local action
+  action=$(python3 -c "import json; print(json.loads('''$cmd_json''').get('command', {}).get('action', ''))" 2>/dev/null || true)
+
+  if [ "$action" = "screenshot" ] && [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
+    local target_uid dbus_path tmp_shot wayland_name
+    target_uid=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+    dbus_path="/run/user/${target_uid}/bus"
+    tmp_shot="/tmp/screen_${MY_HOST}.png"
+    rm -f "$tmp_shot"
+
+    wayland_name=""
+    for wsock in $(ls -t "/run/user/${target_uid}/wayland-"[0-9]* 2>/dev/null); do
+      if [ -S "$wsock" ]; then
+        wayland_name=$(basename "$wsock")
+        break
+      fi
+    done
+    [ -z "$wayland_name" ] && wayland_name="wayland-0"
+
+    # Screen capture hierarchy: 1) dms screenshot, 2) grim, 3) spectacle (Plasma only)
+    if command -v dms &>/dev/null; then
+      timeout 3 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+    fi
+    if [ ! -s "$tmp_shot" ] && command -v grim &>/dev/null; then
+      timeout 3 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}'; grim '$tmp_shot'" < /dev/null 2>/dev/null || true
+    fi
+    if [ ! -s "$tmp_shot" ] && [ "${ACTIVE_SESSION,,}" = "plasma" ] && command -v spectacle &>/dev/null; then
+      timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; spectacle -b -n -o '$tmp_shot'" < /dev/null 2>/dev/null || true
+    fi
+
+    if [ -s "$tmp_shot" ]; then
+      local img_b64
+      img_b64=$(base64 -w 0 "$tmp_shot" 2>/dev/null || true)
+      if [ -n "$img_b64" ] && [ -n "$TARGET_URL" ]; then
+        curl -s -m 5 -X POST "${TARGET_URL}/api/screenshot/upload" \
+          -H "Content-Type: application/json" \
+          -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${img_b64}\"}" &>/dev/null || true
+      fi
+      rm -f "$tmp_shot"
+    fi
+  elif [ "$action" = "exec" ]; then
+    local raw_cmd
+    raw_cmd=$(python3 -c "import json; print(json.loads('''$cmd_json''').get('command', {}).get('cmd', ''))" 2>/dev/null || true)
+    if [ -n "$raw_cmd" ]; then
+      if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
+        local target_uid dbus_path
+        target_uid=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+        dbus_path="/run/user/${target_uid}/bus"
+        if [ -S "$dbus_path" ] && command -v notify-send &>/dev/null; then
+          if echo "$raw_cmd" | grep -qi "poweroff"; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-shutdown '⚡ System Shutdown Scheduled' 'An administrator has scheduled a workstation shutdown. Please save your work.'" < /dev/null 2>/dev/null || true
+          elif echo "$raw_cmd" | grep -qiE "reboot|soft-reboot"; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
+          elif echo "$raw_cmd" | grep -qiE "terminate-user|quit"; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-log-out '🚪 Session Termination' 'Your user session is being logged out by an administrator.'" < /dev/null 2>/dev/null || true
+          elif echo "$raw_cmd" | grep -qi "dms restart"; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u normal -i view-refresh '🎨 DMS Shell Restart' 'DMS desktop environment is restarting...'" < /dev/null 2>/dev/null || true
+          elif echo "$raw_cmd" | grep -qi "refresh"; then
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations and software policies are synchronizing...'" < /dev/null 2>/dev/null || true
+          fi
+        fi
+      fi
+      eval "$raw_cmd" &>/dev/null || true
+    fi
+  fi
+}
+
+if [ -n "$TARGET_URL" ]; then
+  CMD_RESP=$(curl -fsSL -m 2 "${TARGET_URL}/api/command/poll?host=${MY_HOST}" 2>/dev/null || true)
+  if echo "$CMD_RESP" | grep -q '"has_command": true' 2>/dev/null || echo "$CMD_RESP" | grep -q '"has_command":true'; then
+    execute_pending_command "$CMD_RESP"
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# 2. Rogue Flatpak Scanner & Auto-Removal Guard
+# ------------------------------------------------------------------------------
 parse_list() {
   local file="$1"
   local current_mode="dnf"
@@ -955,28 +1193,17 @@ parse_list() {
 }
 
 BLOCKED_FLATPAKS=($(parse_list "${CONF_DIR}/blocked-apps.conf") $(parse_list "${CONF_DIR}/.blocked-games-cache.conf"))
-
-# Helper to find currently active graphical login users
-get_active_sessions() {
-  loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1, $3}' || true
-}
-
-# Collect all installed Flatpaks across system and all user homes
 declare -A DETECTED_APPS
 
-# 1. Check system-wide Flatpaks
+# 1. System Flatpaks
 SYS_APPS=$(flatpak list --system --app --columns=application 2>/dev/null || true)
 for sa in $SYS_APPS; do
   DETECTED_APPS["$sa"]="system"
 done
 
-# 2. Check per-user flatpak installations for all active sessions / users in /home
+# 2. Per-user flatpaks: inspect disk directly in /home to prevent PAM su stalls
 while read -r sess_id sess_user; do
   [ -z "$sess_user" ] || [ "$sess_user" = "root" ] || [ "$sess_user" = "greeter" ] && continue
-  U_UID=$(id -u "$sess_user" 2>/dev/null || true)
-  [ -z "$U_UID" ] && continue
-  
-  # Check user flatpak exports directly on disk without PAM/su lock
   if [ -d "/home/${sess_user}/.local/share/flatpak/app" ]; then
     for u_app_dir in "/home/${sess_user}/.local/share/flatpak/app/"*; do
       if [ -d "$u_app_dir" ]; then
@@ -985,33 +1212,22 @@ while read -r sess_id sess_user; do
       fi
     done
   fi
-  # Fast timeout-protected fallback
-  USER_FLATPAKS=$(timeout 2 su - "$sess_user" -c "flatpak list --user --app --columns=application" < /dev/null 2>/dev/null || true)
-  for ua in $USER_FLATPAKS; do
-    DETECTED_APPS["$ua"]="$sess_user"
-  done
 done < <(get_active_sessions)
 
 for b_app in "${BLOCKED_FLATPAKS[@]}"; do
   [ -z "$b_app" ] && continue
-  
-  # Check if blocked app is in DETECTED_APPS (or matching substring)
   for installed_id in "${!DETECTED_APPS[@]}"; do
     if [[ "$installed_id" == "$b_app" || "$installed_id" == *"$b_app"* || "$b_app" == *"$installed_id"* ]]; then
       owner_user="${DETECTED_APPS[$installed_id]}"
       [ "$owner_user" = "system" ] && owner_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 !~ /root|greeter/ {print $3; exit}' || echo "user")
 
-      # 1. Kill running instances
       flatpak kill "$installed_id" 2>/dev/null || true
-      
-      # 2. Uninstall across all scopes
       flatpak uninstall -y --system "$installed_id" 2>/dev/null || true
       if [ -n "$owner_user" ] && [ "$owner_user" != "system" ]; then
-        timeout 5 su - "$owner_user" -c "flatpak uninstall -y --user $installed_id" < /dev/null 2>/dev/null || true
+        timeout 4 su - "$owner_user" -c "flatpak uninstall -y --user $installed_id" < /dev/null 2>/dev/null || true
       fi
       flatpak uninstall -y --user "$installed_id" 2>/dev/null || true
 
-      # 3. Resolve human-readable application title
       HUMAN_TITLE=$(python3 -c "
 import glob, xml.etree.ElementTree as ET
 target = '$installed_id'.lower().removesuffix('.desktop')
@@ -1031,12 +1247,10 @@ for path in glob.glob('/var/lib/flatpak/appstream/**/appstream.xml', recursive=T
 print(title or '$installed_id')
 " 2>/dev/null || echo "$installed_id")
 
-      # 4. Record violation count and trigger siren if >3
       if [ -x /usr/local/bin/ad-dms-record-violation ]; then
         /usr/local/bin/ad-dms-record-violation "$owner_user" "$installed_id" "gui_store_install" 2>/dev/null || true
       fi
 
-      # 5. Broadcast desktop notification into active user Wayland/X11 session
       if [ -n "$owner_user" ]; then
         TARGET_UID=$(id -u "$owner_user" 2>/dev/null || echo 1000)
         DBUS_PATH="/run/user/${TARGET_UID}/bus"
@@ -1049,86 +1263,25 @@ print(title or '$installed_id')
 done
 
 # ------------------------------------------------------------------------------
-# 6. Intranet Telemetry Heartbeat & Remote Command / Screenshot Handler
+# 3. Telemetry Heartbeat & Inventory Collection
 # ------------------------------------------------------------------------------
-INTRANET_HOST="GSFCUPLLAB203"
-INTRANET_IP="10.205.18.253"
-INTRANET_PORT="8080"
-USE_INTRANET="yes"
-
-if [ -f "/etc/ad-dms/domain.conf" ]; then
-  # shellcheck source=/dev/null
-  source "/etc/ad-dms/domain.conf" 2>/dev/null || true
-  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-  INTRANET_PORT="${INTRANET_PORT:-8080}"
-  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
-fi
-
-if [ "$USE_INTRANET" = "yes" ]; then
-  MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
-  ACTIVE_USR="none"
-  ACTIVE_SESSION="none"
-  UPTIME_STR=$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "up")
-  DMS_VER="2.0.0"
-
-  # 1. Inspect all active and graphical user sessions from loginctl
-  while read -r s_id s_uid s_user s_seat s_leader s_class s_tty s_idle; do
-    [ -z "$s_user" ] || [ "$s_user" = "USER" ] && continue
-    if [ "$s_user" != "greeter" ] && [ "$s_user" != "gdm" ] && [ "$s_user" != "sddm" ] && [ "$s_user" != "lightdm" ] && [ "$s_user" != "root" ]; then
-      s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
-      s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
-      s_class=$(loginctl show-session -p Class "$s_id" 2>/dev/null | cut -d= -f2)
-      if [ "$s_state" = "active" ] || [ "$s_class" = "user" ]; then
-        ACTIVE_USR="$s_user"
-        ACTIVE_SESSION="${s_type:-desktop}"
-        [ "$s_state" = "active" ] && break
-      fi
-    fi
-  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
-
-  # 2. Fallback to interactive terminal/seat users (who / w)
-  if [ "$ACTIVE_USR" = "none" ]; then
-    ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
-  fi
-
-  # 3. Fallback to desktop compositor/display process owner
-  if [ -z "$ACTIVE_USR" ] || [ "$ACTIVE_USR" = "none" ]; then
-    ACTIVE_USR=$(ps -eo user,comm 2>/dev/null | grep -E "gnome-shell|sway|niri|hyprland|kwin|plasma|xfce4-session|wayfire|labwc|Xorg" | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
-  fi
-
-  [ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
-  [ "$ACTIVE_SESSION" = "none" ] && ACTIVE_SESSION="desktop"
-  
-  # Collect installed user and system flatpaks
+if [ -n "$TARGET_URL" ]; then
   INSTALLED_APPS=()
   for sa in $(flatpak list --app --columns=application 2>/dev/null || true); do
     INSTALLED_APPS+=("flatpak:${sa}")
   done
-  if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
-    if [ -d "/home/${ACTIVE_USR}/.local/share/flatpak/app" ]; then
-      for u_dir in "/home/${ACTIVE_USR}/.local/share/flatpak/app/"*; do
-        if [ -d "$u_dir" ]; then
-          INSTALLED_APPS+=("flatpak:$(basename "$u_dir")")
-        fi
-      done
-    else
-      for ua in $(timeout 2 su - "$ACTIVE_USR" -c "flatpak list --user --app --columns=application" < /dev/null 2>/dev/null || true); do
-        INSTALLED_APPS+=("flatpak:${ua}")
-      done
-    fi
+  if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ] && [ -d "/home/${ACTIVE_USR}/.local/share/flatpak/app" ]; then
+    for u_dir in "/home/${ACTIVE_USR}/.local/share/flatpak/app/"*; do
+      [ -d "$u_dir" ] && INSTALLED_APPS+=("flatpak:$(basename "$u_dir")")
+    done
   fi
 
-  # Collect recently installed native RPMs
   for rpm_name in $(rpm -qa --qf '%{INSTALLTIME} %{NAME}\n' 2>/dev/null | sort -nr | head -n 15 | awk '{print $2}' || true); do
     INSTALLED_APPS+=("dnf:${rpm_name}")
   done
 
-  # Convert apps array to JSON
   APPS_JSON=$(python3 -c "import json, sys; print(json.dumps(sys.argv[1:]))" "${INSTALLED_APPS[@]}" 2>/dev/null || echo "[]")
 
-  # Send Heartbeat (Try Hostname, then IP)
-  TARGET_URL="http://${INTRANET_HOST}:${INTRANET_PORT}"
   PAYLOAD=$(python3 -c "
 import json
 data = {
@@ -1142,89 +1295,80 @@ data = {
 print(json.dumps(data))
 " 2>/dev/null || echo "{\"hostname\": \"${MY_HOST}\", \"active_user\": \"${ACTIVE_USR}\"}")
 
-  # Send heartbeat (Try Intranet Host, then Fallback IP, then 127.0.0.1 if host)
-  hb_sent=false
-  for hb_target in "${INTRANET_HOST}:${INTRANET_PORT}" "${INTRANET_HOST}.local:${INTRANET_PORT}" "${INTRANET_IP}:${INTRANET_PORT}"; do
-    if curl -fsSL -m 2 -X POST "http://${hb_target}/api/heartbeat" \
-      -H "Content-Type: application/json" \
-      -d "$PAYLOAD" &>/dev/null; then
-      TARGET_URL="http://${hb_target}"
-      hb_sent=true
-      echo "Host '${hb_target}' - Sent at $(date)" > "${CONF_DIR}/.last_heartbeat" 2>/dev/null || true
-      break
-    fi
-  done
+  HB_RESP=$(curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" 2>/dev/null || true)
+  echo "Host '${TARGET_URL}' - Sent at $(date)" > "${CONF_DIR}/.last_heartbeat" 2>/dev/null || true
 
-  if [ "$hb_sent" = false ]; then
-    if [ "${MY_HOST,,}" = "${INTRANET_HOST,,}" ] || ( [ -n "$INTRANET_IP" ] && ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/" ); then
-      TARGET_URL="http://127.0.0.1:${INTRANET_PORT}"
-      if curl -fsSL -m 2 -X POST "${TARGET_URL}/api/heartbeat" \
-        -H "Content-Type: application/json" \
-        -d "$PAYLOAD" &>/dev/null; then
-        hb_sent=true
-        echo "Localhost (127.0.0.1:${INTRANET_PORT}) - Sent at $(date)" > "${CONF_DIR}/.last_heartbeat" 2>/dev/null || true
-      fi
-    fi
-  fi
-
-  # Check if Host has requested a Remote Command or Instant Screenshot
-  CMD_RESP=$(curl -fsSL -m 2 "${TARGET_URL}/api/command/poll?host=${MY_HOST}" 2>/dev/null || true)
-  if echo "$CMD_RESP" | grep -q '"has_command": true' 2>/dev/null || echo "$CMD_RESP" | grep -q '"has_command":true'; then
-    ACTION=$(python3 -c "import json; print(json.loads('''$CMD_RESP''').get('command', {}).get('action', ''))" 2>/dev/null || true)
-
-    if [ "$ACTION" = "screenshot" ] && [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
-      TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
-      DBUS_PATH="/run/user/${TARGET_UID}/bus"
-      WAYLAND_DISP=$(ls "/run/user/${TARGET_UID}/wayland-"* 2>/dev/null | head -n 1 || echo "wayland-0")
-      WAYLAND_NAME=$(basename "$WAYLAND_DISP")
-      TMP_SHOT="/tmp/screen_${MY_HOST}.png"
-      rm -f "$TMP_SHOT"
-
-      # Execute screen capture using DMS / grim / spectacle
-      if command -v dms &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" WAYLAND_DISPLAY="$WAYLAND_NAME" timeout 6 su - "$ACTIVE_USR" -c "dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
-      fi
-      if [ ! -s "$TMP_SHOT" ] && command -v dms &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" WAYLAND_DISPLAY="$WAYLAND_NAME" timeout 6 su - "$ACTIVE_USR" -c "dms screenshot full --no-notify --no-clipboard --stdout > '$TMP_SHOT'" < /dev/null 2>/dev/null || true
-      fi
-      if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" WAYLAND_DISPLAY="$WAYLAND_NAME" timeout 6 su - "$ACTIVE_USR" -c "grim '$TMP_SHOT'" < /dev/null 2>/dev/null || true
-      fi
-      if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
-        XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 6 su - "$ACTIVE_USR" -c "spectacle -b -n -o '$TMP_SHOT'" < /dev/null 2>/dev/null || true
-      fi
-
-      if [ -s "$TMP_SHOT" ]; then
-        IMG_B64=$(base64 -w 0 "$TMP_SHOT" 2>/dev/null || true)
-        if [ -n "$IMG_B64" ]; then
-          curl -s -m 5 -X POST "${TARGET_URL}/api/screenshot/upload" \
-            -H "Content-Type: application/json" \
-            -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${IMG_B64}\"}" &>/dev/null || true
-        fi
-        rm -f "$TMP_SHOT"
-      fi
-    elif [ "$ACTION" = "exec" ]; then
-      RAW_CMD=$(python3 -c "import json; print(json.loads('''$CMD_RESP''').get('command', {}).get('cmd', ''))" 2>/dev/null || true)
-      if [ -n "$RAW_CMD" ]; then
-        # Broadcast notification into user session if refresh or reboot
-        if [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
-          TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
-          DBUS_PATH="/run/user/${TARGET_UID}/bus"
-          if [ -S "$DBUS_PATH" ] && command -v notify-send &>/dev/null; then
-            if echo "$RAW_CMD" | grep -qi "reboot"; then
-              DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
-            elif echo "$RAW_CMD" | grep -qi "refresh"; then
-              DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 4 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations and software policies are synchronizing...'" < /dev/null 2>/dev/null || true
-            fi
-          fi
-        fi
-        eval "$RAW_CMD" &>/dev/null || true
-      fi
-    fi
+  # Check if Heartbeat response piggybacked a remote command
+  if echo "$HB_RESP" | grep -q '"has_command": true' 2>/dev/null || echo "$HB_RESP" | grep -q '"has_command":true'; then
+    execute_pending_command "$HB_RESP"
   fi
 fi
 EOF
 chmod +x /usr/local/bin/ad-dms-gui-scan
+
+# Deploy Fast Command Worker Daemon (Polls server every 3 seconds for instant response)
+cat <<'EOF' > /usr/local/bin/ad-dms-fast-poll
+#!/usr/bin/env python3
+import json, os, socket, subprocess, sys, time, urllib.request
+
+CONF_DIR = "/etc/ad-dms"
+DOMAIN_CONF = os.path.join(CONF_DIR, "domain.conf")
+
+def get_server_info():
+    host = "GSFCUPLLAB203"
+    port = "8080"
+    if os.path.exists(DOMAIN_CONF):
+        try:
+            with open(DOMAIN_CONF, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("INTRANET_HOST_NAME="):
+                        host = line.split("=", 1)[1].strip().strip('"\'')
+                    elif line.startswith("INTRANET_PORT="):
+                        port = line.split("=", 1)[1].strip().strip('"\'')
+        except Exception:
+            pass
+    return host, port
+
+def main():
+    my_host = socket.gethostname().split(".")[0].upper()
+    server_host, server_port = get_server_info()
+    local_host = os.uname().nodename.split(".")[0].upper()
+
+    while True:
+        try:
+            target_url = f"http://127.0.0.1:{server_port}" if (my_host == server_host.upper() or local_host == server_host.upper()) else f"http://{server_host}:{server_port}"
+            req = urllib.request.Request(f"{target_url}/api/command/poll?host={my_host}", headers={"User-Agent": "AD-DMS-FastPoll"})
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("has_command"):
+                    # Command waiting! Execute ONLY the fast command executor, NOT the heavy full scan
+                    subprocess.Popen(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        time.sleep(3)
+
+if __name__ == "__main__":
+    main()
+EOF
+chmod +x /usr/local/bin/ad-dms-fast-poll
+
+cat <<'EOF' > /etc/systemd/system/ad-dms-fast-poll.service
+[Unit]
+Description=AD-DMS Fast Remote Command Poller
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ad-dms-fast-poll
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # Deploy GUI scan background timer
 cat <<'EOF' > /etc/systemd/system/ad-dms-gui-scan.service
@@ -1251,9 +1395,169 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# Deploy Fast Dedicated Command Executor (no scanning overhead — pure command dispatch only)
+cat <<'CMDEXEC_EOF' > /usr/local/bin/ad-dms-cmd-exec
+#!/usr/bin/env bash
+# AD-DMS Fast Command Executor — runs pending remote commands instantly with zero scan overhead
+# This is intentionally minimal: no Flatpak scan, no RPM audit, no disk traversal.
+set -euo pipefail
+
+CONF_DIR="/etc/ad-dms"
+[ -f "${CONF_DIR}/domain.conf" ] || exit 0
+source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+
+MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+ACTIVE_USR="none"
+ACTIVE_SESSION="desktop"
+
+# Detect active graphical user (fast)
+while read -r s_id _uid s_user rest; do
+  [ -z "$s_user" ] || [ "$s_user" = "USER" ] && continue
+  if [[ "$s_user" != greeter && "$s_user" != gdm && "$s_user" != sddm && "$s_user" != lightdm && "$s_user" != root ]]; then
+    s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
+    s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
+    s_class_v=$(loginctl show-session -p Class "$s_id" 2>/dev/null | cut -d= -f2)
+    if [[ "$s_state" = "active" || "$s_class_v" = "user" ]]; then
+      ACTIVE_USR="$s_user"
+      ACTIVE_SESSION="${s_type:-desktop}"
+      [[ "$s_state" = "active" ]] && break
+    fi
+  fi
+done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+
+[ "$ACTIVE_USR" = "none" ] && ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
+[ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+
+# Resolve server URL
+INTRANET_HOST="${INTRANET_HOST_NAME:-}"
+INTRANET_PORT_N="${INTRANET_PORT:-8080}"
+TARGET_URL=""
+if hostname -s 2>/dev/null | grep -qi "^${INTRANET_HOST}$" 2>/dev/null || ip -o a 2>/dev/null | grep -q "${INTRANET_IP:-NONE}/"; then
+  TARGET_URL="http://127.0.0.1:${INTRANET_PORT_N}"
+else
+  for hb_t in "${INTRANET_HOST}:${INTRANET_PORT_N}" "${INTRANET_HOST}.local:${INTRANET_PORT_N}" "${INTRANET_IP:-}:${INTRANET_PORT_N}"; do
+    [ -z "${hb_t%%:*}" ] && continue
+    if curl -fsSL -m 1 "http://${hb_t}/api/health" &>/dev/null; then
+      TARGET_URL="http://${hb_t}"
+      break
+    fi
+  done
+fi
+[ -z "$TARGET_URL" ] && exit 0
+
+# Poll for pending command
+CMD_RESP=$(curl -fsSL -m 3 "${TARGET_URL}/api/command/poll?host=${MY_HOST}" 2>/dev/null || true)
+echo "$CMD_RESP" | grep -qE '"has_command":\s*true' || exit 0
+
+# Parse action and command
+ACTION=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('action',''))" 2>/dev/null <<< "$CMD_RESP" || true)
+
+if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
+  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+  DBUS_PATH="/run/user/${TARGET_UID}/bus"
+  TMP_SHOT="/tmp/screen_${MY_HOST}.png"
+  rm -f "$TMP_SHOT"
+
+  # Find wayland socket
+  WL_DISP="wayland-0"
+  for ws in $(ls -t "/run/user/${TARGET_UID}/wayland-"[0-9]* 2>/dev/null); do
+    [ -S "$ws" ] && WL_DISP=$(basename "$ws") && break
+  done
+
+  WENV="WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}"
+
+  if command -v dms &>/dev/null; then
+    timeout 4 su - "$ACTIVE_USR" -c "export ${WENV}; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+  fi
+  if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
+    timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+  fi
+  if [ ! -s "$TMP_SHOT" ] && [ "${ACTIVE_SESSION,,}" = "plasma" ] && command -v spectacle &>/dev/null; then
+    timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}; spectacle -b -n -o '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+  fi
+
+  if [ -s "$TMP_SHOT" ]; then
+    IMG_B64=$(base64 -w 0 "$TMP_SHOT" 2>/dev/null || true)
+    if [ -n "$IMG_B64" ]; then
+      curl -s -m 8 -X POST "${TARGET_URL}/api/screenshot/upload" \
+        -H "Content-Type: application/json" \
+        -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${IMG_B64}\"}" &>/dev/null || true
+    fi
+    rm -f "$TMP_SHOT"
+  fi
+
+elif [ "$ACTION" = "exec" ]; then
+  RAW_CMD=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('cmd',''))" 2>/dev/null <<< "$CMD_RESP" || true)
+  [ -z "$RAW_CMD" ] && exit 0
+
+  # Send desktop notification if user is active
+  if [ "$ACTIVE_USR" != "none" ]; then
+    TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+    DBUS_PATH="/run/user/${TARGET_UID}/bus"
+    if [ -S "$DBUS_PATH" ] && command -v notify-send &>/dev/null; then
+      if echo "$RAW_CMD" | grep -qi "poweroff"; then
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-shutdown '⚡ System Shutdown Scheduled' 'An administrator has scheduled a workstation shutdown. Please save your work.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qiE "reboot|soft-reboot"; then
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qiE "terminate-user|quit"; then
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-log-out '🚪 Session Termination' 'Your user session is being logged out by an administrator.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qi "refresh"; then
+        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations are synchronizing...'" < /dev/null 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  # Execute the command immediately
+  eval "$RAW_CMD" &>/dev/null &
+fi
+CMDEXEC_EOF
+chmod +x /usr/local/bin/ad-dms-cmd-exec
+
+# Deploy Instant Direct Push Listener (Wakes ad-dms-cmd-exec immediately on host command dispatch)
+cat <<'EOF' > /usr/local/bin/ad-dms-wake-listener
+#!/usr/bin/env python3
+import socket, subprocess, sys
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", 8081))
+except Exception:
+    sys.exit(0)
+
+while True:
+    try:
+        data, addr = sock.recvfrom(1024)
+        if data and b"WAKE_GUI_SCAN" in data:
+            # Call the FAST dedicated executor, not the heavy flatpak scanner
+            subprocess.Popen(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+EOF
+chmod +x /usr/local/bin/ad-dms-wake-listener
+
+cat <<'EOF' > /etc/systemd/system/ad-dms-wake-listener.service
+[Unit]
+Description=AD-DMS Direct Push Remote Wake Trigger Listener
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ad-dms-wake-listener
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable --now ad-dms-gui-scan.timer 2>/dev/null || true
-echo -e "  -> ${GREEN}[GUI GUARD]${NC} Automated background Flatpak GUI scanner guard active (2min timer)."
+systemctl enable --now ad-dms-wake-listener.service 2>/dev/null || true
+systemctl enable --now ad-dms-fast-poll.service 2>/dev/null || true
+echo -e "  -> ${GREEN}[FAST REMOTE]${NC} Fast Remote Command Poller active (3s interval, fast executor)."
+echo -e "  -> ${GREEN}[DIRECT PUSH]${NC} Instant Remote Wake Listener active on UDP:8081 (fast executor)."
+echo -e "  -> ${GREEN}[GUI GUARD]${NC} Automated background Flatpak GUI scanner guard active (1min timer)."
 
 # E2. Deploy Hardware & Device Policy Enforcement Daemon (/usr/local/bin/ad-dms-device-enforce)
 cat <<'EOF' > /usr/local/bin/ad-dms-device-enforce
@@ -1488,12 +1792,19 @@ for user_home in /etc/skel /home/*; do
 
   mkdir -p "${user_home}/.config" "${user_home}/.local/share" "${user_home}/.config/autostart"
 
-  # Unpack presets if user config or DankMaterialShell / niri is missing
+  # Unpack presets: always update /etc/skel template; for existing users, unpack if missing essential components
   if [ -n "$PRESETS_DIR" ] && [ -d "$PRESETS_DIR" ]; then
-    if [ ! -d "${user_home}/.config/niri" ] || [ ! -d "${user_home}/.config/DankMaterialShell" ] || [ "$user_home" = "/etc/skel" ]; then
-      for preset_archive in "${PRESETS_DIR}"/*.tar.gz "${PRESETS_DIR}"/*.tgz; do
+    should_unpack=false
+    if [ "$user_home" = "/etc/skel" ]; then
+      should_unpack=true
+    elif [ ! -d "${user_home}/.config/niri" ] || [ ! -d "${user_home}/.config/DankMaterialShell" ]; then
+      should_unpack=true
+    fi
+
+    if [ "$should_unpack" = true ]; then
+      for preset_archive in "${PRESETS_DIR}"/*.tar.gz "${PRESETS_DIR}"/*.tgz "${PRESETS_DIR}"/*.tar; do
         [ -f "$preset_archive" ] || continue
-        if tar -tzf "$preset_archive" 2>/dev/null | grep -q -E '^\.?/?(\.config|\.local|\.bash|\.zsh)'; then
+        if tar -tzf "$preset_archive" 2>/dev/null | grep -q -E '^\.?/?(\.config|\.local|\.bash|\.zsh|\.profile|etc|usr)'; then
           tar -xzf "$preset_archive" -C "$user_home" 2>/dev/null || true
         else
           tar -xzf "$preset_archive" -C "${user_home}/.config" 2>/dev/null || true
@@ -1525,8 +1836,14 @@ NoDisplay=false
 X-GNOME-Autostart-enabled=true
 DMS_AUTOS_EOF
 
-  # Fix ownership for non-skel user home directories
-  if [ "$user_home" != "/etc/skel" ]; then
+  # Fix permissions and ownership
+  if [ "$user_home" = "/etc/skel" ]; then
+    chown -R root:root /etc/skel 2>/dev/null || true
+    chmod 755 /etc/skel 2>/dev/null || true
+    [ -d /etc/skel/.config ] && chmod 755 /etc/skel/.config 2>/dev/null || true
+    find /etc/skel -type d -exec chmod 755 {} + 2>/dev/null || true
+    find /etc/skel -type f -exec chmod 644 {} + 2>/dev/null || true
+  else
     if id "$u_name" &>/dev/null; then
       chown -R "${u_name}:" "${user_home}/.config" "${user_home}/.local" 2>/dev/null || true
     fi

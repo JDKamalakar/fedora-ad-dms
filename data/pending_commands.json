@@ -1,1 +1,7 @@
-{}
+{
+  "TESTHOST": {
+    "target": "TESTHOST",
+    "action": "exec",
+    "cmd": "echo instantaneous"
+  }
+}

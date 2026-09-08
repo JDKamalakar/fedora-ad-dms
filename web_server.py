@@ -11,6 +11,7 @@ import http.server
 import json
 import os
 import subprocess
+import threading
 import time
 import urllib.parse
 from datetime import datetime
@@ -60,6 +61,20 @@ def load_commands():
 
 def save_commands(data):
     COMMANDS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+def get_pending_command(hostname):
+    hostname = hostname.upper()
+    commands = load_commands()
+    cmd_to_run = commands.pop(hostname, None)
+    if not cmd_to_run:
+        for target_pat, cmd in list(commands.items()):
+            if target_pat == "ALL" or target_pat in hostname:
+                cmd_to_run = cmd
+                del commands[target_pat]
+                break
+    if cmd_to_run:
+        save_commands(commands)
+    return cmd_to_run
 
 def parse_split_conf(file_path):
     dnf_list = []
@@ -307,16 +322,8 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         # 4. Client Poll for Remote Command or Screenshot Request
         if url.path == "/api/command/poll":
             hostname = params.get("host", [""])[0].upper()
-            commands = load_commands()
-            cmd_to_run = commands.pop(hostname, None)
-            if not cmd_to_run:
-                # Check wildcard 'ALL' or matching lab prefix
-                for target_pat, cmd in list(commands.items()):
-                    if target_pat == "ALL" or target_pat in hostname:
-                        cmd_to_run = cmd
-                        break
+            cmd_to_run = get_pending_command(hostname)
             if cmd_to_run:
-                save_commands(commands)
                 self.send_json_response({"has_command": True, "command": cmd_to_run})
             else:
                 self.send_json_response({"has_command": False})
@@ -325,11 +332,15 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         # 4b. Fetch Workstation Screenshot
         if url.path == "/api/screenshot/get":
             hostname = params.get("host", [""])[0].upper()
+            since_ts = float(params.get("since", ["0"])[0] or "0")
             shot_file = SCREENSHOTS_DIR / f"{hostname}_latest.png"
             if shot_file.exists():
                 stat = shot_file.stat()
+                # Only serve if newer than dispatch time (prevents stale images)
+                if since_ts > 0 and stat.st_mtime <= since_ts:
+                    self.send_json_response({"has_screenshot": False, "hostname": hostname, "reason": "stale"})
+                    return
                 mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                # If raw binary requested
                 if params.get("raw", ["0"])[0] == "1":
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
@@ -344,12 +355,28 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                         "hostname": hostname,
                         "file_path": str(shot_file),
                         "file_size": stat.st_size,
-                        "captured_at": mtime_str
+                        "captured_at": mtime_str,
+                        "mtime": stat.st_mtime
                     })
                     return
             else:
                 self.send_json_response({"has_screenshot": False, "hostname": hostname})
                 return
+
+        # 4c. Presets Archive Inventory
+        if url.path == "/api/presets/list":
+            presets_dir = REPO_DIR / "presets"
+            preset_files = []
+            if presets_dir.exists():
+                for pf in presets_dir.iterdir():
+                    if pf.is_file() and (pf.name.endswith(".tar.gz") or pf.name.endswith(".tgz")):
+                        preset_files.append({
+                            "name": pf.name,
+                            "size": pf.stat().st_size,
+                            "mtime": int(pf.stat().st_mtime)
+                        })
+            self.send_json_response({"presets": preset_files})
+            return
 
         # 5. Full Data for Web UI & TUI
         if url.path == "/api/all-data":
@@ -469,7 +496,12 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             audit_data["installed_apps"] = installed_apps_map
             save_audit_log(audit_data)
 
-            self.send_json_response({"status": "ok", "ack": True})
+            # Check if there is an immediate command pending for this client
+            cmd_to_run = get_pending_command(hostname)
+            if cmd_to_run:
+                self.send_json_response({"status": "ok", "ack": True, "has_command": True, "command": cmd_to_run})
+            else:
+                self.send_json_response({"status": "ok", "ack": True, "has_command": False})
             return
 
         # 2. Client Fresh Installation Registration & Notification
@@ -477,15 +509,17 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             hostname = req_data.get("hostname", "UNKNOWN").upper()
             ip = self.client_address[0]
             user = req_data.get("user", "admin")
-            
             clients = load_clients()
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             clients[hostname] = {
                 "hostname": hostname,
-                "ip": req_data.get("ip", ip),
+                "ip": ip,
                 "active_user": user,
                 "session_type": "niri",
-                "uptime": "0 min",
-                "last_seen": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "uptime": "just installed",
+                "dms_version": "2.0.0",
+                "last_seen": now_str,
                 "last_seen_ts": time.time(),
                 "first_registered": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
@@ -513,9 +547,7 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                 img_data = base64.b64decode(img_b64)
                 shot_path = SCREENSHOTS_DIR / f"{hostname}_latest.png"
                 shot_path.write_bytes(img_data)
-                self.send_json_response({"status": "ok", "saved_to": str(shot_path)})
-            else:
-                self.send_json_response({"status": "error", "message": "Missing image_base64"})
+            self.send_json_response({"status": "ok", "saved": True})
             return
 
         # 4. Schedule Remote Command / Screenshot Request from Host
@@ -525,7 +557,47 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             commands = load_commands()
             commands[target] = req_data
             save_commands(commands)
-            self.send_json_response({"status": "ok", "dispatched_to": target})
+
+            local_host = os.uname().nodename.upper()
+            is_local = (target == "ALL" or target == local_host or "127.0.0.1" in target or "LOCALHOST" in target)
+
+            # 1. Trigger local execution immediately
+            if is_local:
+                def run_immediate_local():
+                    time.sleep(0.1)
+                    try:
+                        if Path("/usr/local/bin/ad-dms-gui-scan").exists():
+                            subprocess.run(["/usr/local/bin/ad-dms-gui-scan"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+                threading.Thread(target=run_immediate_local, daemon=True).start()
+
+            # 2. Push direct wake signal to remote target IP(s) immediately over UDP/TCP port 8081
+            def push_remote_wake():
+                clients = load_clients()
+                targets_to_wake = []
+                for h_name, c_info in clients.items():
+                    c_ip = c_info.get("ip", "")
+                    if not c_ip:
+                        continue
+                    if target == "ALL" or target == h_name.upper() or target in h_name.upper():
+                        targets_to_wake.append(c_ip)
+
+                for tip in targets_to_wake:
+                    if tip in ["127.0.0.1", "::1"]:
+                        continue
+                    try:
+                        import socket
+                        # Send lightweight trigger packet to client direct listener port 8081
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                            sock.settimeout(0.5)
+                            sock.sendto(b"WAKE_GUI_SCAN", (tip, 8081))
+                    except Exception:
+                        pass
+
+            threading.Thread(target=push_remote_wake, daemon=True).start()
+
+            self.send_json_response({"status": "ok", "dispatched_to": target, "immediate": True})
             return
 
         # 5. Configuration Saving Endpoints
@@ -566,6 +638,14 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_json_response({"status": "error", "output": res.stderr or "Git push returned non-zero code."})
             except Exception as e:
                 self.send_json_response({"status": "error", "output": str(e)})
+            return
+
+        if url.path == "/api/restart":
+            self.send_json_response({"status": "ok", "restarting": True})
+            def _delayed_exit():
+                time.sleep(0.3)
+                os._exit(0)
+            threading.Thread(target=_delayed_exit, daemon=True).start()
             return
 
         self.send_response(404)
