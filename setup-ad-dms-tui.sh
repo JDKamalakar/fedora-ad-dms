@@ -225,137 +225,163 @@ chmod +x "${CONF_DIR}/"*sh 2>/dev/null || true
 # ------------------------------------------------------------------------------
 # Step 3a: System-Wide Refresh Command, Alias & Headless Background Timer
 # ------------------------------------------------------------------------------
-msg_info "Deploying refresh utility command..."
+msg_info "Deploying refresh utility launcher (Go UI for interactive, Shell for flags)..."
+# Compile or install Go refresh-ui binary
+REFRESH_GO_SRC="${SCRIPT_DIR:-/etc/ad-dms}/tui/refresh"
+[ ! -d "$REFRESH_GO_SRC" ] && REFRESH_GO_SRC="/home/jk/Projects/fedora-ad-dms/tui/refresh"
+if command -v go &>/dev/null && [ -d "$REFRESH_GO_SRC" ]; then
+  (cd "$REFRESH_GO_SRC" && go build -o /usr/local/bin/refresh-ui main.go 2>/dev/null || true)
+fi
+
+# Fallback: check if pre-compiled refresh-tui or /usr/local/bin/refresh-ui exists
+if [ ! -f /usr/local/bin/refresh-ui ]; then
+  for cand_ui in "${SCRIPT_DIR:-}/refresh-tui" "${SCRIPT_DIR:-}/config/refresh-tui" "/home/jk/Projects/fedora-ad-dms/config/refresh-tui"; do
+    if [ -f "$cand_ui" ]; then
+      cp -f "$cand_ui" /usr/local/bin/refresh-ui
+      chmod +x /usr/local/bin/refresh-ui
+      break
+    fi
+  done
+fi
+
 cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Support checking remaining timer interval without root privileges
-if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
-  if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
-    TIMER_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
-    LEFT_TIME=$(echo "$TIMER_INFO" | awk '{print $3}' || echo "unknown")
-    NEXT_DATE=$(echo "$TIMER_INFO" | awk '{print $1, $2}' || echo "unknown")
-    echo -e "\033[1;36m[AD-DMS TIMER]\033[0m Next policy refresh scheduled in: \033[1;32m${LEFT_TIME}\033[0m (Next run: ${NEXT_DATE})"
-  else
-    echo -e "\033[1;33m[AD-DMS TIMER]\033[0m ad-dms-refresh.timer is currently inactive or not installed."
-  fi
-  exit 0
-fi
-
-# Support checking Heartbeat Telemetry status
-if [ "${1:-}" = "-hb" ] || [ "${1:-}" = "--hb" ] || [ "${1:-}" = "-heartbeat" ] || [ "${1:-}" = "--heartbeat" ]; then
-  if [ -x /usr/local/bin/heartbeat ]; then
-    exec /usr/local/bin/heartbeat
-  fi
-fi
-
-# Support checking which service/source was used previously & live ping/probe status
-if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
-  echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
-  echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & HOST PROBE STATUS\033[0m                \033[1;36m║\033[0m"
-  echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
-
-  CONF_DIR="/etc/ad-dms"
-  SOURCE_LOG="${CONF_DIR}/.last_source"
-  
-  if [ -f "$SOURCE_LOG" ]; then
-    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
-  else
-    echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
-  fi
-
-  # Load intranet and main host configuration from domain.conf
-  INTRANET_HOST="GSFCUPLLAB203"
-  INTRANET_IP="10.205.18.253"
-  INTRANET_PORT="8080"
-  if [ -f "${CONF_DIR}/domain.conf" ]; then
-    # shellcheck source=/dev/null
-    source "${CONF_DIR}/domain.conf" 2>/dev/null || true
-    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-    INTRANET_PORT="${INTRANET_PORT:-8080}"
-  elif [ -f "/home/jk/Projects/fedora-ad-dms/domain.conf" ]; then
-    source "/home/jk/Projects/fedora-ad-dms/domain.conf" 2>/dev/null || true
-    INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-    INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-    INTRANET_PORT="${INTRANET_PORT:-8080}"
-  fi
-
-  MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
-  echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP}, Port: ${INTRANET_PORT})"
-
-  echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
-  ping_ok=false
-  for ping_target in "127.0.0.1" "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-    if [ "$ping_target" = "127.0.0.1" ]; then
-      if [ "${MY_CURR_HOST,,}" != "${INTRANET_HOST,,}" ]; then
-        continue
-      fi
+# If any flags are passed, execute the shell diagnostics/flag handlers
+if [ $# -gt 0 ]; then
+  # Support checking remaining timer interval without root privileges
+  if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
+    if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+      TIMER_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+      LEFT_TIME=$(echo "$TIMER_INFO" | awk '{print $3}' || echo "unknown")
+      NEXT_DATE=$(echo "$TIMER_INFO" | awk '{print $1, $2}' || echo "unknown")
+      echo -e "\033[1;36m[AD-DMS TIMER]\033[0m Next policy refresh scheduled in: \033[1;32m${LEFT_TIME}\033[0m (Next run: ${NEXT_DATE})"
+    else
+      echo -e "\033[1;33m[AD-DMS TIMER]\033[0m ad-dms-refresh.timer is currently inactive or not installed."
     fi
-    if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
+    exit 0
+  fi
+
+  # Support checking Heartbeat Telemetry status
+  if [ "${1:-}" = "-hb" ] || [ "${1:-}" = "--hb" ] || [ "${1:-}" = "-heartbeat" ] || [ "${1:-}" = "--heartbeat" ]; then
+    if [ -x /usr/local/bin/heartbeat ]; then
+      exec /usr/local/bin/heartbeat
+    fi
+  fi
+
+  # Support checking which service/source was used previously & live ping/probe status
+  if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
+    echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & HOST PROBE STATUS\033[0m                \033[1;36m║\033[0m"
+    echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
+
+    CONF_DIR="/etc/ad-dms"
+    SOURCE_LOG="${CONF_DIR}/.last_source"
+    
+    if [ -f "$SOURCE_LOG" ]; then
+      echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
+    else
+      echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
+    fi
+
+    # Load intranet and main host configuration from domain.conf
+    INTRANET_HOST="GSFCUPLLAB203"
+    INTRANET_IP="10.205.18.253"
+    INTRANET_PORT="8080"
+    if [ -f "${CONF_DIR}/domain.conf" ]; then
+      # shellcheck source=/dev/null
+      source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+      INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+      INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+      INTRANET_PORT="${INTRANET_PORT:-8080}"
+    elif [ -f "/home/jk/Projects/fedora-ad-dms/domain.conf" ]; then
+      source "/home/jk/Projects/fedora-ad-dms/domain.conf" 2>/dev/null || true
+      INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+      INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+      INTRANET_PORT="${INTRANET_PORT:-8080}"
+    fi
+
+    MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+    echo -e "\n  \033[1;36m[MAIN HOST DEVICE TARGET]\033[0m \033[1;37m${INTRANET_HOST}\033[0m (Fallback IP: ${INTRANET_IP}, Port: ${INTRANET_PORT})"
+
+    echo -e "\n  \033[1;36m[ICMP PING PROBE]\033[0m Pinging main host device..."
+    ping_ok=false
+    for ping_target in "127.0.0.1" "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
       if [ "$ping_target" = "127.0.0.1" ]; then
-        echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Current machine is Central Host '${MY_CURR_HOST}')"
-      else
-        echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+        if [ "${MY_CURR_HOST,,}" != "${INTRANET_HOST,,}" ]; then
+          continue
+        fi
       fi
-      ping_ok=true
-      break
-    fi
-  done
-  if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
-    if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
-      ping_ok=true
-    fi
-  fi
-  if [ "$ping_ok" = false ]; then
-    echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
-  fi
-
-  echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
-  live_found=false
-
-  # Check localhost first if running on the host machine
-  if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
-    if curl -fsSL -m 2 "http://127.0.0.1:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Local host server active on port ${INTRANET_PORT})"
-      live_found=true
-    fi
-  fi
-
-  if [ "$live_found" = false ]; then
-    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-      if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-        echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
-        live_found=true
+      if ping -c 1 -W 1 "$ping_target" >/dev/null 2>&1; then
+        if [ "$ping_target" = "127.0.0.1" ]; then
+          echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Current machine is Central Host '${MY_CURR_HOST}')"
+        else
+          echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Host '${ping_target}' replied to ping)"
+        fi
+        ping_ok=true
         break
       fi
     done
-  fi
-
-  if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
-    if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
-      live_found=true
+    if [ "$ping_ok" = false ] && [ -n "$INTRANET_IP" ]; then
+      if ping -c 1 -W 1 "$INTRANET_IP" >/dev/null 2>&1; then
+        echo -e "    -> \033[1;32m● ICMP PING SUCCESSFUL\033[0m (Fallback IP '${INTRANET_IP}' replied to ping)"
+        ping_ok=true
+      fi
     fi
-  fi
-
-  if [ "$live_found" = false ]; then
-    if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
-      echo -e "    -> \033[1;34m☁ GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)."
-    else
-      echo -e "    -> \033[1;31m✖ ALL UPSTREAM SOURCES OFFLINE\033[0m (No network connectivity)."
+    if [ "$ping_ok" = false ]; then
+      echo -e "    -> \033[1;33m○ ICMP PING UNREACHABLE\033[0m (Host '${INTRANET_HOST}' did not answer ping request)"
     fi
+
+    echo -e "\n  \033[1;36m[HTTP SERVICE PROBE]\033[0m Testing reachable upstream service..."
+    live_found=false
+
+    # Check localhost first if running on the host machine
+    if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
+      if curl -fsSL -m 2 "http://127.0.0.1:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Local host server active on port ${INTRANET_PORT})"
+        live_found=true
+      fi
+    fi
+
+    if [ "$live_found" = false ]; then
+      for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+        if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+          echo -e "    -> \033[1;32m● INTRANET HOST ONLINE\033[0m (Connected via ${host_target}:${INTRANET_PORT})"
+          live_found=true
+          break
+        fi
+      done
+    fi
+
+    if [ "$live_found" = false ] && [ -n "$INTRANET_IP" ]; then
+      if curl -fsSL -m 2 "http://${INTRANET_IP}:${INTRANET_PORT}/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> \033[1;32m● INTRANET IP ONLINE\033[0m (Connected via ${INTRANET_IP}:${INTRANET_PORT})"
+        live_found=true
+      fi
+    fi
+
+    if [ "$live_found" = false ]; then
+      if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> \033[1;34m☁ GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)."
+      else
+        echo -e "    -> \033[1;31m✖ ALL UPSTREAM SOURCES OFFLINE\033[0m (No network connectivity)."
+      fi
+    fi
+    echo ""
+    exit 0
   fi
-  echo ""
-  exit 0
 fi
 
+# If interactive TTY and Go refresh-ui is installed, launch the Go Bubble Tea TUI
+if [ -t 1 ] && [ -x /usr/local/bin/refresh-ui ]; then
+  exec /usr/local/bin/refresh-ui "$@"
+fi
+
+# Fallback or headless execution: execute sync engine directly
 REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
 CONF_DIR="/etc/ad-dms"
 
-# Load local domain configuration if present to discover intranet host
 INTRANET_HOST="GSFCUPLLAB203"
 INTRANET_IP="10.205.18.253"
 INTRANET_PORT="8080"
@@ -372,6 +398,16 @@ fi
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
+fi
+
+# Broadcast notification to active desktop user session if present
+ACTIVE_GUI_USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3 !~ /root|greeter|gdm|sddm|lightdm/ {print $3; exit}' || who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' || true)
+if [ -n "$ACTIVE_GUI_USER" ]; then
+  ACTIVE_UID=$(id -u "$ACTIVE_GUI_USER" 2>/dev/null || echo 1000)
+  GUI_BUS="/run/user/${ACTIVE_UID}/bus"
+  if [ -S "$GUI_BUS" ] && command -v notify-send &>/dev/null; then
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${GUI_BUS}" timeout 3 su - "$ACTIVE_GUI_USER" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations and software policies are synchronizing...'" < /dev/null 2>/dev/null || true
+  fi
 fi
 
 # Detect if running in headless background mode (no TTY)
@@ -499,7 +535,8 @@ else
 fi
 EOF
 chmod +x /usr/local/bin/refresh
-msg_ok "Deployed: /usr/local/bin/refresh"
+msg_ok "Deployed: /usr/local/bin/refresh (Go UI launcher & Shell flag delegate)"
+
 
 # ------------------------------------------------------------------------------
 # Deploy /usr/local/bin/heartbeat CLI Tool

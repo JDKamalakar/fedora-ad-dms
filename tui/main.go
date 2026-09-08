@@ -585,6 +585,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, nil
 					}
 				}
+			} else if m.view == ViewScreenshot {
+				if len(m.clients) > 0 && m.cursor < len(m.clients) {
+					targetDev := m.clients[m.cursor]
+					m.statusMsg = fmt.Sprintf("📸 Requested silent screen capture for %s...", targetDev.Hostname)
+					return m, dispatchCommandCmd(m.apiURL, targetDev.Hostname, "screenshot", "")
+				}
 				return m, nil
 			} else if m.view == ViewDeviceActionModal {
 				return m.handleDeviceModalSelect()
@@ -731,10 +737,16 @@ func (m Model) handleDeviceModalSelect() (tea.Model, tea.Cmd) {
 	host := m.selectedDevice.Hostname
 	switch m.modalCursor {
 	case 0: // Instant Screen Capture
+		m.statusMsg = fmt.Sprintf("📸 Requested silent screen capture for %s...", host)
+		m.view = ViewMonitor
 		return m, dispatchCommandCmd(m.apiURL, host, "screenshot", "")
 	case 1: // Refresh Policies on Device
+		m.statusMsg = fmt.Sprintf("🔄 Policy refresh command dispatched to %s", host)
+		m.view = ViewMonitor
 		return m, dispatchCommandCmd(m.apiURL, host, "exec", "/usr/local/bin/refresh &")
 	case 2: // Reboot Workstation
+		m.statusMsg = fmt.Sprintf("⚡ Reboot command dispatched to %s", host)
+		m.view = ViewMonitor
 		return m, dispatchCommandCmd(m.apiURL, host, "exec", "systemctl reboot")
 	case 3: // Close Modal
 		m.view = ViewMonitor
@@ -955,7 +967,7 @@ func (m Model) View() string {
 			descText = "Workstations Table: [Enter] Action / Expand • [Space] Expand/Collapse Lab • [Tab/F] Change Filter • [1-9] Quick Select • [↑] to Filter"
 		}
 	} else if m.view == ViewScreenshot {
-		descText = "Screen Capture: Grabs live display without notifying student and displays on host"
+		descText = "Screen Capture: [Enter] Trigger Instant Silent Capture on Selected Workstation • [Esc/B] Return"
 	} else if m.view == ViewHistory {
 		if m.auditFilter == "installs" {
 			descText = "Press [Enter] on any application package to Search Web or Add to Allowed/Blocked/Compulsory lists"
@@ -1155,16 +1167,11 @@ func (m Model) renderMonitorView(totalWidth int) string {
 				arrowIcon = "▶"
 			}
 
-			statusNote := "Press [Enter/Space] to Collapse"
-			if isCollapsed {
-				statusNote = "Press [Enter/Space] to Expand"
-			}
-
 			var headerText string
 			if item.LabPrefix == "UNASSIGNED" {
-				headerText = fmt.Sprintf("%s %s — [%d Workstations]  (%s)", arrowIcon, item.LabName, item.Count, statusNote)
+				headerText = fmt.Sprintf("%s %s — [%d Workstations]", arrowIcon, item.LabName, item.Count)
 			} else {
-				headerText = fmt.Sprintf("%s LAB MATRIX: %s (Prefix: %s) — [%d Workstations]  (%s)", arrowIcon, item.LabName, item.LabPrefix, item.Count, statusNote)
+				headerText = fmt.Sprintf("%s LAB MATRIX: %s — [%d Workstations]", arrowIcon, item.LabName, item.Count)
 			}
 
 			headerStyle := lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Bold(true).Foreground(m.theme.Warning)

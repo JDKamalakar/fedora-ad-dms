@@ -322,6 +322,35 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"has_command": False})
             return
 
+        # 4b. Fetch Workstation Screenshot
+        if url.path == "/api/screenshot/get":
+            hostname = params.get("host", [""])[0].upper()
+            shot_file = SCREENSHOTS_DIR / f"{hostname}_latest.png"
+            if shot_file.exists():
+                stat = shot_file.stat()
+                mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                # If raw binary requested
+                if params.get("raw", ["0"])[0] == "1":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(stat.st_size))
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    self.wfile.write(shot_file.read_bytes())
+                    return
+                else:
+                    self.send_json_response({
+                        "has_screenshot": True,
+                        "hostname": hostname,
+                        "file_path": str(shot_file),
+                        "file_size": stat.st_size,
+                        "captured_at": mtime_str
+                    })
+                    return
+            else:
+                self.send_json_response({"has_screenshot": False, "hostname": hostname})
+                return
+
         # 5. Full Data for Web UI & TUI
         if url.path == "/api/all-data":
             clients = load_clients()

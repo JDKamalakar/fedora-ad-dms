@@ -84,6 +84,7 @@ fetch_file "config/allowed-apps.conf" "true"
 fetch_file "config/blocked-apps.conf" "true"
 fetch_file "config/compulsory-apps.conf" "true"
 fetch_file "config/group-apps.conf" "true"
+fetch_file "config/refresh-tui" "false"
 
 # Flatten config directory into work root for setup-ad-dms-tui.sh compatibility
 cp -f config/* . 2>/dev/null || true
