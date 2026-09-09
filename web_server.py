@@ -28,6 +28,8 @@ COMMANDS_FILE = LOGS_DIR / "pending_commands.json"
 AUDIT_LOG_FILE = LOGS_DIR / "audit_log.json"
 SCREENSHOTS_DIR = LOGS_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
+CLIENT_LOGS_DIR = LOGS_DIR / "client_logs"
+CLIENT_LOGS_DIR.mkdir(exist_ok=True)
 
 def load_audit_log():
     if AUDIT_LOG_FILE.exists():
@@ -65,13 +67,13 @@ def save_commands(data):
 def get_pending_command(hostname):
     hostname = hostname.upper()
     commands = load_commands()
-    cmd_to_run = commands.pop(hostname, None)
-    if not cmd_to_run:
-        for target_pat, cmd in list(commands.items()):
-            if target_pat == "ALL" or target_pat in hostname:
-                cmd_to_run = cmd
-                del commands[target_pat]
-                break
+    cmd_to_run = None
+    for target_pat, cmd in list(commands.items()):
+        pat_upper = target_pat.upper()
+        if pat_upper == "ALL" or pat_upper == hostname or pat_upper in hostname or hostname in pat_upper:
+            cmd_to_run = cmd
+            del commands[target_pat]
+            break
     if cmd_to_run:
         save_commands(commands)
     return cmd_to_run
@@ -363,6 +365,29 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"has_screenshot": False, "hostname": hostname})
                 return
 
+        # 4b2. Fetch Workstation Diagnostic Logs
+        if url.path == "/api/logs/get":
+            hostname = params.get("host", [""])[0].upper()
+            since_ts = float(params.get("since", ["0"])[0] or "0")
+            log_file = CLIENT_LOGS_DIR / f"{hostname}_latest.log"
+            if log_file.exists():
+                stat = log_file.stat()
+                if since_ts > 0 and stat.st_mtime <= since_ts:
+                    self.send_json_response({"has_logs": False, "hostname": hostname, "reason": "stale"})
+                    return
+                content = log_file.read_text(encoding="utf-8", errors="replace")
+                mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                self.send_json_response({
+                    "has_logs": True,
+                    "hostname": hostname,
+                    "captured_at": mtime_str,
+                    "content": content
+                })
+                return
+            else:
+                self.send_json_response({"has_logs": False, "hostname": hostname})
+                return
+
         # 4c. Presets Archive Inventory
         if url.path == "/api/presets/list":
             presets_dir = REPO_DIR / "presets"
@@ -550,6 +575,16 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"status": "ok", "saved": True})
             return
 
+        # 3b. Client Diagnostic Logs Upload
+        if url.path == "/api/logs/upload":
+            hostname = req_data.get("hostname", "unknown").upper()
+            log_text = req_data.get("log_text", "")
+            if log_text:
+                log_path = CLIENT_LOGS_DIR / f"{hostname}_latest.log"
+                log_path.write_text(log_text, encoding="utf-8")
+            self.send_json_response({"status": "ok", "saved": True})
+            return
+
         # 4. Schedule Remote Command / Screenshot Request from Host
         if url.path == "/api/command/dispatch":
             target = req_data.get("target", "ALL").upper()
@@ -566,13 +601,15 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                 def run_immediate_local():
                     time.sleep(0.1)
                     try:
-                        if Path("/usr/local/bin/ad-dms-gui-scan").exists():
+                        if Path("/usr/local/bin/ad-dms-cmd-exec").exists():
+                            subprocess.run(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        elif Path("/usr/local/bin/ad-dms-gui-scan").exists():
                             subprocess.run(["/usr/local/bin/ad-dms-gui-scan"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
                 threading.Thread(target=run_immediate_local, daemon=True).start()
 
-            # 2. Push direct wake signal to remote target IP(s) immediately over UDP/TCP port 8081
+            # 2. Push direct wake signal to remote target IP(s) immediately over UDP port 8081
             def push_remote_wake():
                 clients = load_clients()
                 targets_to_wake = []
@@ -583,12 +620,19 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                     if target == "ALL" or target == h_name.upper() or target in h_name.upper():
                         targets_to_wake.append(c_ip)
 
+                import socket
+                # Broadcast packet to all devices on local subnet
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as bsock:
+                        bsock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        bsock.sendto(b"WAKE_GUI_SCAN", ("255.255.255.255", 8081))
+                except Exception:
+                    pass
+
                 for tip in targets_to_wake:
                     if tip in ["127.0.0.1", "::1"]:
                         continue
                     try:
-                        import socket
-                        # Send lightweight trigger packet to client direct listener port 8081
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                             sock.settimeout(0.5)
                             sock.sendto(b"WAKE_GUI_SCAN", (tip, 8081))

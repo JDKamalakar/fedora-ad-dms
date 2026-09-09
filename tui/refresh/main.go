@@ -588,6 +588,10 @@ func formatSourceLines(src string, maxW int) []string {
 func main() {
 	args := os.Args[1:]
 	if len(args) > 0 {
+		if args[0] == "-v" || args[0] == "--v" || args[0] == "-version" || args[0] == "--version" {
+			fmt.Println("\033[1;36m[AD-DMS REFRESH TUI]\033[0m Version: \033[1;32m2.1.0-fast-ss-responsive\033[0m")
+			return
+		}
 		forwardToBash(args)
 		return
 	}

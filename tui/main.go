@@ -209,6 +209,44 @@ type MonitorItem struct {
 
 type screenshotReadyMsg struct{ filePath string }
 type screenshotErrorMsg struct{ host string }
+type logsReadyMsg struct {
+	host    string
+	content string
+}
+type logsErrorMsg struct{ host string }
+type clearActionStatusMsg struct{}
+
+func pollLogsCmd(apiURL, host string) tea.Cmd {
+	dispatchTime := time.Now().Unix() - 2
+	return func() tea.Msg {
+		deadline := time.Now().Add(25 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			pollURL := fmt.Sprintf("%s/api/logs/get?host=%s&since=%d",
+				apiURL, url.QueryEscape(host), dispatchTime)
+			resp, err := http.Get(pollURL)
+			if err != nil {
+				continue
+			}
+			var result map[string]interface{}
+			_ = json.NewDecoder(resp.Body).Decode(&result)
+			resp.Body.Close()
+			has, _ := result["has_logs"].(bool)
+			if !has {
+				continue
+			}
+			content, _ := result["content"].(string)
+			return logsReadyMsg{host: host, content: content}
+		}
+		return logsErrorMsg{host: host}
+	}
+}
+
+func clearActionStatusCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg {
+		return clearActionStatusMsg{}
+	})
+}
 
 type Model struct {
 	width               int
@@ -235,6 +273,8 @@ type Model struct {
 	selectedDevice      ClientInfo
 	selectedApp         InstalledAppRecord
 	screenshotPending   string // hostname we're waiting a screenshot for; empty = none
+	actionStatus        string // live status pill in main header (e.g., "⚡ DISPATCHING REMOTE REFRESH TO LAB172...")
+	activeActionHost    string
 }
 
 func initialModel() Model {
@@ -280,9 +320,18 @@ func initialModel() Model {
 	return m
 }
 
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
+		tickCmd(),
 		fetchClientsCmd(m.apiURL),
 		fetchAuditCmd(m.apiURL),
 	)
@@ -295,11 +344,11 @@ type auditMsg AuditResponse
 // the screenshot for the given host is available, then downloads it to /tmp and
 // opens it immediately with xdg-open.
 func pollScreenshotCmd(apiURL, host string) tea.Cmd {
-	dispatchTime := time.Now().Unix()
+	dispatchTime := time.Now().Unix() - 2 // small buffer for clock skew
 	return func() tea.Msg {
-		deadline := time.Now().Add(30 * time.Second)
+		deadline := time.Now().Add(60 * time.Second)
 		for time.Now().Before(deadline) {
-			time.Sleep(1 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 			pollURL := fmt.Sprintf("%s/api/screenshot/get?host=%s&since=%d",
 				apiURL, url.QueryEscape(host), dispatchTime)
 			resp, err := http.Get(pollURL)
@@ -387,13 +436,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case screenshotReadyMsg:
 		m.screenshotPending = ""
-		m.statusMsg = fmt.Sprintf("📸 Screenshot received and opened: %s", msg.filePath)
-		return m, nil
+		m.actionStatus = fmt.Sprintf("✔  SCREENSHOT CAPTURED FOR %s — OPENED IN VIEWER", strings.ToUpper(m.activeActionHost))
+		m.statusMsg = fmt.Sprintf("📸 Screenshot opened: %s", msg.filePath)
+		return m, clearActionStatusCmd(5 * time.Second)
 
 	case screenshotErrorMsg:
 		m.screenshotPending = ""
-		m.statusMsg = fmt.Sprintf("⚠️  Screenshot timed out for %s — device may be offline or grim unavailable", msg.host)
+		m.actionStatus = fmt.Sprintf("✖  SCREENSHOT TIMED OUT FOR %s", strings.ToUpper(msg.host))
+		m.statusMsg = fmt.Sprintf("⚠️  Screenshot timed out for %s", msg.host)
+		return m, clearActionStatusCmd(5 * time.Second)
+
+	case logsReadyMsg:
+		m.actionStatus = fmt.Sprintf("✔  DIAGNOSTIC LOGS PULLED FROM %s", strings.ToUpper(msg.host))
+		m.statusMsg = fmt.Sprintf("📜 Logs received from %s", msg.host)
+		// Save log file locally and open viewer
+		logPath := filepath.Join(os.TempDir(), fmt.Sprintf("ad-dms-log-%s.log", strings.ToLower(msg.host)))
+		_ = os.WriteFile(logPath, []byte(msg.content), 0644)
+		_ = exec.Command("xdg-open", logPath).Start()
+		return m, clearActionStatusCmd(6 * time.Second)
+
+	case logsErrorMsg:
+		m.actionStatus = fmt.Sprintf("✖  FAILED TO PULL LOGS FROM %s (OFFLINE / TIMEOUT)", strings.ToUpper(msg.host))
+		m.statusMsg = fmt.Sprintf("⚠️  Log fetch timed out for %s", msg.host)
+		return m, clearActionStatusCmd(5 * time.Second)
+
+	case clearActionStatusMsg:
+		m.actionStatus = ""
 		return m, nil
+	case tickMsg:
+		return m, tickCmd()
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -877,9 +948,11 @@ func (m Model) handleMainMenuSelect(idx int) (tea.Model, tea.Cmd) {
 
 func (m Model) handleDeviceModalSelect() (tea.Model, tea.Cmd) {
 	host := m.selectedDevice.Hostname
+	m.activeActionHost = host
 	switch m.modalCursor {
 	case 0: // Instant Screen Capture
-		m.statusMsg = fmt.Sprintf("📸 Capturing screen on %s — will open automatically when ready...", host)
+		m.statusMsg = fmt.Sprintf("📸 Capturing screen on %s...", host)
+		m.actionStatus = fmt.Sprintf("⚡ DISPATCHING LIVE SCREEN CAPTURE TO %s...", strings.ToUpper(host))
 		m.screenshotPending = host
 		m.view = ViewMonitor
 		return m, tea.Batch(
@@ -887,14 +960,26 @@ func (m Model) handleDeviceModalSelect() (tea.Model, tea.Cmd) {
 			pollScreenshotCmd(m.apiURL, host),
 		)
 	case 1: // Refresh Policies on Device
-		m.statusMsg = fmt.Sprintf("🔄 Policy refresh command dispatched to %s", host)
+		m.statusMsg = fmt.Sprintf("🔄 Policy refresh dispatched to %s", host)
+		m.actionStatus = fmt.Sprintf("🔄 POLICY REFRESH DISPATCHED TO %s — SYNCHRONIZING...", strings.ToUpper(host))
 		m.view = ViewMonitor
-		return m, dispatchCommandCmd(m.apiURL, host, "exec", "/usr/local/bin/refresh &")
-	case 2: // Power Options Submenu
+		return m, tea.Batch(
+			dispatchCommandCmd(m.apiURL, host, "exec", "/usr/local/bin/refresh &"),
+			clearActionStatusCmd(6*time.Second),
+		)
+	case 2: // Pull Diagnostic Logs from Endpoint
+		m.statusMsg = fmt.Sprintf("📜 Pulling diagnostic logs from %s...", host)
+		m.actionStatus = fmt.Sprintf("📜 PULLING DIAGNOSTIC LOGS FROM %s...", strings.ToUpper(host))
+		m.view = ViewMonitor
+		return m, tea.Batch(
+			dispatchCommandCmd(m.apiURL, host, "logs", ""),
+			pollLogsCmd(m.apiURL, host),
+		)
+	case 3: // Power Options Submenu
 		m.view = ViewPowerModal
 		m.modalCursor = 0
 		return m, nil
-	case 3: // Close Modal
+	case 4: // Close Modal
 		m.view = ViewMonitor
 	}
 	return m, nil
@@ -1340,7 +1425,16 @@ func (m Model) renderMonitorView(totalWidth int) string {
 		Render(titleText)
 
 	var headerRow string
-	if m.searchMode || m.searchQuery != "" {
+	if m.actionStatus != "" {
+		statusPill := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(m.theme.Warning).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.Warning).
+			Padding(0, 1).
+			Render(m.actionStatus)
+		headerRow = lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(statusPill)
+	} else if m.searchMode || m.searchQuery != "" {
 		searchIcon := "🔍 "
 		queryDisplay := m.searchQuery
 		if m.searchMode {
@@ -1544,6 +1638,7 @@ func (m Model) renderDeviceModal(totalWidth int) string {
 	}{
 		{"📸", "Capture Live Screen Now"},
 		{"🔄", "Trigger Policy Refresh on Endpoint"},
+		{"📜", "Pull Diagnostic Logs from Endpoint"},
 		{"⚡", "Power Options"},
 		{"🔙", "Return to Workstation Monitor"},
 	}

@@ -7,9 +7,9 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:00:44",
       "start_ts": 1788863444.5227106,
-      "last_seen": "2026-09-09 09:05:46",
-      "last_seen_ts": 1788924946.7812843,
-      "duration_mins": 1025,
+      "last_seen": "2026-09-09 16:10:51",
+      "last_seen_ts": 1788950451.2666981,
+      "duration_mins": 1450,
       "status": "Active"
     },
     {
@@ -19,9 +19,9 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:11:02",
       "start_ts": 1788864062.5720026,
-      "last_seen": "2026-09-09 09:06:05",
-      "last_seen_ts": 1788924965.8214562,
-      "duration_mins": 1015,
+      "last_seen": "2026-09-09 16:10:44",
+      "last_seen_ts": 1788950444.194642,
+      "duration_mins": 1439,
       "status": "Active"
     }
   ],

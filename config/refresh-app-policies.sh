@@ -1247,7 +1247,16 @@ execute_pending_command() {
 
   if [ "$action" = "screenshot" ] && [ -n "$ACTIVE_USR" ] && [ "$ACTIVE_USR" != "none" ]; then
     local target_uid dbus_path tmp_shot wayland_name
-    target_uid=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+    target_uid=$(id -u "$ACTIVE_USR" 2>/dev/null || echo "")
+    if [ -z "$target_uid" ] || [ ! -d "/run/user/${target_uid}" ]; then
+      for udir in /run/user/[0-9]*; do
+        if [ -d "$udir" ] && ls "$udir"/wayland-* &>/dev/null; then
+          target_uid=$(basename "$udir")
+          break
+        fi
+      done
+    fi
+    [ -z "$target_uid" ] && target_uid=1000
     dbus_path="/run/user/${target_uid}/bus"
     tmp_shot="/tmp/screen_${MY_HOST}.png"
     rm -f "$tmp_shot"
@@ -1261,11 +1270,13 @@ execute_pending_command() {
     done
     [ -z "$wayland_name" ] && wayland_name="wayland-0"
 
-    # Screen capture hierarchy: 1) dms screenshot, 2) grim, 3) spectacle (Plasma only)
+    # Screen capture hierarchy: 1) dms screenshot (direct & su), 2) grim, 3) spectacle, 4) hyprshot
     if command -v dms &>/dev/null; then
+      WAYLAND_DISPLAY="${wayland_name}" XDG_RUNTIME_DIR="/run/user/${target_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=${dbus_path}" timeout 5 dms screenshot full --no-notify --no-clipboard -d /tmp --filename "screen_${MY_HOST}.png" 2>/dev/null || \
       timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
     fi
     if [ ! -s "$tmp_shot" ] && command -v grim &>/dev/null; then
+      WAYLAND_DISPLAY="${wayland_name}" XDG_RUNTIME_DIR="/run/user/${target_uid}" timeout 5 grim "$tmp_shot" 2>/dev/null || \
       timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}'; grim '$tmp_shot'" < /dev/null 2>/dev/null || true
     fi
     if [ ! -s "$tmp_shot" ] && command -v spectacle &>/dev/null; then
@@ -1276,14 +1287,22 @@ execute_pending_command() {
     fi
 
     if [ -s "$tmp_shot" ]; then
+      chmod 644 "$tmp_shot" 2>/dev/null || true
       local img_b64
       img_b64=$(base64 -w 0 "$tmp_shot" 2>/dev/null || true)
       if [ -n "$img_b64" ] && [ -n "$TARGET_URL" ]; then
-        curl -s -m 5 -X POST "${TARGET_URL}/api/screenshot/upload" \
+        curl -s -m 8 -X POST "${TARGET_URL}/api/screenshot/upload" \
           -H "Content-Type: application/json" \
           -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${img_b64}\"}" &>/dev/null || true
       fi
       rm -f "$tmp_shot"
+    fi
+  elif [ "$action" = "logs" ]; then
+    local log_out
+    log_out=$(journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 50 --no-pager 2>/dev/null || true)
+    log_out="${log_out}\n--- UPTIME & STATUS ---\n$(uptime 2>/dev/null || true)\n$(systemctl status ad-dms-fast-poll ad-dms-wake-listener --no-pager 2>/dev/null || true)"
+    if [ -n "$log_out" ] && [ -n "$TARGET_URL" ]; then
+      python3 -c "import urllib.request, json; data=json.dumps({'hostname': '''$MY_HOST''', 'log_text': '''$log_out'''}).encode(); req=urllib.request.Request('''$TARGET_URL/api/logs/upload''', data=data, headers={'Content-Type': 'application/json'}); urllib.request.urlopen(req, timeout=8)" 2>/dev/null || true
     fi
   elif [ "$action" = "exec" ]; then
     local raw_cmd
@@ -1465,6 +1484,7 @@ DOMAIN_CONF = os.path.join(CONF_DIR, "domain.conf")
 
 def get_server_info():
     host = "GSFCUPLLAB203"
+    ip = "10.205.18.253"
     port = "8080"
     if os.path.exists(DOMAIN_CONF):
         try:
@@ -1473,29 +1493,44 @@ def get_server_info():
                     line = line.strip()
                     if line.startswith("INTRANET_HOST_NAME="):
                         host = line.split("=", 1)[1].strip().strip('"\'')
+                    elif line.startswith("INTRANET_FALLBACK_IP="):
+                        ip = line.split("=", 1)[1].strip().strip('"\'')
                     elif line.startswith("INTRANET_PORT="):
                         port = line.split("=", 1)[1].strip().strip('"\'')
         except Exception:
             pass
-    return host, port
+    return host, ip, port
 
 def main():
     my_host = socket.gethostname().split(".")[0].upper()
-    server_host, server_port = get_server_info()
+    server_host, server_ip, server_port = get_server_info()
     local_host = os.uname().nodename.split(".")[0].upper()
 
+    urls_to_try = []
+    if my_host == server_host.upper() or local_host == server_host.upper():
+        urls_to_try = [f"http://127.0.0.1:{server_port}"]
+    else:
+        urls_to_try = [
+            f"http://{server_host}:{server_port}",
+            f"http://{server_host}.local:{server_port}",
+            f"http://{server_ip}:{server_port}"
+        ]
+
     while True:
-        try:
-            target_url = f"http://127.0.0.1:{server_port}" if (my_host == server_host.upper() or local_host == server_host.upper()) else f"http://{server_host}:{server_port}"
-            req = urllib.request.Request(f"{target_url}/api/command/poll?host={my_host}", headers={"User-Agent": "AD-DMS-FastPoll"})
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("has_command"):
-                    # Command waiting! Execute ONLY the fast command executor, NOT the heavy full scan
-                    subprocess.Popen(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
-        time.sleep(3)
+        success = False
+        for target_url in urls_to_try:
+            try:
+                req = urllib.request.Request(f"{target_url}/api/command/poll?host={my_host}", headers={"User-Agent": "AD-DMS-FastPoll"})
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if data.get("has_command"):
+                        # Command waiting! Execute ONLY the fast command executor, NOT the heavy full scan
+                        subprocess.Popen(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    success = True
+                    break
+            except Exception:
+                pass
+        time.sleep(2)
 
 if __name__ == "__main__":
     main()
@@ -1600,7 +1635,16 @@ echo "$CMD_RESP" | grep -qE '"has_command":\s*true' || exit 0
 ACTION=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('action',''))" 2>/dev/null <<< "$CMD_RESP" || true)
 
 if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
-  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo "")
+  if [ -z "$TARGET_UID" ] || [ ! -d "/run/user/${TARGET_UID}" ]; then
+    for udir in /run/user/[0-9]*; do
+      if [ -d "$udir" ] && ls "$udir"/wayland-* &>/dev/null; then
+        TARGET_UID=$(basename "$udir")
+        break
+      fi
+    done
+  fi
+  [ -z "$TARGET_UID" ] && TARGET_UID=1000
   DBUS_PATH="/run/user/${TARGET_UID}/bus"
   TMP_SHOT="/tmp/screen_${MY_HOST}.png"
   rm -f "$TMP_SHOT"
@@ -1614,9 +1658,11 @@ if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
   WENV="WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}"
 
   if command -v dms &>/dev/null; then
+    WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 5 dms screenshot full --no-notify --no-clipboard -d /tmp --filename "screen_${MY_HOST}.png" 2>/dev/null || \
     timeout 5 su "$ACTIVE_USR" -c "export ${WENV}; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
   fi
   if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
+    WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" timeout 5 grim "$TMP_SHOT" 2>/dev/null || \
     timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
   fi
   if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
@@ -1627,6 +1673,7 @@ if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
   fi
 
   if [ -s "$TMP_SHOT" ]; then
+    chmod 644 "$TMP_SHOT" 2>/dev/null || true
     IMG_B64=$(base64 -w 0 "$TMP_SHOT" 2>/dev/null || true)
     if [ -n "$IMG_B64" ]; then
       curl -s -m 8 -X POST "${TARGET_URL}/api/screenshot/upload" \
@@ -1634,6 +1681,13 @@ if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
         -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${IMG_B64}\"}" &>/dev/null || true
     fi
     rm -f "$TMP_SHOT"
+  fi
+
+elif [ "$ACTION" = "logs" ]; then
+  LOG_OUT=$(journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 50 --no-pager 2>/dev/null || true)
+  LOG_OUT="${LOG_OUT}\n--- UPTIME & STATUS ---\n$(uptime 2>/dev/null || true)\n$(systemctl status ad-dms-fast-poll ad-dms-wake-listener --no-pager 2>/dev/null || true)"
+  if [ -n "$LOG_OUT" ] && [ -n "$TARGET_URL" ]; then
+    python3 -c "import urllib.request, json; data=json.dumps({'hostname': '''$MY_HOST''', 'log_text': '''$LOG_OUT'''}).encode(); req=urllib.request.Request('''$TARGET_URL/api/logs/upload''', data=data, headers={'Content-Type': 'application/json'}); urllib.request.urlopen(req, timeout=8)" 2>/dev/null || true
   fi
 
 elif [ "$ACTION" = "exec" ]; then

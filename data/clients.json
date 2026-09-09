@@ -4,10 +4,10 @@
     "ip": "127.0.0.1",
     "active_user": "jk",
     "session_type": "wayland",
-    "uptime": "up 1 day, 21 hours, 42 minutes",
+    "uptime": "up 2 days, 4 hours, 47 minutes",
     "dms_version": "2.0.0",
-    "last_seen": "2026-09-09 09:05:46",
-    "last_seen_ts": 1788924946.7812843,
+    "last_seen": "2026-09-09 16:10:51",
+    "last_seen_ts": 1788950451.2666981,
     "first_registered": "2026-09-08 16:00:44"
   },
   "GSFCUOSLAB172": {
@@ -15,10 +15,10 @@
     "ip": "10.205.18.230",
     "active_user": "25bt04047",
     "session_type": "wayland",
-    "uptime": "up 16 hours, 56 minutes",
+    "uptime": "up 1 day, 1 minute",
     "dms_version": "2.0.0",
-    "last_seen": "2026-09-09 09:06:05",
-    "last_seen_ts": 1788924965.8214562,
+    "last_seen": "2026-09-09 16:10:44",
+    "last_seen_ts": 1788950444.194642,
     "first_registered": "2026-09-08 16:11:02"
   }
 }
