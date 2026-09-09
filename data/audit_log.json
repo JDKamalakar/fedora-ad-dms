@@ -7,9 +7,9 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:00:44",
       "start_ts": 1788863444.5227106,
-      "last_seen": "2026-09-08 16:13:05",
-      "last_seen_ts": 1788864185.6063347,
-      "duration_mins": 12,
+      "last_seen": "2026-09-09 09:05:46",
+      "last_seen_ts": 1788924946.7812843,
+      "duration_mins": 1025,
       "status": "Active"
     },
     {
@@ -19,9 +19,9 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:11:02",
       "start_ts": 1788864062.5720026,
-      "last_seen": "2026-09-08 16:12:45",
-      "last_seen_ts": 1788864165.0965586,
-      "duration_mins": 1,
+      "last_seen": "2026-09-09 09:06:05",
+      "last_seen_ts": 1788924965.8214562,
+      "duration_mins": 1015,
       "status": "Active"
     }
   ],
@@ -281,6 +281,182 @@
       "name": "wireless-regdb",
       "kind": "dnf",
       "discovered_on": "2026-09-08 16:11:02",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "python3-boto3": {
+      "name": "python3-boto3",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "golang-bin": {
+      "name": "golang-bin",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "golang": {
+      "name": "golang",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "golang-src": {
+      "name": "golang-src",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "python3-botocore": {
+      "name": "python3-botocore",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "dnf5": {
+      "name": "dnf5",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libdnf5-cli": {
+      "name": "libdnf5-cli",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libdnf5": {
+      "name": "libdnf5",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:23:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "corosynclib": {
+      "name": "corosynclib",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "python3-libdnf5": {
+      "name": "python3-libdnf5",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libtirpc": {
+      "name": "libtirpc",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libsoup3": {
+      "name": "libsoup3",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libdnf5-plugin-systemd-inhibit": {
+      "name": "libdnf5-plugin-systemd-inhibit",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libdnf5-plugin-expired-pgp-keys": {
+      "name": "libdnf5-plugin-expired-pgp-keys",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "libdnf5-plugin-appstream": {
+      "name": "libdnf5-plugin-appstream",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
+      "hosts": [
+        "GSFCUOSLAB172"
+      ],
+      "users": [
+        "25bt04047"
+      ]
+    },
+    "dnf5-plugins": {
+      "name": "dnf5-plugins",
+      "kind": "dnf",
+      "discovered_on": "2026-09-08 16:24:50",
       "hosts": [
         "GSFCUOSLAB172"
       ],

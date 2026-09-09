@@ -637,8 +637,18 @@ cat <<'REFRESH_UTIL_EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 set -euo pipefail
 
-# If any flags are passed, execute the shell diagnostics/flag handlers
+# If refresh-ui binary is installed, forward flags directly to it
+if [ -x "/usr/local/bin/refresh-ui" ]; then
+  exec /usr/local/bin/refresh-ui "$@"
+fi
+
+# Fallback shell diagnostic flag handlers if refresh-ui is missing
 if [ $# -gt 0 ]; then
+  if [ "${1:-}" = "-v" ] || [ "${1:-}" = "--v" ] || [ "${1:-}" = "-version" ] || [ "${1:-}" = "--version" ]; then
+    echo -e "\033[1;36m[AD-DMS REFRESH ENGINE]\033[0m Version: \033[1;32m2.1.0-fast-ss-responsive\033[0m"
+    exit 0
+  fi
+
   # Support checking remaining timer interval without root privileges
   if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
     if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
@@ -771,20 +781,29 @@ if [ -t 1 ]; then
   fi
 
   # Fast probe for intranet server binary update
-  _INTRANET_TARGET="${INTRANET_HOST:-GSFCUPLLAB203}:${INTRANET_PORT:-8080}"
-  if [ -n "${INTRANET_IP:-}" ] && ! curl -fsSL -m 1 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
-    _INTRANET_TARGET="${INTRANET_IP}:${INTRANET_PORT:-8080}"
+  _I_HOST="${INTRANET_HOST_NAME:-GSFCUPLLAB203}"
+  _I_IP="${INTRANET_FALLBACK_IP:-10.205.18.253}"
+  _I_PORT="${INTRANET_PORT:-8080}"
+  
+  if [ -f "/etc/ad-dms/domain.conf" ]; then
+    _I_HOST=$(grep -E "^INTRANET_HOST_NAME=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_HOST")
+    _I_IP=$(grep -E "^INTRANET_FALLBACK_IP=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_IP")
+    _I_PORT=$(grep -E "^INTRANET_PORT=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_PORT")
   fi
 
-  if curl -fsSL -m 2 "http://${_INTRANET_TARGET}/api/health" &>/dev/null; then
-    # Fetch latest binary silently with header timestamp comparison (-z)
-    curl -fsSL -m 4 -z "$_REFRESH_BIN" "http://${_INTRANET_TARGET}/config/refresh-tui" -o "${_REFRESH_BIN}.tmp" 2>/dev/null || true
-    if [ -s "${_REFRESH_BIN}.tmp" ]; then
-      mv -f "${_REFRESH_BIN}.tmp" "$_REFRESH_BIN" 2>/dev/null || true
-      chmod +x "$_REFRESH_BIN" 2>/dev/null || true
+  for _target_candidate in "${_I_HOST}:${_I_PORT}" "${_I_HOST}.local:${_I_PORT}" "${_I_IP}:${_I_PORT}"; do
+    if [ -z "${_target_candidate%%:*}" ]; then continue; fi
+    if curl -fsSL -m 1 "http://${_target_candidate}/api/health" &>/dev/null; then
+      # Fetch latest binary silently with header timestamp comparison (-z)
+      curl -fsSL -m 5 -z "$_REFRESH_BIN" "http://${_target_candidate}/config/refresh-tui" -o "${_REFRESH_BIN}.tmp" 2>/dev/null || true
+      if [ -s "${_REFRESH_BIN}.tmp" ]; then
+        mv -f "${_REFRESH_BIN}.tmp" "$_REFRESH_BIN" 2>/dev/null || true
+        chmod +x "$_REFRESH_BIN" 2>/dev/null || true
+      fi
+      rm -f "${_REFRESH_BIN}.tmp"
+      break
     fi
-    rm -f "${_REFRESH_BIN}.tmp"
-  fi
+  done
 
   if [ -x "$_REFRESH_BIN" ]; then
     exec "$_REFRESH_BIN" "$@"
@@ -1015,6 +1034,131 @@ else
   exit 1
 fi
 REFRESH_UTIL_EOF
+# Ensure /usr/local/bin/refresh launcher script has the latest version flag handler & updater
+if [ -d "/etc/ad-dms" ]; then
+  cat <<'REFRESH_UTIL_EOF' > /usr/local/bin/refresh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# If any flags are passed, execute the shell diagnostics/flag handlers
+if [ $# -gt 0 ]; then
+  # Support version check
+  if [ "${1:-}" = "-v" ] || [ "${1:-}" = "--v" ] || [ "${1:-}" = "-version" ] || [ "${1:-}" = "--version" ]; then
+    echo -e "\033[1;36m[AD-DMS REFRESH ENGINE]\033[0m Version: \033[1;32m2.1.0-fast-ss-responsive\033[0m"
+    exit 0
+  fi
+
+  # Support checking remaining timer interval without root privileges
+  if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
+    if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then
+      TIMER_INFO=$(systemctl list-timers ad-dms-refresh.timer --no-pager 2>/dev/null | grep -E "ad-dms-refresh\.timer" || true)
+      LEFT_TIME=$(echo "$TIMER_INFO" | awk '{print $3}' || echo "unknown")
+      NEXT_DATE=$(echo "$TIMER_INFO" | awk '{print $1, $2}' || echo "unknown")
+      echo -e "\033[1;36m[AD-DMS TIMER]\033[0m Next policy refresh scheduled in: \033[1;32m${LEFT_TIME}\033[0m (Next run: ${NEXT_DATE})"
+    else
+      echo -e "\033[1;33m[AD-DMS TIMER]\033[0m ad-dms-refresh.timer is currently inactive or not installed."
+    fi
+    exit 0
+  fi
+
+  # Support checking Heartbeat Telemetry status
+  if [ "${1:-}" = "-hb" ] || [ "${1:-}" = "--hb" ] || [ "${1:-}" = "-heartbeat" ] || [ "${1:-}" = "--heartbeat" ]; then
+    if [ -x /usr/local/bin/heartbeat ]; then
+      exec /usr/local/bin/heartbeat
+    fi
+  fi
+
+  # Support checking which service/source was used previously & live ping/probe status
+  if [ "${1:-}" = "-s" ] || [ "${1:-}" = "--s" ] || [ "${1:-}" = "-status" ] || [ "${1:-}" = "--status" ] || [ "${1:-}" = "-source" ] || [ "${1:-}" = "--source" ] || [ "${1:-}" = "-p" ] || [ "${1:-}" = "--p" ] || [ "${1:-}" = "-ping" ] || [ "${1:-}" = "--ping" ]; then
+    echo -e "\033[1;36m╔══════════════════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;36m║\033[0m                  \033[1;33mAD-DMS POLICY SOURCE & HOST PROBE STATUS\033[0m                \033[1;36m║\033[0m"
+    echo -e "\033[1;36m╚══════════════════════════════════════════════════════════════════════════╝\033[0m"
+
+    CONF_DIR="/etc/ad-dms"
+    SOURCE_LOG="${CONF_DIR}/.last_source"
+    
+    if [ -f "$SOURCE_LOG" ]; then
+      echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;32m$(cat "$SOURCE_LOG")\033[0m"
+    else
+      echo -e "  \033[1;36m[PREVIOUS SYNC SOURCE]\033[0m \033[1;33mNo sync record yet\033[0m"
+    fi
+
+    # Load intranet and main host configuration from domain.conf
+    INTRANET_HOST="GSFCUPLLAB203"
+    INTRANET_IP="10.205.18.253"
+    INTRANET_PORT="8080"
+    if [ -f "${CONF_DIR}/domain.conf" ]; then
+      source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+      INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+      INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+      INTRANET_PORT="${INTRANET_PORT:-8080}"
+    fi
+
+    echo -e "\033[1;36m  [LIVE UPSTREAM PROBE RESULTS]\033[0m"
+    live_found=false
+
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
+      [ -z "$host_target" ] && continue
+      if curl -fsSL -m 2 "http://${host_target}:${INTRANET_PORT}/api/health" &>/dev/null; then
+        echo -e "    -> \033[1;32m● INTRANET SERVER ONLINE\033[0m (Connected via http://${host_target}:${INTRANET_PORT})"
+        live_found=true
+        break
+      fi
+    done
+
+    if [ "$live_found" = false ]; then
+      if curl -fsSL -m 3 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/domain.conf" >/dev/null 2>&1; then
+        echo -e "    -> \033[1;34m☁ GITHUB CLOUD FALLBACK\033[0m (Intranet offline, GitHub reachable)."
+      else
+        echo -e "    -> \033[1;31m✖ ALL UPSTREAM SOURCES OFFLINE\033[0m (No network connectivity)."
+      fi
+    fi
+    echo ""
+    exit 0
+  fi
+fi
+
+# Auto-sync latest Go refresh-ui binary before launching if on intranet or GitHub
+if [ -t 1 ]; then
+  _REFRESH_BIN="/usr/local/bin/refresh-ui"
+  _NEED_SYNC=false
+  if [ ! -x "$_REFRESH_BIN" ]; then
+    _NEED_SYNC=true
+  fi
+
+  # Fast probe for intranet server binary update
+  _I_HOST="${INTRANET_HOST_NAME:-GSFCUPLLAB203}"
+  _I_IP="${INTRANET_FALLBACK_IP:-10.205.18.253}"
+  _I_PORT="${INTRANET_PORT:-8080}"
+  
+  if [ -f "/etc/ad-dms/domain.conf" ]; then
+    _I_HOST=$(grep -E "^INTRANET_HOST_NAME=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_HOST")
+    _I_IP=$(grep -E "^INTRANET_FALLBACK_IP=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_IP")
+    _I_PORT=$(grep -E "^INTRANET_PORT=" /etc/ad-dms/domain.conf 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'" || echo "$_I_PORT")
+  fi
+
+  for _target_candidate in "${_I_HOST}:${_I_PORT}" "${_I_HOST}.local:${_I_PORT}" "${_I_IP}:${_I_PORT}"; do
+    if [ -z "${_target_candidate%%:*}" ]; then continue; fi
+    if curl -fsSL -m 1 "http://${_target_candidate}/api/health" &>/dev/null; then
+      # Fetch latest binary silently with header timestamp comparison (-z)
+      curl -fsSL -m 5 -z "$_REFRESH_BIN" "http://${_target_candidate}/config/refresh-tui" -o "${_REFRESH_BIN}.tmp" 2>/dev/null || true
+      if [ -s "${_REFRESH_BIN}.tmp" ]; then
+        mv -f "${_REFRESH_BIN}.tmp" "$_REFRESH_BIN" 2>/dev/null || true
+        chmod +x "$_REFRESH_BIN" 2>/dev/null || true
+      fi
+      rm -f "${_REFRESH_BIN}.tmp"
+      break
+    fi
+  done
+
+  if [ -x "$_REFRESH_BIN" ]; then
+    exec "$_REFRESH_BIN" "$@"
+  fi
+fi
+REFRESH_UTIL_EOF
+  chmod +x /usr/local/bin/refresh
+fi
+
 chmod +x /usr/local/bin/refresh
 echo -e "  -> ${GREEN}[REFRESH CLI INSTALLED]${NC} Universal policy refresh utility active at /usr/local/bin/refresh"
 
@@ -1119,13 +1263,16 @@ execute_pending_command() {
 
     # Screen capture hierarchy: 1) dms screenshot, 2) grim, 3) spectacle (Plasma only)
     if command -v dms &>/dev/null; then
-      timeout 3 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+      timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
     fi
     if [ ! -s "$tmp_shot" ] && command -v grim &>/dev/null; then
-      timeout 3 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}'; grim '$tmp_shot'" < /dev/null 2>/dev/null || true
+      timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}'; grim '$tmp_shot'" < /dev/null 2>/dev/null || true
     fi
-    if [ ! -s "$tmp_shot" ] && [ "${ACTIVE_SESSION,,}" = "plasma" ] && command -v spectacle &>/dev/null; then
-      timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; spectacle -b -n -o '$tmp_shot'" < /dev/null 2>/dev/null || true
+    if [ ! -s "$tmp_shot" ] && command -v spectacle &>/dev/null; then
+      timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}' DBUS_SESSION_BUS_ADDRESS='unix:path=${dbus_path}'; spectacle -b -n -o '$tmp_shot'" < /dev/null 2>/dev/null || true
+    fi
+    if [ ! -s "$tmp_shot" ] && command -v hyprshot &>/dev/null; then
+      timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY='${wayland_name}' XDG_RUNTIME_DIR='/run/user/${target_uid}'; hyprshot -m output -o /tmp -f 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
     fi
 
     if [ -s "$tmp_shot" ]; then
@@ -1467,13 +1614,16 @@ if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
   WENV="WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}"
 
   if command -v dms &>/dev/null; then
-    timeout 4 su - "$ACTIVE_USR" -c "export ${WENV}; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+    timeout 5 su "$ACTIVE_USR" -c "export ${WENV}; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
   fi
   if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
-    timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
   fi
-  if [ ! -s "$TMP_SHOT" ] && [ "${ACTIVE_SESSION,,}" = "plasma" ] && command -v spectacle &>/dev/null; then
-    timeout 4 su - "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}; spectacle -b -n -o '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+  if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
+    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}; spectacle -b -n -o '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+  fi
+  if [ ! -s "$TMP_SHOT" ] && command -v hyprshot &>/dev/null; then
+    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; hyprshot -m output -o /tmp -f 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
   fi
 
   if [ -s "$TMP_SHOT" ]; then

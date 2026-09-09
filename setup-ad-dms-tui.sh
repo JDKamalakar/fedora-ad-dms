@@ -243,8 +243,18 @@ cat <<'EOF' > /usr/local/bin/refresh
 #!/usr/bin/env bash
 set -euo pipefail
 
+# If refresh-ui binary is installed, forward flags directly to it
+if [ -x "/usr/local/bin/refresh-ui" ]; then
+  exec /usr/local/bin/refresh-ui "$@"
+fi
+
 # If any flags are passed, execute the shell diagnostics/flag handlers
 if [ $# -gt 0 ]; then
+  # Support version check
+  if [ "${1:-}" = "-v" ] || [ "${1:-}" = "--v" ] || [ "${1:-}" = "-version" ] || [ "${1:-}" = "--version" ]; then
+    echo -e "\033[1;36m[AD-DMS REFRESH ENGINE]\033[0m Version: \033[1;32m2.1.0-fast-ss-responsive\033[0m"
+    exit 0
+  fi
   # Support checking remaining timer interval without root privileges
   if [ "${1:-}" = "-t" ] || [ "${1:-}" = "--t" ] || [ "${1:-}" = "--time" ] || [ "${1:-}" = "-time" ]; then
     if systemctl is-active --quiet ad-dms-refresh.timer 2>/dev/null; then

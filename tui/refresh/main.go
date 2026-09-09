@@ -611,6 +611,10 @@ func main() {
 
 func forwardToBash(args []string) {
 	flag := args[0]
+	if flag == "-v" || flag == "--v" || flag == "-version" || flag == "--version" {
+		fmt.Println("\033[1;36m[AD-DMS REFRESH TUI]\033[0m Version: \033[1;32m2.1.0-fast-ss-responsive\033[0m")
+		os.Exit(0)
+	}
 	if flag == "-t" || flag == "--t" || flag == "-time" || flag == "--time" {
 		out, err := exec.Command("systemctl", "list-timers", "ad-dms-refresh.timer", "--no-pager").Output()
 		if err == nil && strings.Contains(string(out), "ad-dms-refresh.timer") {
