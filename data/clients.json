@@ -3,22 +3,22 @@
     "hostname": "GSFCUPLLAB203",
     "ip": "127.0.0.1",
     "active_user": "jk",
-    "session_type": "wayland",
-    "uptime": "up 2 days, 4 hours, 47 minutes",
+    "session_type": "unspecified",
+    "uptime": "up 1 week, 23 hours, 38 minutes",
     "dms_version": "2.0.0",
-    "last_seen": "2026-09-09 16:10:51",
-    "last_seen_ts": 1788950451.2666981,
-    "first_registered": "2026-09-08 16:00:44"
+    "last_seen": "2026-09-15 11:02:11",
+    "last_seen_ts": 1789450331.5912564,
+    "first_registered": "2026-09-15 11:01:16"
   },
   "GSFCUOSLAB172": {
     "hostname": "GSFCUOSLAB172",
     "ip": "10.205.18.230",
-    "active_user": "25bt04047",
+    "active_user": "oslab",
     "session_type": "wayland",
-    "uptime": "up 1 day, 1 minute",
+    "uptime": "up 29 minutes",
     "dms_version": "2.0.0",
-    "last_seen": "2026-09-09 16:10:44",
-    "last_seen_ts": 1788950444.194642,
+    "last_seen": "2026-09-15 11:02:11",
+    "last_seen_ts": 1789450331.3984523,
     "first_registered": "2026-09-08 16:11:02"
   }
 }

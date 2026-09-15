@@ -1298,12 +1298,23 @@ execute_pending_command() {
       rm -f "$tmp_shot"
     fi
   elif [ "$action" = "logs" ]; then
-    local log_out
-    log_out=$(journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 50 --no-pager 2>/dev/null || true)
-    log_out="${log_out}\n--- UPTIME & STATUS ---\n$(uptime 2>/dev/null || true)\n$(systemctl status ad-dms-fast-poll ad-dms-wake-listener --no-pager 2>/dev/null || true)"
-    if [ -n "$log_out" ] && [ -n "$TARGET_URL" ]; then
-      python3 -c "import urllib.request, json; data=json.dumps({'hostname': '''$MY_HOST''', 'log_text': '''$log_out'''}).encode(); req=urllib.request.Request('''$TARGET_URL/api/logs/upload''', data=data, headers={'Content-Type': 'application/json'}); urllib.request.urlopen(req, timeout=8)" 2>/dev/null || true
+    local log_file_tmp
+    log_file_tmp="/tmp/dms_logs_${MY_HOST}.txt"
+    journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 50 --no-pager > "$log_file_tmp" 2>&1 || true
+    echo -e "\n--- UPTIME & STATUS ---" >> "$log_file_tmp"
+    uptime >> "$log_file_tmp" 2>&1 || true
+    systemctl status ad-dms-fast-poll ad-dms-wake-listener --no-pager >> "$log_file_tmp" 2>&1 || true
+    if [ -s "$log_file_tmp" ] && [ -n "$TARGET_URL" ]; then
+      python3 -c "
+import urllib.request, json
+with open('$log_file_tmp', 'r', encoding='utf-8', errors='replace') as f:
+    text = f.read()
+payload = json.dumps({'hostname': '$MY_HOST', 'log_text': text}).encode('utf-8')
+req = urllib.request.Request('$TARGET_URL/api/logs/upload', data=payload, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req, timeout=5)
+" 2>/dev/null || true
     fi
+    rm -f "$log_file_tmp"
   elif [ "$action" = "exec" ]; then
     local raw_cmd
     raw_cmd=$(python3 -c "import json; print(json.loads('''$cmd_json''').get('command', {}).get('cmd', ''))" 2>/dev/null || true)
@@ -1520,12 +1531,13 @@ def main():
         success = False
         for target_url in urls_to_try:
             try:
-                req = urllib.request.Request(f"{target_url}/api/command/poll?host={my_host}", headers={"User-Agent": "AD-DMS-FastPoll"})
+                req = urllib.request.Request(f"{target_url}/api/command/poll?host={my_host}&peek=1", headers={"User-Agent": "AD-DMS-FastPoll"})
                 with urllib.request.urlopen(req, timeout=2) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    if data.get("has_command"):
-                        # Command waiting! Execute ONLY the fast command executor, NOT the heavy full scan
-                        subprocess.Popen(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        exec_path = "/usr/local/bin/ad-dms-cmd-exec"
+                        if not os.path.exists(exec_path) or not os.access(exec_path, os.X_OK):
+                            exec_path = "/home/jk/Projects/fedora-ad-dms/config/ad-dms-cmd-exec"
+                        subprocess.Popen([exec_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     success = True
                     break
             except Exception:
@@ -1581,34 +1593,49 @@ EOF
 cat <<'CMDEXEC_EOF' > /usr/local/bin/ad-dms-cmd-exec
 #!/usr/bin/env bash
 # AD-DMS Fast Command Executor — runs pending remote commands instantly with zero scan overhead
-# This is intentionally minimal: no Flatpak scan, no RPM audit, no disk traversal.
-set -euo pipefail
 
 CONF_DIR="/etc/ad-dms"
-[ -f "${CONF_DIR}/domain.conf" ] || exit 0
-source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+fi
 
 MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
-ACTIVE_USR="none"
-ACTIVE_SESSION="desktop"
+MY_HOST_UPPER=$(echo "$MY_HOST" | tr '[:lower:]' '[:upper:]')
 
-# Detect active graphical user (fast)
-while read -r s_id _uid s_user rest; do
-  [ -z "$s_user" ] || [ "$s_user" = "USER" ] && continue
-  if [[ "$s_user" != greeter && "$s_user" != gdm && "$s_user" != sddm && "$s_user" != lightdm && "$s_user" != root ]]; then
-    s_state=$(loginctl show-session -p State "$s_id" 2>/dev/null | cut -d= -f2)
-    s_type=$(loginctl show-session -p Type "$s_id" 2>/dev/null | cut -d= -f2)
-    s_class_v=$(loginctl show-session -p Class "$s_id" 2>/dev/null | cut -d= -f2)
-    if [[ "$s_state" = "active" || "$s_class_v" = "user" ]]; then
-      ACTIVE_USR="$s_user"
-      ACTIVE_SESSION="${s_type:-desktop}"
-      [[ "$s_state" = "active" ]] && break
+# Detect active Wayland session, UID, and Display socket dynamically
+TARGET_UID=""
+WL_DISP=""
+ACTIVE_USR=""
+
+for udir in /run/user/[0-9]*; do
+  [ -d "$udir" ] || continue
+  uid_cand=$(basename "$udir")
+  for s_file in "$udir"/wayland-[0-9]*; do
+    if [ -S "$s_file" ]; then
+      TARGET_UID="$uid_cand"
+      WL_DISP=$(basename "$s_file")
+      cand_usr=$(id -nu "$uid_cand" 2>/dev/null || echo "")
+      if [ -n "$cand_usr" ] && [ "$cand_usr" != "root" ] && [ "$cand_usr" != "gdm" ] && [ "$cand_usr" != "sddm" ] && [ "$cand_usr" != "greeter" ]; then
+        ACTIVE_USR="$cand_usr"
+        break 2
+      fi
     fi
-  fi
-done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+  done
+done
 
-[ "$ACTIVE_USR" = "none" ] && ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || true)
-[ -z "$ACTIVE_USR" ] && ACTIVE_USR="none"
+# Fallback active user check if no wayland socket found yet
+if [ -z "$ACTIVE_USR" ]; then
+  ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || echo "none")
+fi
+if [ -z "$TARGET_UID" ] && [ "$ACTIVE_USR" != "none" ]; then
+  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo "1000")
+fi
+if [ -z "$TARGET_UID" ]; then
+  TARGET_UID=1000
+fi
+if [ -z "$WL_DISP" ]; then
+  WL_DISP="wayland-0"
+fi
 
 # Resolve server URL
 INTRANET_HOST="${INTRANET_HOST_NAME:-}"
@@ -1625,93 +1652,98 @@ else
     fi
   done
 fi
-[ -z "$TARGET_URL" ] && exit 0
+if [ -z "$TARGET_URL" ]; then
+  TARGET_URL="http://127.0.0.1:${INTRANET_PORT_N:-8080}"
+fi
 
 # Poll for pending command
-CMD_RESP=$(curl -fsSL -m 3 "${TARGET_URL}/api/command/poll?host=${MY_HOST}" 2>/dev/null || true)
+CMD_RESP=$(curl -fsSL -m 3 "${TARGET_URL}/api/command/poll?host=${MY_HOST_UPPER}" 2>/dev/null || true)
 echo "$CMD_RESP" | grep -qE '"has_command":\s*true' || exit 0
 
 # Parse action and command
 ACTION=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('action',''))" 2>/dev/null <<< "$CMD_RESP" || true)
 
 if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
-  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo "")
-  if [ -z "$TARGET_UID" ] || [ ! -d "/run/user/${TARGET_UID}" ]; then
-    for udir in /run/user/[0-9]*; do
-      if [ -d "$udir" ] && ls "$udir"/wayland-* &>/dev/null; then
-        TARGET_UID=$(basename "$udir")
-        break
-      fi
-    done
-  fi
-  [ -z "$TARGET_UID" ] && TARGET_UID=1000
   DBUS_PATH="/run/user/${TARGET_UID}/bus"
-  TMP_SHOT="/tmp/screen_${MY_HOST}.png"
+  TMP_SHOT="/tmp/screen_${MY_HOST_UPPER}.png"
   rm -f "$TMP_SHOT"
 
-  # Find wayland socket
-  WL_DISP="wayland-0"
-  for ws in $(ls -t "/run/user/${TARGET_UID}/wayland-"[0-9]* 2>/dev/null); do
-    [ -S "$ws" ] && WL_DISP=$(basename "$ws") && break
-  done
+  USR_HOME=$(getent passwd "$ACTIVE_USR" 2>/dev/null | cut -d: -f6 || echo "/home/${ACTIVE_USR}")
+  [ ! -d "$USR_HOME" ] && USR_HOME="/tmp"
+  ENV_CMD="HOME=${USR_HOME} WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} PATH=${PATH}:/usr/local/bin:/usr/bin:/bin"
 
-  WENV="WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}"
+  DMS_BIN=$(command -v dms 2>/dev/null || echo "/usr/local/bin/dms")
+  [ ! -x "$DMS_BIN" ] && DMS_BIN="/usr/bin/dms"
 
-  if command -v dms &>/dev/null; then
-    WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 5 dms screenshot full --no-notify --no-clipboard -d /tmp --filename "screen_${MY_HOST}.png" 2>/dev/null || \
-    timeout 5 su "$ACTIVE_USR" -c "export ${WENV}; dms screenshot full --no-notify --no-clipboard -d /tmp --filename 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+  if [ -x "$DMS_BIN" ]; then
+    if [ "$EUID" -eq 0 ]; then
+      SHOT_OUT=$(su "$ACTIVE_USR" -s /bin/bash -c "env ${ENV_CMD} ${DMS_BIN} screenshot full --no-notify --no-clipboard -d /tmp" 2>/dev/null || true)
+    else
+      SHOT_OUT=$(env ${ENV_CMD} ${DMS_BIN} screenshot full --no-notify --no-clipboard -d /tmp 2>/dev/null || true)
+    fi
+    if [ -n "$SHOT_OUT" ] && [ -s "$SHOT_OUT" ]; then
+      cp -f "$SHOT_OUT" "$TMP_SHOT" 2>/dev/null || true
+    fi
   fi
   if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
-    WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" timeout 5 grim "$TMP_SHOT" 2>/dev/null || \
-    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
-  fi
-  if [ ! -s "$TMP_SHOT" ] && command -v spectacle &>/dev/null; then
-    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH}; spectacle -b -n -o '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
-  fi
-  if [ ! -s "$TMP_SHOT" ] && command -v hyprshot &>/dev/null; then
-    timeout 5 su "$ACTIVE_USR" -c "export WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID}; hyprshot -m output -o /tmp -f 'screen_${MY_HOST}.png'" < /dev/null 2>/dev/null || true
+    if [ "$EUID" -eq 0 ]; then
+      su "$ACTIVE_USR" -c "env WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+    else
+      env WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" grim "$TMP_SHOT" 2>/dev/null || true
+    fi
   fi
 
   if [ -s "$TMP_SHOT" ]; then
     chmod 644 "$TMP_SHOT" 2>/dev/null || true
-    IMG_B64=$(base64 -w 0 "$TMP_SHOT" 2>/dev/null || true)
-    if [ -n "$IMG_B64" ]; then
-      curl -s -m 8 -X POST "${TARGET_URL}/api/screenshot/upload" \
-        -H "Content-Type: application/json" \
-        -d "{\"hostname\": \"${MY_HOST}\", \"image_base64\": \"${IMG_B64}\"}" &>/dev/null || true
-    fi
+    python3 -c "
+import urllib.request, json, base64
+with open('$TMP_SHOT', 'rb') as f:
+    img_b64 = base64.b64encode(f.read()).decode('utf-8')
+payload = json.dumps({'hostname': '$MY_HOST_UPPER', 'image_base64': img_b64}).encode('utf-8')
+req = urllib.request.Request('$TARGET_URL/api/screenshot/upload', data=payload, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req, timeout=8)
+" 2>/dev/null || true
     rm -f "$TMP_SHOT"
   fi
 
 elif [ "$ACTION" = "logs" ]; then
-  LOG_OUT=$(journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 50 --no-pager 2>/dev/null || true)
-  LOG_OUT="${LOG_OUT}\n--- UPTIME & STATUS ---\n$(uptime 2>/dev/null || true)\n$(systemctl status ad-dms-fast-poll ad-dms-wake-listener --no-pager 2>/dev/null || true)"
-  if [ -n "$LOG_OUT" ] && [ -n "$TARGET_URL" ]; then
-    python3 -c "import urllib.request, json; data=json.dumps({'hostname': '''$MY_HOST''', 'log_text': '''$LOG_OUT'''}).encode(); req=urllib.request.Request('''$TARGET_URL/api/logs/upload''', data=data, headers={'Content-Type': 'application/json'}); urllib.request.urlopen(req, timeout=8)" 2>/dev/null || true
+  LOG_FILE_TMP="/tmp/dms_logs_${MY_HOST_UPPER}.txt"
+  journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 60 --no-pager > "$LOG_FILE_TMP" 2>&1 || true
+  echo -e "\n--- UPTIME & SYSTEM STATUS ---" >> "$LOG_FILE_TMP"
+  uptime >> "$LOG_FILE_TMP" 2>&1 || true
+  systemctl status ad-dms-fast-poll ad-dms-wake-listener ad-dms-server --no-pager >> "$LOG_FILE_TMP" 2>&1 || true
+  if [ -s "$LOG_FILE_TMP" ]; then
+    chmod 644 "$LOG_FILE_TMP" 2>/dev/null || true
+    python3 -c "
+import urllib.request, json
+with open('$LOG_FILE_TMP', 'r', encoding='utf-8', errors='replace') as f:
+    text = f.read()
+payload = json.dumps({'hostname': '$MY_HOST_UPPER', 'log_text': text}).encode('utf-8')
+req = urllib.request.Request('$TARGET_URL/api/logs/upload', data=payload, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req, timeout=8)
+" 2>/dev/null || true
   fi
+  rm -f "$LOG_FILE_TMP"
 
 elif [ "$ACTION" = "exec" ]; then
   RAW_CMD=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('cmd',''))" 2>/dev/null <<< "$CMD_RESP" || true)
   [ -z "$RAW_CMD" ] && exit 0
 
-  # Send desktop notification if user is active
-  if [ "$ACTIVE_USR" != "none" ]; then
-    TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo 1000)
+  if [ "$ACTIVE_USR" != "none" ] && [ -n "$TARGET_UID" ]; then
     DBUS_PATH="/run/user/${TARGET_UID}/bus"
     if [ -S "$DBUS_PATH" ] && command -v notify-send &>/dev/null; then
       if echo "$RAW_CMD" | grep -qi "poweroff"; then
-        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-shutdown '⚡ System Shutdown Scheduled' 'An administrator has scheduled a workstation shutdown. Please save your work.'" < /dev/null 2>/dev/null || true
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-shutdown '⚡ System Shutdown Scheduled' 'An administrator has scheduled a workstation shutdown. Please save your work.'" < /dev/null 2>/dev/null || true
       elif echo "$RAW_CMD" | grep -qiE "reboot|soft-reboot"; then
-        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
       elif echo "$RAW_CMD" | grep -qiE "terminate-user|quit"; then
-        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u critical -i system-log-out '🚪 Session Termination' 'Your user session is being logged out by an administrator.'" < /dev/null 2>/dev/null || true
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-log-out '🚪 Session Termination' 'Your user session is being logged out by an administrator.'" < /dev/null 2>/dev/null || true
       elif echo "$RAW_CMD" | grep -qi "refresh"; then
-        DBUS_SESSION_BUS_ADDRESS="unix:path=${DBUS_PATH}" timeout 3 su - "$ACTIVE_USR" -c "notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations are synchronizing...'" < /dev/null 2>/dev/null || true
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations are synchronizing...'" < /dev/null 2>/dev/null || true
       fi
     fi
   fi
 
-  # Execute the command immediately
   eval "$RAW_CMD" &>/dev/null &
 fi
 CMDEXEC_EOF
@@ -1759,6 +1791,7 @@ systemctl daemon-reload 2>/dev/null || true
 systemctl enable --now ad-dms-gui-scan.timer 2>/dev/null || true
 systemctl enable --now ad-dms-wake-listener.service 2>/dev/null || true
 systemctl enable --now ad-dms-fast-poll.service 2>/dev/null || true
+systemctl restart ad-dms-fast-poll.service ad-dms-wake-listener.service 2>/dev/null || true
 echo -e "  -> ${GREEN}[FAST REMOTE]${NC} Fast Remote Command Poller active (3s interval, fast executor)."
 echo -e "  -> ${GREEN}[DIRECT PUSH]${NC} Instant Remote Wake Listener active on UDP:8081 (fast executor)."
 echo -e "  -> ${GREEN}[GUI GUARD]${NC} Automated background Flatpak GUI scanner guard active (1min timer)."

@@ -834,17 +834,70 @@ dnf copr enable -y avengemedia/dms 2>/dev/null || true
 dnf copr enable -y avengemedia/dms-git 2>/dev/null || true
 dnf copr enable -y avengemedia/danklinux 2>/dev/null || true
 
-dnf install -y dms dms-greeter greetd niri kitty matugen quickshell 2>/dev/null || true
+dnf install -y dms dms-greeter greetd niri kitty matugen quickshell dolphin systemsettings xdg-desktop-portal-kde ffmpegthumbnailer ffmpegthumbs breeze-icon-theme breeze-gtk breeze ark filelight kde-gtk-config qt6ct adw-gtk3-theme 2>/dev/null || true
 dnf upgrade -y dms dms-greeter 2>/dev/null || true
-msg_ok "DMS packages and dependencies synchronized."
+msg_ok "DMS packages, KDE file picker dependencies, and portals synchronized."
+
+# Apply KDE File Picker & Desktop Portals Fix (Fedora KDE on Niri)
+msg_info "Applying KDE Desktop Portal & File Picker configuration..."
+mkdir -p /etc/environment.d /etc/xdg-desktop-portal
+
+cat <<'EOF' > /etc/environment.d/01-xdg-base.conf
+XDG_CONFIG_HOME=$HOME/.config
+XDG_DATA_HOME=$HOME/.local/share
+XDG_CACHE_HOME=$HOME/.cache
+XDG_STATE_HOME=$HOME/.local/state
+XDG_DATA_DIRS=$HOME/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share
+EOF
+
+# Note: QT_QPA_PLATFORMTHEME is NOT set globally in environment.d to avoid breaking Plasma sessions
+cat <<'EOF' > /etc/environment.d/10-kde-on-niri.conf
+QT_QPA_PLATFORM=wayland
+XDG_MENU_PREFIX=plasma-
+QT_AUTO_SCREEN_SCALE_FACTOR=1
+QT_ENABLE_HIGHDPI_SCALING=1
+QT_SCALE_FACTOR_ROUNDING_POLICY=RoundPreferFloor
+EOF
+
+cat <<'EOF' > /etc/xdg-desktop-portal/niri-portals.conf
+[preferred]
+default=gnome;
+org.freedesktop.impl.portal.FileChooser=kde;
+EOF
+
+mkdir -p /etc/skel/.config/xdg-desktop-portal
+cp -f /etc/xdg-desktop-portal/niri-portals.conf /etc/skel/.config/xdg-desktop-portal/niri-portals.conf 2>/dev/null || true
+
+if command -v kbuildsycoca6 &>/dev/null; then
+  kbuildsycoca6 --noincremental 2>/dev/null || true
+fi
+
+# Fetch latest presets from GitHub if missing or on host device
+GITHUB_PRESETS_API="https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
+GITHUB_RAW_PRESETS="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/presets"
+TARGET_PRESETS_DIR="${SCRIPT_DIR}/presets"
+mkdir -p "$TARGET_PRESETS_DIR"
+
+msg_info "Checking and fetching latest presets from GitHub..."
+PRESET_FILES=$(curl -fsSL -m 5 "$GITHUB_PRESETS_API" 2>/dev/null | grep '"name":' | cut -d'"' -f4 | grep -E '\.(tar\.gz|tgz|png|jpg|jpeg|conf|kdl)$' || true)
+if [ -n "$PRESET_FILES" ]; then
+  for pf in $PRESET_FILES; do
+    [ -f "${TARGET_PRESETS_DIR}/${pf}" ] || curl -fsSL -m 10 "${GITHUB_RAW_PRESETS}/${pf}" -o "${TARGET_PRESETS_DIR}/${pf}" 2>/dev/null || true
+  done
+else
+  for fb_preset in "DankMaterialShell.tar.gz" "Wallpaper.tar.gz" "kitty.tar.gz" "niri.tar.gz" "GSFCU_6S_Wallpaper.png"; do
+    [ -f "${TARGET_PRESETS_DIR}/${fb_preset}" ] || curl -fsSL -m 10 "${GITHUB_RAW_PRESETS}/${fb_preset}" -o "${TARGET_PRESETS_DIR}/${fb_preset}" 2>/dev/null || true
+  done
+fi
 
 PRESETS_DIR=""
-for cand_dir in "${SCRIPT_DIR}/presets" "/tmp/fedora-ad-dms/presets" "${SCRIPT_DIR}" "/tmp/fedora-ad-dms"; do
+for cand_dir in "${TARGET_PRESETS_DIR}" "${SCRIPT_DIR}/presets" "/tmp/fedora-ad-dms/presets" "${SCRIPT_DIR}" "/tmp/fedora-ad-dms"; do
   if [ -d "$cand_dir" ] && ls "$cand_dir"/*.tar.gz &>/dev/null; then
     PRESETS_DIR="$cand_dir"
     break
   fi
 done
+
 
 deploy_presets() {
   local target_home="$1"
@@ -874,6 +927,17 @@ deploy_presets() {
     # Do not prepend if already spawned or already configured in niri config
     if ! grep -E -q '(spawn-at-startup[[:space:]]+("dms"|dms))' "$niri_conf"; then
       sed -i '1s/^/spawn-at-startup "dms" "run"\n/' "$niri_conf"
+    fi
+    if ! grep -q 'QT_QPA_PLATFORMTHEME' "$niri_conf"; then
+      cat <<'KDL_ENV' >> "$niri_conf"
+
+environment {
+    QT_QPA_PLATFORM "wayland"
+    QT_QPA_PLATFORMTHEME "kde"
+    QT_QPA_PLATFORMTHEME_QT6 "kde"
+    XDG_MENU_PREFIX "plasma-"
+}
+KDL_ENV
     fi
   fi
 

@@ -109,7 +109,7 @@ fi
 # 2. Dynamically Auto-Discover and Fetch All Presets
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}${CYAN}[2/3] Querying repository for desktop preset archives...${NC}"
-PRESET_FILES=$(curl -fsSL "$API_PRESETS_URL" 2>/dev/null | grep '"name":' | cut -d'"' -f4 | grep -E '\.(tar\.gz|tgz)$' || true)
+PRESET_FILES=$(curl -fsSL "$API_PRESETS_URL" 2>/dev/null | grep '"name":' | cut -d'"' -f4 | grep -E '\.(tar\.gz|tgz|png|jpg|jpeg|conf|kdl)$' || true)
 
 if [ -n "$PRESET_FILES" ]; then
   for preset in $PRESET_FILES; do
@@ -117,9 +117,11 @@ if [ -n "$PRESET_FILES" ]; then
   done
 else
   echo -e "  ${YELLOW}[INFO] GitHub API query unavailable or rate-limited. Using fallback preset targets.${NC}"
-  fetch_file "presets/niri-dms-config.tar.gz" "false"
-  fetch_file "presets/DankMaterialShell.tar.gz" "false"
+  for fb_preset in "DankMaterialShell.tar.gz" "Wallpaper.tar.gz" "kitty.tar.gz" "niri.tar.gz" "GSFCU_6S_Wallpaper.png"; do
+    fetch_file "presets/${fb_preset}" "false"
+  done
 fi
+
 
 # ------------------------------------------------------------------------------
 # 3. Set Execution Permissions & Launch TUI Setup

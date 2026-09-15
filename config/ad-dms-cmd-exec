@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# AD-DMS Fast Command Executor — runs pending remote commands instantly with zero scan overhead
+
+CONF_DIR="/etc/ad-dms"
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+fi
+
+MY_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+MY_HOST_UPPER=$(echo "$MY_HOST" | tr '[:lower:]' '[:upper:]')
+
+# Detect active Wayland session, UID, and Display socket dynamically
+TARGET_UID=""
+WL_DISP=""
+ACTIVE_USR=""
+
+for udir in /run/user/[0-9]*; do
+  [ -d "$udir" ] || continue
+  uid_cand=$(basename "$udir")
+  for s_file in "$udir"/wayland-[0-9]*; do
+    if [ -S "$s_file" ]; then
+      TARGET_UID="$uid_cand"
+      WL_DISP=$(basename "$s_file")
+      cand_usr=$(id -nu "$uid_cand" 2>/dev/null || echo "")
+      if [ -n "$cand_usr" ] && [ "$cand_usr" != "root" ] && [ "$cand_usr" != "gdm" ] && [ "$cand_usr" != "sddm" ] && [ "$cand_usr" != "greeter" ]; then
+        ACTIVE_USR="$cand_usr"
+        break 2
+      fi
+    fi
+  done
+done
+
+# Fallback active user check if no wayland socket found yet
+if [ -z "$ACTIVE_USR" ]; then
+  ACTIVE_USR=$(who | awk '$1 !~ /root|greeter|gdm|sddm|lightdm/ {print $1; exit}' 2>/dev/null || echo "none")
+fi
+if [ -z "$TARGET_UID" ] && [ "$ACTIVE_USR" != "none" ]; then
+  TARGET_UID=$(id -u "$ACTIVE_USR" 2>/dev/null || echo "1000")
+fi
+if [ -z "$TARGET_UID" ]; then
+  TARGET_UID=1000
+fi
+if [ -z "$WL_DISP" ]; then
+  WL_DISP="wayland-0"
+fi
+
+# Resolve server URL
+INTRANET_HOST="${INTRANET_HOST_NAME:-}"
+INTRANET_PORT_N="${INTRANET_PORT:-8080}"
+TARGET_URL=""
+if hostname -s 2>/dev/null | grep -qi "^${INTRANET_HOST}$" 2>/dev/null || ip -o a 2>/dev/null | grep -q "${INTRANET_IP:-NONE}/"; then
+  TARGET_URL="http://127.0.0.1:${INTRANET_PORT_N}"
+else
+  for hb_t in "${INTRANET_HOST}:${INTRANET_PORT_N}" "${INTRANET_HOST}.local:${INTRANET_PORT_N}" "${INTRANET_IP:-}:${INTRANET_PORT_N}"; do
+    [ -z "${hb_t%%:*}" ] && continue
+    if curl -fsSL -m 1 "http://${hb_t}/api/health" &>/dev/null; then
+      TARGET_URL="http://${hb_t}"
+      break
+    fi
+  done
+fi
+if [ -z "$TARGET_URL" ]; then
+  TARGET_URL="http://127.0.0.1:${INTRANET_PORT_N:-8080}"
+fi
+
+# Poll for pending command (consumes command)
+CMD_RESP=$(curl -fsSL -m 3 "${TARGET_URL}/api/command/poll?host=${MY_HOST_UPPER}" 2>/dev/null || true)
+echo "$CMD_RESP" | grep -qE '"has_command":\s*true' || exit 0
+
+# Parse action and command
+ACTION=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('action',''))" 2>/dev/null <<< "$CMD_RESP" || true)
+
+echo "DEBUG: HOST=${MY_HOST_UPPER} USER=${ACTIVE_USR} UID=${TARGET_UID} DISP=${WL_DISP} ACTION=${ACTION}"
+
+if [ "$ACTION" = "screenshot" ] && [ "$ACTIVE_USR" != "none" ]; then
+  DBUS_PATH="/run/user/${TARGET_UID}/bus"
+  TMP_SHOT="/tmp/screen_${MY_HOST_UPPER}.png"
+  USR_HOME=$(getent passwd "$ACTIVE_USR" 2>/dev/null | cut -d: -f6 || echo "/home/${ACTIVE_USR}")
+  [ ! -d "$USR_HOME" ] && USR_HOME="/tmp"
+  ENV_CMD="HOME=${USR_HOME} WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} PATH=${PATH}:/usr/local/bin:/usr/bin:/bin"
+
+  DMS_BIN=$(command -v dms 2>/dev/null || echo "/usr/local/bin/dms")
+  [ ! -x "$DMS_BIN" ] && DMS_BIN="/usr/bin/dms"
+
+  if [ -x "$DMS_BIN" ]; then
+    if [ "$EUID" -eq 0 ]; then
+      SHOT_OUT=$(su "$ACTIVE_USR" -s /bin/bash -c "env ${ENV_CMD} ${DMS_BIN} screenshot full --no-notify --no-clipboard -d /tmp" 2>/dev/null || true)
+    else
+      SHOT_OUT=$(env ${ENV_CMD} ${DMS_BIN} screenshot full --no-notify --no-clipboard -d /tmp 2>/dev/null || true)
+    fi
+    SHOT_OUT=$(echo "$SHOT_OUT" | grep -E '^/tmp/' | tail -n 1 || echo "")
+    if [ -n "$SHOT_OUT" ] && [ -s "$SHOT_OUT" ]; then
+      cp -f "$SHOT_OUT" "$TMP_SHOT" 2>/dev/null || true
+    fi
+  fi
+  if [ ! -s "$TMP_SHOT" ] && command -v grim &>/dev/null; then
+    if [ "$EUID" -eq 0 ]; then
+      su "$ACTIVE_USR" -c "env WAYLAND_DISPLAY=${WL_DISP} XDG_RUNTIME_DIR=/run/user/${TARGET_UID} grim '${TMP_SHOT}'" < /dev/null 2>/dev/null || true
+    else
+      env WAYLAND_DISPLAY="${WL_DISP}" XDG_RUNTIME_DIR="/run/user/${TARGET_UID}" grim "$TMP_SHOT" 2>/dev/null || true
+    fi
+  fi
+
+  if [ -s "$TMP_SHOT" ]; then
+    chmod 644 "$TMP_SHOT" 2>/dev/null || true
+    python3 -c "
+import urllib.request, json, base64
+with open('$TMP_SHOT', 'rb') as f:
+    img_b64 = base64.b64encode(f.read()).decode('utf-8')
+payload = json.dumps({'hostname': '$MY_HOST_UPPER', 'image_base64': img_b64}).encode('utf-8')
+req = urllib.request.Request('$TARGET_URL/api/screenshot/upload', data=payload, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req, timeout=8)
+" 2>/dev/null || true
+    rm -f "$TMP_SHOT"
+  fi
+
+elif [ "$ACTION" = "logs" ]; then
+  LOG_FILE_TMP="/tmp/dms_logs_${MY_HOST_UPPER}.txt"
+  journalctl -u ad-dms-wake-listener.service -u ad-dms-fast-poll.service -u ad-dms-refresh.service -n 60 --no-pager > "$LOG_FILE_TMP" 2>&1 || true
+  echo -e "\n--- UPTIME & SYSTEM STATUS ---" >> "$LOG_FILE_TMP"
+  uptime >> "$LOG_FILE_TMP" 2>&1 || true
+  systemctl status ad-dms-fast-poll ad-dms-wake-listener ad-dms-server --no-pager >> "$LOG_FILE_TMP" 2>&1 || true
+  if [ -s "$LOG_FILE_TMP" ]; then
+    chmod 644 "$LOG_FILE_TMP" 2>/dev/null || true
+    python3 -c "
+import urllib.request, json
+with open('$LOG_FILE_TMP', 'r', encoding='utf-8', errors='replace') as f:
+    text = f.read()
+payload = json.dumps({'hostname': '$MY_HOST_UPPER', 'log_text': text}).encode('utf-8')
+req = urllib.request.Request('$TARGET_URL/api/logs/upload', data=payload, headers={'Content-Type': 'application/json'})
+urllib.request.urlopen(req, timeout=8)
+" 2>/dev/null || true
+  fi
+  rm -f "$LOG_FILE_TMP"
+
+elif [ "$ACTION" = "exec" ]; then
+  RAW_CMD=$(python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('command',{}).get('cmd',''))" 2>/dev/null <<< "$CMD_RESP" || true)
+  [ -z "$RAW_CMD" ] && exit 0
+
+  if [ "$ACTIVE_USR" != "none" ] && [ -n "$TARGET_UID" ]; then
+    DBUS_PATH="/run/user/${TARGET_UID}/bus"
+    if [ -S "$DBUS_PATH" ] && command -v notify-send &>/dev/null; then
+      if echo "$RAW_CMD" | grep -qi "poweroff"; then
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-shutdown '⚡ System Shutdown Scheduled' 'An administrator has scheduled a workstation shutdown. Please save your work.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qiE "reboot|soft-reboot"; then
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-reboot '⚡ System Restart Scheduled' 'An administrator has scheduled a workstation restart. Please save your work.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qiE "terminate-user|quit"; then
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u critical -i system-log-out '🚪 Session Termination' 'Your user session is being logged out by an administrator.'" < /dev/null 2>/dev/null || true
+      elif echo "$RAW_CMD" | grep -qi "refresh"; then
+        su "$ACTIVE_USR" -c "env DBUS_SESSION_BUS_ADDRESS=unix:path=${DBUS_PATH} notify-send -a 'AD-DMS IT Center' -u normal -i system-software-update '🔄 Policy Refresh Initiated' 'Workstation configurations are synchronizing...'" < /dev/null 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  eval "$RAW_CMD" &>/dev/null &
+fi

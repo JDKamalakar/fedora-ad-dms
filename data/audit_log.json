@@ -7,9 +7,9 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:00:44",
       "start_ts": 1788863444.5227106,
-      "last_seen": "2026-09-09 16:10:51",
-      "last_seen_ts": 1788950451.2666981,
-      "duration_mins": 1450,
+      "last_seen": "2026-09-15 11:02:11",
+      "last_seen_ts": 1789450331.5912564,
+      "duration_mins": 9781,
       "status": "Active"
     },
     {
@@ -19,9 +19,33 @@
       "session_type": "wayland",
       "login_time": "2026-09-08 16:11:02",
       "start_ts": 1788864062.5720026,
-      "last_seen": "2026-09-09 16:10:44",
-      "last_seen_ts": 1788950444.194642,
-      "duration_mins": 1439,
+      "last_seen": "2026-09-12 06:04:55",
+      "last_seen_ts": 1789173295.7701943,
+      "duration_mins": 5153,
+      "status": "Active"
+    },
+    {
+      "hostname": "GSFCUOSLAB172",
+      "ip": "10.205.18.230",
+      "user": "25bt04047",
+      "session_type": "wayland",
+      "login_time": "2026-09-12 06:07:55",
+      "start_ts": 1789173475.8232057,
+      "last_seen": "2026-09-15 09:33:17",
+      "last_seen_ts": 1789444997.98166,
+      "duration_mins": 4525,
+      "status": "Active"
+    },
+    {
+      "hostname": "GSFCUOSLAB172",
+      "ip": "10.205.18.230",
+      "user": "oslab",
+      "session_type": "wayland",
+      "login_time": "2026-09-15 10:36:18",
+      "start_ts": 1789448778.2948573,
+      "last_seen": "2026-09-15 11:02:11",
+      "last_seen_ts": 1789450331.3984523,
+      "duration_mins": 25,
       "status": "Active"
     }
   ],
@@ -36,7 +60,8 @@
       ],
       "users": [
         "jk",
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "gpg-pubkey": {
@@ -241,7 +266,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "dms-greeter": {
@@ -296,7 +322,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "golang-bin": {
@@ -307,7 +334,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "golang": {
@@ -318,7 +346,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "golang-src": {
@@ -329,7 +358,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "python3-botocore": {
@@ -340,7 +370,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "dnf5": {
@@ -351,7 +382,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libdnf5-cli": {
@@ -384,7 +416,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "python3-libdnf5": {
@@ -395,7 +428,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libtirpc": {
@@ -406,7 +440,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libsoup3": {
@@ -417,7 +452,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libdnf5-plugin-systemd-inhibit": {
@@ -428,7 +464,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libdnf5-plugin-expired-pgp-keys": {
@@ -439,7 +476,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "libdnf5-plugin-appstream": {
@@ -450,7 +488,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "dnf5-plugins": {
@@ -461,7 +500,8 @@
         "GSFCUOSLAB172"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     }
   }

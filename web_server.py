@@ -31,6 +31,38 @@ SCREENSHOTS_DIR.mkdir(exist_ok=True)
 CLIENT_LOGS_DIR = LOGS_DIR / "client_logs"
 CLIENT_LOGS_DIR.mkdir(exist_ok=True)
 
+def sync_presets_from_github(target_dir):
+    import urllib.request
+    target_dir = Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    api_url = "https://api.github.com/repos/JDKamalakar/fedora-ad-dms/contents/presets"
+    raw_url = "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/presets"
+    try:
+        req = urllib.request.Request(api_url, headers={"User-Agent": "AD-DMS-Host-Server"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for item in data:
+                name = item.get("name", "")
+                if name.endswith(".tar.gz") or name.endswith(".tgz") or name.endswith(".png") or name.endswith(".kdl"):
+                    out_path = target_dir / name
+                    download_url = item.get("download_url") or f"{raw_url}/{name}"
+                    try:
+                        with urllib.request.urlopen(download_url, timeout=10) as d_resp:
+                            out_path.write_bytes(d_resp.read())
+                    except Exception:
+                        pass
+    except Exception:
+        fallback_presets = ["DankMaterialShell.tar.gz", "Wallpaper.tar.gz", "kitty.tar.gz", "niri.tar.gz", "GSFCU_6S_Wallpaper.png"]
+        for fp in fallback_presets:
+            out_path = target_dir / fp
+            if not out_path.exists():
+                try:
+                    with urllib.request.urlopen(f"{raw_url}/{fp}", timeout=10) as d_resp:
+                        out_path.write_bytes(d_resp.read())
+                except Exception:
+                    pass
+
+
 def load_audit_log():
     if AUDIT_LOG_FILE.exists():
         try:
@@ -64,7 +96,7 @@ def load_commands():
 def save_commands(data):
     COMMANDS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-def get_pending_command(hostname):
+def get_pending_command(hostname, peek=False):
     hostname = hostname.upper()
     commands = load_commands()
     cmd_to_run = None
@@ -72,9 +104,10 @@ def get_pending_command(hostname):
         pat_upper = target_pat.upper()
         if pat_upper == "ALL" or pat_upper == hostname or pat_upper in hostname or hostname in pat_upper:
             cmd_to_run = cmd
-            del commands[target_pat]
+            if not peek:
+                del commands[target_pat]
             break
-    if cmd_to_run:
+    if cmd_to_run and not peek:
         save_commands(commands)
     return cmd_to_run
 
@@ -324,7 +357,11 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         # 4. Client Poll for Remote Command or Screenshot Request
         if url.path == "/api/command/poll":
             hostname = params.get("host", [""])[0].upper()
-            cmd_to_run = get_pending_command(hostname)
+            user_agent = self.headers.get("User-Agent", "")
+            is_peek = (params.get("peek", ["0"])[0] == "1") or ("FastPoll" in user_agent) or ("Python" in user_agent) or ("urllib" in user_agent)
+            cmd_to_run = get_pending_command(hostname, peek=is_peek)
+            import sys
+            print(f"[POLL_DEBUG] Host={hostname} UA={user_agent} Peek={is_peek} HasCmd={cmd_to_run is not None}", file=sys.stderr, flush=True)
             if cmd_to_run:
                 self.send_json_response({"has_command": True, "command": cmd_to_run})
             else:
@@ -334,14 +371,9 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         # 4b. Fetch Workstation Screenshot
         if url.path == "/api/screenshot/get":
             hostname = params.get("host", [""])[0].upper()
-            since_ts = float(params.get("since", ["0"])[0] or "0")
             shot_file = SCREENSHOTS_DIR / f"{hostname}_latest.png"
             if shot_file.exists():
                 stat = shot_file.stat()
-                # Only serve if newer than dispatch time (prevents stale images)
-                if since_ts > 0 and stat.st_mtime <= since_ts:
-                    self.send_json_response({"has_screenshot": False, "hostname": hostname, "reason": "stale"})
-                    return
                 mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
                 if params.get("raw", ["0"])[0] == "1":
                     self.send_response(200)
@@ -368,13 +400,9 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
         # 4b2. Fetch Workstation Diagnostic Logs
         if url.path == "/api/logs/get":
             hostname = params.get("host", [""])[0].upper()
-            since_ts = float(params.get("since", ["0"])[0] or "0")
             log_file = CLIENT_LOGS_DIR / f"{hostname}_latest.log"
             if log_file.exists():
                 stat = log_file.stat()
-                if since_ts > 0 and stat.st_mtime <= since_ts:
-                    self.send_json_response({"has_logs": False, "hostname": hostname, "reason": "stale"})
-                    return
                 content = log_file.read_text(encoding="utf-8", errors="replace")
                 mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
                 self.send_json_response({
@@ -388,13 +416,16 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json_response({"has_logs": False, "hostname": hostname})
                 return
 
-        # 4c. Presets Archive Inventory
-        if url.path == "/api/presets/list":
+        # 4c. Presets Archive Inventory & GitHub Sync
+        if url.path in ["/api/presets/list", "/api/presets/sync-github"]:
             presets_dir = REPO_DIR / "presets"
+            presets_dir.mkdir(exist_ok=True)
+            if url.path == "/api/presets/sync-github" or not any(presets_dir.glob("*.tar.gz")):
+                sync_presets_from_github(presets_dir)
             preset_files = []
             if presets_dir.exists():
                 for pf in presets_dir.iterdir():
-                    if pf.is_file() and (pf.name.endswith(".tar.gz") or pf.name.endswith(".tgz")):
+                    if pf.is_file() and (pf.name.endswith(".tar.gz") or pf.name.endswith(".tgz") or pf.name.endswith(".png")):
                         preset_files.append({
                             "name": pf.name,
                             "size": pf.stat().st_size,
@@ -402,6 +433,7 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
                         })
             self.send_json_response({"presets": preset_files})
             return
+
 
         # 5. Full Data for Web UI & TUI
         if url.path == "/api/all-data":
@@ -590,23 +622,44 @@ class AD_DMS_ServerHandler(http.server.SimpleHTTPRequestHandler):
             target = req_data.get("target", "ALL").upper()
             action = req_data.get("action", "")
             commands = load_commands()
+
+            # Purge stale artifact files for target to guarantee fresh capture
+            if action == "screenshot":
+                shot_file = SCREENSHOTS_DIR / f"{target}_latest.png"
+                if shot_file.exists():
+                    try: shot_file.unlink()
+                    except Exception: pass
+            elif action == "logs":
+                log_file = CLIENT_LOGS_DIR / f"{target}_latest.log"
+                if log_file.exists():
+                    try: log_file.unlink()
+                    except Exception: pass
+
+            if target == "ALL":
+                clients = load_clients()
+                for c_host in clients.keys():
+                    commands[c_host.upper()] = req_data
             commands[target] = req_data
             save_commands(commands)
 
-            local_host = os.uname().nodename.upper()
-            is_local = (target == "ALL" or target == local_host or "127.0.0.1" in target or "LOCALHOST" in target)
+            local_host = os.uname().nodename.split(".")[0].upper()
+            is_local = (target == "ALL" or target == local_host or local_host in target or target in local_host or "127.0.0.1" in target or "LOCALHOST" in target)
 
             # 1. Trigger local execution immediately
             if is_local:
                 def run_immediate_local():
                     time.sleep(0.1)
                     try:
-                        if Path("/usr/local/bin/ad-dms-cmd-exec").exists():
-                            subprocess.run(["/usr/local/bin/ad-dms-cmd-exec"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        elif Path("/usr/local/bin/ad-dms-gui-scan").exists():
-                            subprocess.run(["/usr/local/bin/ad-dms-gui-scan"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                        cmd_bin = REPO_DIR / "config" / "ad-dms-cmd-exec"
+                        if not cmd_bin.exists() or not os.access(str(cmd_bin), os.X_OK):
+                            cmd_bin = Path("/usr/local/bin/ad-dms-cmd-exec")
+                        if cmd_bin.exists():
+                            import sys
+                            res = subprocess.run([str(cmd_bin)], capture_output=True, text=True)
+                            print(f"[IMMEDIATE_LOCAL] {cmd_bin} OUT: {res.stdout.strip()} ERR: {res.stderr.strip()}", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        import sys
+                        print(f"[IMMEDIATE_LOCAL] ERROR: {e}", file=sys.stderr, flush=True)
                 threading.Thread(target=run_immediate_local, daemon=True).start()
 
             # 2. Push direct wake signal to remote target IP(s) immediately over UDP port 8081
