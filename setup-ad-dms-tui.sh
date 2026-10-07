@@ -898,12 +898,36 @@ for cand_dir in "${TARGET_PRESETS_DIR}" "${SCRIPT_DIR}/presets" "/tmp/fedora-ad-
   fi
 done
 
+# Ensure system-wide institutional wallpaper paths exist and are populated
+mkdir -p /usr/share/backgrounds /usr/share/wallpapers /etc/xdg/autostart
+for cand_wp in "${TARGET_PRESETS_DIR}/GSFCU_6S_Wallpaper.png" "${SCRIPT_DIR}/presets/GSFCU_6S_Wallpaper.png" "/tmp/fedora-ad-dms/presets/GSFCU_6S_Wallpaper.png"; do
+  if [ -f "$cand_wp" ]; then
+    cp -f "$cand_wp" /usr/share/backgrounds/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    cp -f "$cand_wp" /usr/share/wallpapers/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    chmod 644 /usr/share/backgrounds/GSFCU_6S_Wallpaper.png /usr/share/wallpapers/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    break
+  fi
+done
+
+# Global XDG autostart hook for Plasma to guarantee wallpaper is applied for all accounts in KDE sessions
+cat <<'PLASMA_GLOBAL_WP_EOF' > /etc/xdg/autostart/plasma-set-wallpaper.desktop
+[Desktop Entry]
+Type=Application
+Name=Apply System Wallpaper
+Exec=sh -c 'if [ "${XDG_CURRENT_DESKTOP,,}" = "kde" ] || [ "${DESKTOP_SESSION,,}" = "plasma" ] || [ "${DESKTOP_SESSION,,}" = "plasmawayland" ]; then if command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png >/dev/null 2>&1; fi; fi'
+Hidden=false
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-autostart-after=plasma-desktop
+PLASMA_GLOBAL_WP_EOF
+chmod 644 /etc/xdg/autostart/plasma-set-wallpaper.desktop 2>/dev/null || true
 
 deploy_presets() {
   local target_home="$1"
   local target_user="${2:-}"
 
-  mkdir -p "${target_home}/.config" "${target_home}/.local/share"
+  mkdir -p "${target_home}/.config" "${target_home}/.local/share" "${target_home}/.config/autostart" "${target_home}/.config/Wallpaper"
 
   if [ -n "$PRESETS_DIR" ] && [ -d "$PRESETS_DIR" ]; then
     for preset_archive in "${PRESETS_DIR}"/*.tar.gz "${PRESETS_DIR}"/*.tgz; do
@@ -916,6 +940,13 @@ deploy_presets() {
         tar -xzf "$preset_archive" -C "${target_home}/.config" 2>/dev/null || true
       fi
     done
+  fi
+
+  # Ensure user's wallpaper directory has the institutional wallpaper image
+  if [ -f "/usr/share/backgrounds/GSFCU_6S_Wallpaper.png" ]; then
+    cp -f /usr/share/backgrounds/GSFCU_6S_Wallpaper.png "${target_home}/.config/Wallpaper/GSFCU_6S_Wallpaper.png" 2>/dev/null || true
+  elif [ -f "${TARGET_PRESETS_DIR}/GSFCU_6S_Wallpaper.png" ]; then
+    cp -f "${TARGET_PRESETS_DIR}/GSFCU_6S_Wallpaper.png" "${target_home}/.config/Wallpaper/GSFCU_6S_Wallpaper.png" 2>/dev/null || true
   fi
 
   rm -f "${target_home}/.config/niri/dms/outputs.kdl"
@@ -941,17 +972,57 @@ KDL_ENV
     fi
   fi
 
-  # Also provide standard XDG desktop autostart entry for DMS as additional safeguard
-  mkdir -p "${target_home}/.config/autostart"
-  cat <<'AUTOS_EOF' > "${target_home}/.config/autostart/dms.desktop"
+  # Explicitly remove any dms.desktop from autostart!
+  # Niri already spawns DMS natively via `spawn-at-startup "dms" "run"`.
+  # Having dms.desktop in ~/.config/autostart causes duplicate DMS/quickshell instances
+  # which causes dual lockscreen layers, black screen overlays after sleep/wake, and z-index glitches.
+  rm -f "${target_home}/.config/autostart/dms.desktop" /etc/xdg/autostart/dms.desktop 2>/dev/null || true
+
+  # Plasma autostart entry: applies institutional wallpaper for Plasma sessions
+  cat <<'PLASMA_AUTOS_EOF' > "${target_home}/.config/autostart/plasma-set-wallpaper.desktop"
 [Desktop Entry]
 Type=Application
-Name=Dank Material Shell
-Exec=dms run
+Name=Apply System Wallpaper
+Exec=sh -c 'if [ "${XDG_CURRENT_DESKTOP,,}" = "kde" ] || [ "${DESKTOP_SESSION,,}" = "plasma" ] || [ "${DESKTOP_SESSION,,}" = "plasmawayland" ]; then if command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png >/dev/null 2>&1; fi; fi'
 Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-AUTOS_EOF
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-autostart-after=plasma-desktop
+PLASMA_AUTOS_EOF
+
+  # Configure/update KDE Plasma desktop containment appletsrc for wallpaper
+  local plasma_appletsrc="${target_home}/.config/plasma-org.kde.plasma.desktop-appletsrc"
+  if [ -f "$plasma_appletsrc" ]; then
+    sed -i 's|Image=file://.*|Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png|g' "$plasma_appletsrc" 2>/dev/null || true
+    sed -i 's|Image=/home/.*|Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png|g' "$plasma_appletsrc" 2>/dev/null || true
+  else
+    cat <<'PLASMA_CFG_EOF' > "$plasma_appletsrc"
+[Containments][1]
+activityId=
+formfactor=0
+immutability=1
+lastScreen=0
+location=0
+plugin=org.kde.plasma.folder
+wallpaperplugin=org.kde.image
+
+[Containments][1][Wallpaper][org.kde.image][General]
+Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png
+SlidePaths=/usr/share/wallpapers/
+PLASMA_CFG_EOF
+  fi
+
+  # If user is currently active in a Plasma session, apply wallpaper dynamically
+  if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
+    local target_uid
+    target_uid=$(id -u "$target_user" 2>/dev/null || true)
+    if [ -n "$target_uid" ] && [ -d "/run/user/${target_uid}" ]; then
+      if pgrep -u "$target_user" -x "plasmashell" &>/dev/null || pgrep -u "$target_user" -x "kwin_wayland" &>/dev/null || pgrep -u "$target_user" -x "kwin_x11" &>/dev/null; then
+        sudo -u "$target_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${target_uid}/bus" plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+      fi
+    fi
+  fi
 
   if [ ! -d "${target_home}/.config/DankMaterialShell" ] && command -v dms &>/dev/null; then
     if [ -n "$target_user" ] && [ "$target_user" != "root" ]; then
@@ -1053,6 +1124,15 @@ EOF
 
 apply_darkly_style "/etc/skel"
 
+for udir in /home/*; do
+  [ -d "$udir" ] || continue
+  uname=$(basename "$udir")
+  [ "$uname" = "*" ] && continue
+  if id "$uname" &>/dev/null; then
+    apply_darkly_style "$udir" "$uname"
+  fi
+done
+
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   USER_HOME=$(eval echo "~${REAL_USER}")
   if [ -d "$USER_HOME" ]; then
@@ -1060,7 +1140,7 @@ if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ]; then
   fi
 fi
 
-msg_ok "Applied Darkly widget style to system templates and user configuration."
+msg_ok "Applied Darkly widget style to system templates and all user configurations."
 
 # ------------------------------------------------------------------------------
 # Step 6: Disconnect ProtonVPN (pVPN) Before AD/Domain Setup

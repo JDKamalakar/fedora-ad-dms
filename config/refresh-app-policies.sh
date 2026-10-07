@@ -2022,12 +2022,37 @@ for cand_dir in "${CONF_DIR}/presets" "${SCRIPT_DIR:-}/presets" "/home/jk/Projec
   fi
 done
 
+# Ensure system-wide institutional wallpaper paths exist and are populated
+mkdir -p /usr/share/backgrounds /usr/share/wallpapers /etc/xdg/autostart
+for cand_wp in "${CONF_DIR}/presets/GSFCU_6S_Wallpaper.png" "${SCRIPT_DIR:-}/presets/GSFCU_6S_Wallpaper.png" "/home/jk/Projects/fedora-ad-dms/presets/GSFCU_6S_Wallpaper.png" "/tmp/fedora-ad-dms/presets/GSFCU_6S_Wallpaper.png"; do
+  if [ -f "$cand_wp" ]; then
+    cp -f "$cand_wp" /usr/share/backgrounds/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    cp -f "$cand_wp" /usr/share/wallpapers/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    chmod 644 /usr/share/backgrounds/GSFCU_6S_Wallpaper.png /usr/share/wallpapers/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+    break
+  fi
+done
+
+# Global XDG autostart hook for Plasma to guarantee wallpaper is applied for all accounts in KDE sessions
+cat <<'PLASMA_GLOBAL_WP_EOF' > /etc/xdg/autostart/plasma-set-wallpaper.desktop
+[Desktop Entry]
+Type=Application
+Name=Apply System Wallpaper
+Exec=sh -c 'if [ "${XDG_CURRENT_DESKTOP,,}" = "kde" ] || [ "${DESKTOP_SESSION,,}" = "plasma" ] || [ "${DESKTOP_SESSION,,}" = "plasmawayland" ]; then if command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png >/dev/null 2>&1; fi; fi'
+Hidden=false
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-autostart-after=plasma-desktop
+PLASMA_GLOBAL_WP_EOF
+chmod 644 /etc/xdg/autostart/plasma-set-wallpaper.desktop 2>/dev/null || true
+
 for user_home in /etc/skel /home/*; do
   [ -d "$user_home" ] || continue
   u_name=$(basename "$user_home")
   [ "$u_name" = "*" ] && continue
 
-  mkdir -p "${user_home}/.config" "${user_home}/.local/share" "${user_home}/.config/autostart"
+  mkdir -p "${user_home}/.config" "${user_home}/.local/share" "${user_home}/.config/autostart" "${user_home}/.config/Wallpaper"
 
   # Unpack presets: always update /etc/skel template; for existing users, unpack if missing essential components
   if [ -n "$PRESETS_DIR" ] && [ -d "$PRESETS_DIR" ]; then
@@ -2050,6 +2075,11 @@ for user_home in /etc/skel /home/*; do
     fi
   fi
 
+  # Ensure user's wallpaper directory has the institutional wallpaper image
+  if [ -f "/usr/share/backgrounds/GSFCU_6S_Wallpaper.png" ]; then
+    cp -f /usr/share/backgrounds/GSFCU_6S_Wallpaper.png "${user_home}/.config/Wallpaper/GSFCU_6S_Wallpaper.png" 2>/dev/null || true
+  fi
+
   # CRITICAL: Always remove hardcoded outputs.kdl so niri dynamically handles the current monitor
   rm -f "${user_home}/.config/niri/dms/outputs.kdl"
   rm -f "${user_home}/.config/niri/config.kdl.backup"*
@@ -2062,16 +2092,56 @@ for user_home in /etc/skel /home/*; do
     fi
   fi
 
-  # Autostart fallback desktop entry
-  cat <<'DMS_AUTOS_EOF' > "${user_home}/.config/autostart/dms.desktop"
+  # Explicitly remove any dms.desktop from autostart!
+  # Niri already spawns DMS natively via `spawn-at-startup "dms" "run"`.
+  # Having dms.desktop in ~/.config/autostart causes duplicate DMS/quickshell instances
+  # which causes dual lockscreen layers, black screen overlays after sleep/wake, and z-index glitches.
+  rm -f "${user_home}/.config/autostart/dms.desktop" /etc/xdg/autostart/dms.desktop 2>/dev/null || true
+
+  # Plasma autostart entry: applies institutional wallpaper for Plasma sessions
+  cat <<'PLASMA_AUTOS_EOF' > "${user_home}/.config/autostart/plasma-set-wallpaper.desktop"
 [Desktop Entry]
 Type=Application
-Name=Dank Material Shell
-Exec=dms run
+Name=Apply System Wallpaper
+Exec=sh -c 'if [ "${XDG_CURRENT_DESKTOP,,}" = "kde" ] || [ "${DESKTOP_SESSION,,}" = "plasma" ] || [ "${DESKTOP_SESSION,,}" = "plasmawayland" ]; then if command -v plasma-apply-wallpaperimage >/dev/null 2>&1; then plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png >/dev/null 2>&1; fi; fi'
 Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-DMS_AUTOS_EOF
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-autostart-after=plasma-desktop
+PLASMA_AUTOS_EOF
+
+  # Configure/update KDE Plasma desktop containment appletsrc for wallpaper
+  plasma_appletsrc="${user_home}/.config/plasma-org.kde.plasma.desktop-appletsrc"
+  if [ -f "$plasma_appletsrc" ]; then
+    sed -i 's|Image=file://.*|Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png|g' "$plasma_appletsrc" 2>/dev/null || true
+    sed -i 's|Image=/home/.*|Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png|g' "$plasma_appletsrc" 2>/dev/null || true
+  else
+    cat <<'PLASMA_CFG_EOF' > "$plasma_appletsrc"
+[Containments][1]
+activityId=
+formfactor=0
+immutability=1
+lastScreen=0
+location=0
+plugin=org.kde.plasma.folder
+wallpaperplugin=org.kde.image
+
+[Containments][1][Wallpaper][org.kde.image][General]
+Image=file:///usr/share/backgrounds/GSFCU_6S_Wallpaper.png
+SlidePaths=/usr/share/wallpapers/
+PLASMA_CFG_EOF
+  fi
+
+  # If user is currently active in a Plasma session, apply wallpaper dynamically
+  if [ "$user_home" != "/etc/skel" ] && id "$u_name" &>/dev/null; then
+    target_uid=$(id -u "$u_name" 2>/dev/null || true)
+    if [ -n "$target_uid" ] && [ -d "/run/user/${target_uid}" ]; then
+      if pgrep -u "$u_name" -x "plasmashell" &>/dev/null || pgrep -u "$u_name" -x "kwin_wayland" &>/dev/null || pgrep -u "$u_name" -x "kwin_x11" &>/dev/null; then
+        sudo -u "$u_name" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${target_uid}/bus" plasma-apply-wallpaperimage /usr/share/backgrounds/GSFCU_6S_Wallpaper.png 2>/dev/null || true
+      fi
+    fi
+  fi
 
   # Fix permissions and ownership
   if [ "$user_home" = "/etc/skel" ]; then
@@ -2086,7 +2156,7 @@ DMS_AUTOS_EOF
     fi
   fi
 done
-echo -e "  -> ${GREEN}[DMS AUTOSTART]${NC} Verified Dank Material Shell auto-launch configuration across all users & templates."
+echo -e "  -> ${GREEN}[DMS & PLASMA SYNC]${NC} Verified Dank Material Shell & Plasma wallpaper auto-launch configuration across all users & templates."
 echo -e "  ${GREEN}[STATUS] allowed-apps.conf synced successfully.${NC}\n"
 
 # ------------------------------------------------------------------------------
