@@ -47,6 +47,30 @@
       "last_seen_ts": 1789450331.3984523,
       "duration_mins": 25,
       "status": "Active"
+    },
+    {
+      "hostname": "GSFCUPLLAB203",
+      "ip": "127.0.0.1",
+      "user": "oslab",
+      "session_type": "unspecified",
+      "login_time": "2026-10-07 14:57:01",
+      "start_ts": 1791365221.5016463,
+      "last_seen": "2026-10-07 14:58:30",
+      "last_seen_ts": 1791365310.0115116,
+      "duration_mins": 1,
+      "status": "Active"
+    },
+    {
+      "hostname": "GSFCUPLLAB203",
+      "ip": "127.0.0.1",
+      "user": "oslab",
+      "session_type": "unspecified",
+      "login_time": "2026-10-07 15:03:31",
+      "start_ts": 1791365611.9865813,
+      "last_seen": "2026-10-07 15:04:22",
+      "last_seen_ts": 1791365662.5778966,
+      "duration_mins": 1,
+      "status": "Active"
     }
   ],
   "installed_apps": {
@@ -85,7 +109,8 @@
       ],
       "users": [
         "jk",
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "dms-cli": {
@@ -98,7 +123,8 @@
       ],
       "users": [
         "jk",
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "cups-filters-driverless": {
@@ -263,7 +289,8 @@
       "kind": "dnf",
       "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
-        "GSFCUOSLAB172"
+        "GSFCUOSLAB172",
+        "GSFCUPLLAB203"
       ],
       "users": [
         "25bt04047",
@@ -286,10 +313,12 @@
       "kind": "dnf",
       "discovered_on": "2026-09-08 16:11:02",
       "hosts": [
-        "GSFCUOSLAB172"
+        "GSFCUOSLAB172",
+        "GSFCUPLLAB203"
       ],
       "users": [
-        "25bt04047"
+        "25bt04047",
+        "oslab"
       ]
     },
     "openldap": {
@@ -501,6 +530,127 @@
       ],
       "users": [
         "25bt04047",
+        "oslab"
+      ]
+    },
+    "quickshell-git": {
+      "name": "quickshell-git",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "b43-fwcutter": {
+      "name": "b43-fwcutter",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "libgsf": {
+      "name": "libgsf",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "perl-podlators": {
+      "name": "perl-podlators",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "libmd": {
+      "name": "libmd",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "libical": {
+      "name": "libical",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "sscg": {
+      "name": "sscg",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "sdl2-compat": {
+      "name": "sdl2-compat",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "python-unversioned-command": {
+      "name": "python-unversioned-command",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "python3-tkinter": {
+      "name": "python3-tkinter",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
+        "oslab"
+      ]
+    },
+    "python3-regex": {
+      "name": "python3-regex",
+      "kind": "dnf",
+      "discovered_on": "2026-10-07 14:57:01",
+      "hosts": [
+        "GSFCUPLLAB203"
+      ],
+      "users": [
         "oslab"
       ]
     }

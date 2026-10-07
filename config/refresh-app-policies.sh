@@ -74,7 +74,7 @@ if [ -f "${CONF_DIR}/compulsory-apps.conf" ]; then
   parse_config_file "${CONF_DIR}/compulsory-apps.conf"
 
   for pkg in "${dnf_apps[@]:-}"; do
-    if ! rpm -qa "$pkg" 2>/dev/null | grep -q .; then
+    if ! rpm -q "$pkg" &>/dev/null && ! rpm -q "${pkg%%.*}" &>/dev/null && ! rpm -qa "$pkg" 2>/dev/null | grep -q .; then
       echo -e "  -> ${YELLOW}[DNF INSTALL]${NC} Installing missing mandatory package: ${BOLD}${pkg}${NC}"
       dnf install -y "$pkg" 2>/dev/null || echo -e "  -> ${RED}[ERROR]${NC} Failed to install DNF package: ${pkg}"
     else
@@ -858,8 +858,22 @@ for file in "${FILES[@]}"; do
   [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
   fetched=false
 
-  # 1. Try Local Host loopback first if on the intranet host itself
-  if [ "$USE_INTRANET" = "yes" ]; then
+  # 0. Check Local Repository files first if on the management host / repo directory
+  for local_cand in "${SCRIPT_DIR}/config/${file}" "${SCRIPT_DIR}/${file}" "/home/jk/Projects/fedora-ad-dms/config/${file}"; do
+    if [ -f "$local_cand" ] && [ "$local_cand" != "${CONF_DIR}/${file}" ]; then
+      cp -f "$local_cand" "${CONF_DIR}/${file}" 2>/dev/null || true
+      if [ -s "${CONF_DIR}/${file}" ]; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Local Repository: $(basename "$local_cand"))\033[0m"
+        echo "Local Repository (${local_cand}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+        fetched=true
+        break
+      fi
+    fi
+  done
+
+  # 1. Try Local Host loopback if on the intranet host itself
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ]; then
     MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
     if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
       if curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
@@ -2198,7 +2212,7 @@ if [ -f "${CONF_DIR}/group-apps.conf" ]; then
 
         for pkg in $packages; do
           if [ "$mode" = "dnf" ]; then
-            if ! rpm -qa "$pkg" 2>/dev/null | grep -q .; then
+            if ! rpm -q "$pkg" &>/dev/null && ! rpm -q "${pkg%%.*}" &>/dev/null && ! rpm -qa "$pkg" 2>/dev/null | grep -q .; then
               echo -e "    -> ${YELLOW}[DNF GROUP INSTALL]${NC} Installing DNF package: ${BOLD}${pkg}${NC}"
               dnf install -y "$pkg" 2>/dev/null || echo -e "    -> ${RED}[ERROR]${NC} Failed to install DNF package: ${pkg}"
             else
