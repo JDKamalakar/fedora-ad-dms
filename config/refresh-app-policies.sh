@@ -14,14 +14,182 @@ RED="\033[1;31m"
 NC="\033[0m"
 
 CONF_DIR="/etc/ad-dms"
+REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
+INTRANET_HOST="GSFCUPLLAB203"
+INTRANET_IP="10.205.18.253"
+INTRANET_PORT="8080"
+USE_INTRANET="yes"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "${CONF_DIR}/domain.conf" ]; then
+  # shellcheck source=/dev/null
+  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
+  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
+  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
+  INTRANET_PORT="${INTRANET_PORT:-8080}"
+  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
+fi
 
 if [ "$EUID" -ne 0 ]; then
   exec sudo "$0" "$@"
 fi
 
+# Detect if running in headless background mode (no TTY)
+if [ ! -t 1 ]; then
+  exec >> /var/log/ad-dms-refresh.log 2>&1
+  echo "=== Policy Sync Started: $(date) ==="
+fi
+
 echo -e "\n${BOLD}${CYAN}======================================================================${NC}"
 echo -e "${BOLD}${CYAN}            AD-DMS POLICY ENGINE SYSTEM SYNCHRONIZATION              ${NC}"
 echo -e "${BOLD}${CYAN}======================================================================${NC}\n"
+
+# ------------------------------------------------------------------------------
+# 0. Sync Policy Engine Configuration Files (Intranet First & GitHub Fallback)
+# ------------------------------------------------------------------------------
+echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files (Intranet First & GitHub Fallback)...\033[0m"
+mkdir -p "$CONF_DIR"
+
+FILES=(
+  "refresh-app-policies.sh"
+  "remote-tasks.sh"
+  "allowed-apps.conf"
+  "blocked-apps.conf"
+  "compulsory-apps.conf"
+  "group-apps.conf"
+  "device-rules.conf"
+  "domain.conf"
+  "lab.conf"
+)
+
+for file in "${FILES[@]}"; do
+  [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
+  fetched=false
+
+  # 0. Check Local Repository files first if on the management host / repo directory
+  for local_cand in "${SCRIPT_DIR}/config/${file}" "${SCRIPT_DIR}/${file}" "/home/jk/Projects/fedora-ad-dms/config/${file}"; do
+    if [ -f "$local_cand" ] && [ "$local_cand" != "${CONF_DIR}/${file}" ]; then
+      cp -f "$local_cand" "${CONF_DIR}/${file}" 2>/dev/null || true
+      if [ -s "${CONF_DIR}/${file}" ]; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Local Repository: $(basename "$local_cand"))\033[0m"
+        echo "Local Repository (${local_cand}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+        fetched=true
+        break
+      fi
+    fi
+  done
+
+  # 1. Try Local Host loopback if on the intranet host itself
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ]; then
+    MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
+    if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
+      if curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Localhost: 127.0.0.1)\033[0m"
+        echo "Intranet Host (127.0.0.1:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+        fetched=true
+      fi
+    fi
+  fi
+
+  # 1b. Try Intranet Host via Hostname (Plain, .local, and FQDN)
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
+      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
+        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+        fetched=true
+        break
+      fi
+    done
+  fi
+
+  # 2. Try Intranet Host via Fallback IP
+  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ]; then
+    if curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP: ${INTRANET_IP})\033[0m"
+      echo "Intranet IP (${INTRANET_IP}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+      fetched=true
+    fi
+  fi
+
+  # 3. Fallback to GitHub Cloud CDN
+  if [ "$fetched" = false ]; then
+    if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
+      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+      echo "GitHub Cloud (github.com/JDKamalakar/fedora-ad-dms) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
+      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
+      fetched=true
+    fi
+  fi
+
+  if [ "$fetched" = false ]; then
+    [ -t 1 ] && echo -e "\033[1;33m[UNCHANGED / OFFLINE]\033[0m"
+  fi
+done
+
+# Sync Siren alarm asset if missing or outdated
+mkdir -p "${CONF_DIR}/assets"
+if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
+  [ -t 1 ] && echo -n -e "  -> Downloading security asset: Siren.mp3... "
+  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
+    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
+  else
+    [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
+  fi
+fi
+
+# Sync all Desktop & Shell preset archives from Intranet server / GitHub into ${CONF_DIR}/presets
+mkdir -p "${CONF_DIR}/presets"
+PRESET_LIST_JSON=$(curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || true)
+REMOTE_PRESETS=()
+if [ -n "$PRESET_LIST_JSON" ]; then
+  while read -r p_name; do
+    [ -n "$p_name" ] && REMOTE_PRESETS+=("$p_name")
+  done < <(echo "$PRESET_LIST_JSON" | python3 -c "import sys, json; [print(x['name']) for x in json.load(sys.stdin).get('presets', [])]" 2>/dev/null || true)
+fi
+
+# Fallback to standard package names if API list offline
+if [ "${#REMOTE_PRESETS[@]}" -eq 0 ]; then
+  REMOTE_PRESETS=("DankMaterialShell.tar.gz" "niri-dms-config.tar.gz" "GSFCU_6S_Wallpaper.png")
+fi
+
+for pf in "${REMOTE_PRESETS[@]}"; do
+  [ -t 1 ] && echo -n -e "  -> Fetching Desktop Preset: ${pf}... "
+  pf_fetched=false
+  # 1. Try intranet host
+  if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
+    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
+      [ -z "$host_target" ] && continue
+      if curl -fsSL -m 8 -z "${CONF_DIR}/presets/${pf}" "http://${host_target}:${INTRANET_PORT}/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
+        if [ -s "${CONF_DIR}/presets/${pf}" ]; then
+          [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
+          pf_fetched=true
+          break
+        fi
+      fi
+    done
+  fi
+  # 2. Try GitHub fallback
+  if [ "$pf_fetched" = false ]; then
+    if curl -fsSL -m 12 -z "${CONF_DIR}/presets/${pf}" "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
+      if [ -s "${CONF_DIR}/presets/${pf}" ]; then
+        [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
+        pf_fetched=true
+      fi
+    fi
+  fi
+  if [ "$pf_fetched" = false ]; then
+    if [ -f "${CONF_DIR}/presets/${pf}" ]; then
+      [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
+    else
+      [ -t 1 ] && echo -e "\033[1;33m[OFFLINE]\033[0m"
+    fi
+  fi
+done
 
 # Helper function to parse configuration files into DNF and Flatpak arrays
 parse_config_file() {
@@ -810,207 +978,7 @@ if [ -t 1 ]; then
   fi
 fi
 
-# Fallback or headless execution: execute sync engine directly
-REPO_RAW_URL="https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config"
-CONF_DIR="/etc/ad-dms"
 
-INTRANET_HOST="GSFCUPLLAB203"
-INTRANET_IP="10.205.18.253"
-INTRANET_PORT="8080"
-USE_INTRANET="yes"
-
-if [ -f "${CONF_DIR}/domain.conf" ]; then
-  # shellcheck source=/dev/null
-  source "${CONF_DIR}/domain.conf" 2>/dev/null || true
-  INTRANET_HOST="${INTRANET_HOST_NAME:-$INTRANET_HOST}"
-  INTRANET_IP="${INTRANET_FALLBACK_IP:-$INTRANET_IP}"
-  INTRANET_PORT="${INTRANET_PORT:-8080}"
-  USE_INTRANET="${USE_INTRANET_FIRST:-yes}"
-fi
-
-if [ "$EUID" -ne 0 ]; then
-  exec sudo "$0" "$@"
-fi
-
-# Detect if running in headless background mode (no TTY)
-if [ ! -t 1 ]; then
-  exec >> /var/log/ad-dms-refresh.log 2>&1
-  echo "=== Policy Sync Started: $(date) ==="
-else
-  echo -e "\033[1;36m[REFETCH] Updating policy engine configuration files (Intranet First & GitHub Fallback)...\033[0m"
-fi
-
-mkdir -p "$CONF_DIR"
-
-FILES=(
-  "refresh-app-policies.sh"
-  "remote-tasks.sh"
-  "allowed-apps.conf"
-  "blocked-apps.conf"
-  "compulsory-apps.conf"
-  "group-apps.conf"
-  "device-rules.conf"
-  "domain.conf"
-  "lab.conf"
-)
-
-for file in "${FILES[@]}"; do
-  [ -t 1 ] && echo -n -e "  -> Fetching: ${file}... "
-  fetched=false
-
-  # 0. Check Local Repository files first if on the management host / repo directory
-  for local_cand in "${SCRIPT_DIR}/config/${file}" "${SCRIPT_DIR}/${file}" "/home/jk/Projects/fedora-ad-dms/config/${file}"; do
-    if [ -f "$local_cand" ] && [ "$local_cand" != "${CONF_DIR}/${file}" ]; then
-      cp -f "$local_cand" "${CONF_DIR}/${file}" 2>/dev/null || true
-      if [ -s "${CONF_DIR}/${file}" ]; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Local Repository: $(basename "$local_cand"))\033[0m"
-        echo "Local Repository (${local_cand}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
-        fetched=true
-        break
-      fi
-    fi
-  done
-
-  # 1. Try Local Host loopback if on the intranet host itself
-  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ]; then
-    MY_CURR_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "UNKNOWN")
-    if [ "${MY_CURR_HOST,,}" = "${INTRANET_HOST,,}" ] || ip -o a 2>/dev/null | grep -q "${INTRANET_IP}/"; then
-      if curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://127.0.0.1:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Localhost: 127.0.0.1)\033[0m"
-        echo "Intranet Host (127.0.0.1:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
-        fetched=true
-      fi
-    fi
-  fi
-
-  # 1b. Try Intranet Host via Hostname (Plain, .local, and FQDN)
-  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
-    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_HOST}.gsfcu.local"; do
-      if curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${host_target}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet Host: ${host_target})\033[0m"
-        echo "Intranet Host (${host_target}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-        chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
-        fetched=true
-        break
-      fi
-    done
-  fi
-
-  # 2. Try Intranet Host via Fallback IP
-  if [ "$fetched" = false ] && [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_IP" ]; then
-    if curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/config/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/${file}" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-      [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet IP: ${INTRANET_IP})\033[0m"
-      echo "Intranet IP (${INTRANET_IP}:${INTRANET_PORT}) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
-      fetched=true
-    fi
-  fi
-
-  # 3. Fallback to GitHub Cloud CDN
-  if [ "$fetched" = false ]; then
-    if curl -fsSL "${REPO_RAW_URL}/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/${file}?$(date +%s)" -o "${CONF_DIR}/${file}" 2>/dev/null; then
-      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
-      echo "GitHub Cloud (github.com/JDKamalakar/fedora-ad-dms) - Synced at $(date)" > "${CONF_DIR}/.last_source" 2>/dev/null || true
-      chmod 644 "${CONF_DIR}/.last_source" 2>/dev/null || true
-      fetched=true
-    fi
-  fi
-
-  if [ "$fetched" = false ]; then
-    [ -t 1 ] && echo -e "\033[1;33m[UNCHANGED / OFFLINE]\033[0m"
-  fi
-done
-
-# Sync Siren alarm asset if missing or outdated
-mkdir -p "${CONF_DIR}/assets"
-if [ ! -f "${CONF_DIR}/assets/Siren.mp3" ]; then
-  [ -t 1 ] && echo -n -e "  -> Downloading security asset: Siren.mp3... "
-  if curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/assets/Siren.mp3" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null || curl -fsSL "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/assets/Siren.mp3?$(date +%s)" -o "${CONF_DIR}/assets/Siren.mp3" 2>/dev/null; then
-    [ -t 1 ] && echo -e "\033[1;32m[OK]\033[0m"
-  else
-    [ -t 1 ] && echo -e "\033[1;33m[SKIP]\033[0m"
-  fi
-fi
-
-# Sync all Desktop & Shell preset archives from Intranet server / GitHub into ${CONF_DIR}/presets
-mkdir -p "${CONF_DIR}/presets"
-PRESET_LIST_JSON=$(curl -fsSL -m 3 "http://${INTRANET_HOST}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || curl -fsSL -m 3 "http://${INTRANET_IP}:${INTRANET_PORT}/api/presets/list" 2>/dev/null || true)
-REMOTE_PRESETS=()
-if [ -n "$PRESET_LIST_JSON" ]; then
-  while read -r p_name; do
-    [ -n "$p_name" ] && REMOTE_PRESETS+=("$p_name")
-  done < <(echo "$PRESET_LIST_JSON" | python3 -c "import sys, json; [print(x['name']) for x in json.load(sys.stdin).get('presets', [])]" 2>/dev/null || true)
-fi
-
-# Fallback to standard package names if API list offline
-if [ "${#REMOTE_PRESETS[@]}" -eq 0 ]; then
-  REMOTE_PRESETS=("DankMaterialShell.tar.gz" "niri-dms-config.tar.gz")
-fi
-
-for pf in "${REMOTE_PRESETS[@]}"; do
-  [ -t 1 ] && echo -n -e "  -> Fetching Desktop Preset: ${pf}... "
-  pf_fetched=false
-  # 1. Try intranet host
-  if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
-    for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
-      [ -z "$host_target" ] && continue
-      if curl -fsSL -m 8 -z "${CONF_DIR}/presets/${pf}" "http://${host_target}:${INTRANET_PORT}/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
-        if [ -s "${CONF_DIR}/presets/${pf}" ]; then
-          [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
-          pf_fetched=true
-          break
-        fi
-      fi
-    done
-  fi
-  # 2. Try GitHub fallback
-  if [ "$pf_fetched" = false ]; then
-    if curl -fsSL -m 12 -z "${CONF_DIR}/presets/${pf}" "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/presets/${pf}" -o "${CONF_DIR}/presets/${pf}" 2>/dev/null; then
-      if [ -s "${CONF_DIR}/presets/${pf}" ]; then
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
-        pf_fetched=true
-      fi
-    fi
-  fi
-  if [ "$pf_fetched" = false ]; then
-    if [ -f "${CONF_DIR}/presets/${pf}" ]; then
-      [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
-    else
-      [ -t 1 ] && echo -e "\033[1;33m[OFFLINE]\033[0m"
-    fi
-  fi
-done
-
-# Sync refresh UI binary (refresh-tui) so clients get the latest TUI interface
-[ -t 1 ] && echo -n -e "  -> Syncing Refresh TUI UI binary (refresh-ui)... "
-tui_fetched=false
-if [ "$USE_INTRANET" = "yes" ] && [ -n "$INTRANET_HOST" ]; then
-  for host_target in "${INTRANET_HOST}" "${INTRANET_HOST}.local" "${INTRANET_IP}"; do
-    [ -z "$host_target" ] && continue
-    if curl -fsSL -m 8 "http://${host_target}:${INTRANET_PORT}/config/refresh-tui" -o /usr/local/bin/refresh-ui 2>/dev/null; then
-      if [ -s /usr/local/bin/refresh-ui ]; then
-        chmod +x /usr/local/bin/refresh-ui
-        [ -t 1 ] && echo -e "\033[1;32m[OK] (Intranet: ${host_target})\033[0m"
-        tui_fetched=true
-        break
-      fi
-    fi
-  done
-fi
-if [ "$tui_fetched" = false ]; then
-  if curl -fsSL -m 12 "https://raw.githubusercontent.com/JDKamalakar/fedora-ad-dms/main/config/refresh-tui?$(date +%s)" -o /usr/local/bin/refresh-ui 2>/dev/null; then
-    if [ -s /usr/local/bin/refresh-ui ]; then
-      chmod +x /usr/local/bin/refresh-ui
-      [ -t 1 ] && echo -e "\033[1;32m[OK] (GitHub Cloud)\033[0m"
-      tui_fetched=true
-    fi
-  fi
-fi
-if [ "$tui_fetched" = false ]; then
-  [ -t 1 ] && echo -e "\033[1;32m[CURRENT]\033[0m"
-fi
 
 # Dynamically synchronize ad-dms-refresh.timer interval if domain.conf was updated
 if [ -f "${CONF_DIR}/domain.conf" ]; then

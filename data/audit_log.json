@@ -67,8 +67,20 @@
       "session_type": "unspecified",
       "login_time": "2026-10-07 15:03:31",
       "start_ts": 1791365611.9865813,
-      "last_seen": "2026-10-07 15:04:22",
-      "last_seen_ts": 1791365662.5778966,
+      "last_seen": "2026-10-07 15:05:58",
+      "last_seen_ts": 1791365758.533205,
+      "duration_mins": 2,
+      "status": "Active"
+    },
+    {
+      "hostname": "GSFCUPLLAB203",
+      "ip": "127.0.0.1",
+      "user": "oslab",
+      "session_type": "unspecified",
+      "login_time": "2026-10-07 15:12:45",
+      "start_ts": 1791366165.3725379,
+      "last_seen": "2026-10-07 15:13:33",
+      "last_seen_ts": 1791366213.6700819,
       "duration_mins": 1,
       "status": "Active"
     }
